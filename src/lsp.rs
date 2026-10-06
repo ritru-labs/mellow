@@ -1846,7 +1846,7 @@ done
 dd bs=1 count="$length" of=/dev/null 2>/dev/null
 body='{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
 printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
-sleep 6
+sleep 20
 "#;
         let spec = ServerSpec {
             program: "/bin/sh".to_owned(),
@@ -1855,21 +1855,24 @@ sleep 6
             label: "stalled-lsp",
         };
 
-        let started = Instant::now();
         let mut client = LspClient::spawn(&spec, dir.path(), &document_path, &text, 1).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !client.initialized && Instant::now() < deadline {
             client.poll(); // sends the 2 MiB didOpen the server never reads
             thread::sleep(Duration::from_millis(10));
         }
         assert!(client.initialized, "fake server never initialized");
+        // Only the editor's calls are timed: blocking would last until the
+        // server exits (~20 s), while encoding 38 large changes on a slow CI
+        // machine takes a few seconds at most.
+        let calls = Instant::now();
         for version in 2..40 {
             client.did_change(&text, version).unwrap();
         }
         assert!(
-            started.elapsed() < Duration::from_secs(4),
+            calls.elapsed() < Duration::from_secs(10),
             "editor calls blocked on the server for {:?}",
-            started.elapsed()
+            calls.elapsed()
         );
         // Typing coalesces: at most the unread didOpen plus one change wait.
         assert!(

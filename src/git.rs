@@ -1448,6 +1448,7 @@ mod tests {
         let mut child = git_command(dir.path())
             .args(["-c", "alias.session=!echo $$; exec sleep 30", "session"])
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut line = String::new();

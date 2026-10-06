@@ -26,6 +26,9 @@ First release you can install with one command.
 ### Fixed
 
 - The test suite and checks now pass on macOS.
+- Tests that failed now and then on busy machines (a language-server timing
+  check, the crash-recovery terminal tests and the terminal close prompt)
+  are reliable.
 
 ## 0.1.3
 

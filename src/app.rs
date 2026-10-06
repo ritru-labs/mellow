@@ -10783,11 +10783,17 @@ mod tests {
 
         let session = app.active_terminal_mut().unwrap();
         session.write_bytes(b"sleep 30\n").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // The terminal runs the developer's own $SHELL; a heavy zsh setup can
+        // take seconds before it reads the typed command.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !app.active_terminal_ref().unwrap().has_running_job() && Instant::now() < deadline {
             app.poll_terminal_sessions();
             std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(
+            app.active_terminal_ref().unwrap().has_running_job(),
+            "the shell never started `sleep 30`"
+        );
         app.execute(Command::CloseTerminal);
         assert_eq!(app.mode, AppMode::ConfirmCloseTerminal);
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));

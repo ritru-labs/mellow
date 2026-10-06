@@ -541,9 +541,16 @@ fn release_binary_recovers_unsaved_unicode_after_crash() {
     assert!(journaled, "Unsaved edit was not journaled before the crash");
     assert_eq!(fs::read_to_string(&file).unwrap(), "original\n");
     assert_eq!(unsafe { libc::kill(child.pid, libc::SIGKILL) }, 0);
+    // Keep reading the pty: on macOS a killed process cannot finish exiting
+    // while its unread terminal output is still queued.
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && !child.try_reap() {
-        std::thread::sleep(Duration::from_millis(10));
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(50),
+        );
     }
     assert!(child.reaped);
     let (mut recovered, mut master) =
@@ -657,9 +664,16 @@ fn release_binary_recovers_every_unnamed_draft_after_crash() {
     assert!(journal_contains(&journal_dir, "FIRST_UNSAVED_DRAFT"));
 
     assert_eq!(unsafe { libc::kill(child.pid, libc::SIGKILL) }, 0);
+    // Keep reading the pty: on macOS a killed process cannot finish exiting
+    // while its unread terminal output is still queued.
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && !child.try_reap() {
-        std::thread::sleep(Duration::from_millis(10));
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(50),
+        );
     }
     assert!(child.reaped);
 
