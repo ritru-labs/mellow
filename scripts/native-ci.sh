@@ -38,11 +38,13 @@ if [[ "$platform" == macOS-ARM64 ]]; then
   echo "macOS SDK: $SDKROOT"
 fi
 pty_smoke() {
-  local log
+  local log expected
   log=$(mktemp "${TMPDIR:-/tmp}/mellow-pty.XXXXXX")
+  # Every smoke test must run and pass; count them so new tests are required too.
+  expected=$(grep -c '^#\[test\]' tests/release_native_smoke.rs)
   MELLOW_SMOKE_BINARY="$1" cargo test --locked --test release_native_smoke \
     -- --nocapture | tee "$log"
-  grep -q 'test result: ok. 2 passed; 0 failed;' "$log" || {
+  grep -q "test result: ok. $expected passed; 0 failed;" "$log" || {
     echo 'Required native PTY test did not execute successfully' >&2; exit 1;
   }
 }
