@@ -529,11 +529,7 @@ fn release_binary_recovers_unsaved_unicode_after_crash() {
             &mut queries,
             Duration::from_millis(100),
         );
-        journaled = fs::read_dir(&journal_dir).is_ok_and(|entries| {
-            entries.filter_map(Result::ok).any(|entry| {
-                fs::read_to_string(entry.path()).is_ok_and(|text| text.contains("unsaved 日本語"))
-            })
-        });
+        journaled = journal_contains(&journal_dir, "unsaved 日本語");
         if journaled {
             break;
         }
@@ -595,10 +591,13 @@ fn release_binary_recovers_unsaved_unicode_after_crash() {
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
 }
 
+/// Only finished journals count: Mellow writes `.journal-*.tmp`, syncs it and
+/// then renames it, so a crash before the rename rightly recovers nothing.
 fn journal_contains(journal_dir: &Path, text: &str) -> bool {
     fs::read_dir(journal_dir).is_ok_and(|entries| {
         entries
             .filter_map(Result::ok)
+            .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
             .any(|entry| fs::read_to_string(entry.path()).is_ok_and(|body| body.contains(text)))
     })
 }
