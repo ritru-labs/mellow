@@ -8,7 +8,7 @@ Mellow is an open-source, visual-first terminal text editor crafted by **Ritru L
 
 ## Release status
 
-**Current version: 0.1.3 — early preview.** Mellow is a working native editor; it is new, so expect rough edges (see *Known limits*).
+**Current version: 0.2.0 — beta.** Mellow is a working native editor; it is new, so expect rough edges (see *Known limits*).
 
 | Platform | Status |
 | --- | --- |
@@ -158,20 +158,20 @@ sudo dnf install ./mellow-<version>-1.x86_64.rpm      # or: sudo yum install ...
 # Debian, Ubuntu
 sudo apt install ./mellow_<version>_amd64.deb
 # Anything else: unpack and put it on your PATH
-tar -xzf mellow-<version>-linux-x86_64.tar.gz && sudo cp mellow-<version>-linux-x86_64/mellow /usr/local/bin/
+tar -xzf mellow-<version>-x86_64-unknown-linux-musl.tar.gz && sudo cp mellow-<version>-x86_64-unknown-linux-musl/mellow /usr/local/bin/
 ```
 
 Verify downloads against `SHA256SUMS`. A hosted yum/apt repository (so `yum install mellow` works without a file) comes with the public release.
 
 ### Homebrew (macOS and Linux)
 
-Available once the repository is public:
+Coming with the 0.2.0 release:
 
 ```bash
-brew install ritru-labs/mellow/mellow
+brew install ritru-labs/tap/mellow
 ```
 
-The formula lives in [`packaging/homebrew/mellow.rb`](packaging/homebrew/mellow.rb) and builds from the tagged source. After tagging a release, run `scripts/update-homebrew-formula.sh vX.Y.Z` and copy the formula to `Formula/mellow.rb` in the `ritru-labs/homebrew-mellow` tap.
+The release workflow generates the formula from the prebuilt binaries ([`scripts/homebrew-formula.sh`](scripts/homebrew-formula.sh)) and publishes it to the `ritru-labs/homebrew-tap` repository.
 
 ### From source
 

@@ -1,6 +1,6 @@
 [package]
 name = "mellow"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.90"
 description = "A calm, modern terminal editor by Ritru Labs. No modes, no manual: just start typing."
@@ -10,6 +10,20 @@ homepage = "https://github.com/ritru-labs/mellow"
 readme = "README.md"
 keywords = ["terminal", "editor", "tui", "text-editor", "rust"]
 categories = ["command-line-utilities", "text-editors"]
+exclude = [
+    ".claude",
+    ".dockerignore",
+    ".github",
+    ".ignore",
+    ".mcp.json",
+    "CLAUDE.md",
+    "Dockerfile.dev",
+    "Makefile",
+    "compose.yml",
+    "docs",
+    "packaging",
+    "scripts",
+]
 
 [dependencies]
 anyhow = "1"

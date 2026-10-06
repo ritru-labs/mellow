@@ -36,7 +36,7 @@ for arch in "${archs[@]}"; do
       file "$bin" | grep -qE "static(ally|-pie) linked" || { echo "not static: $(file "$bin")" >&2; exit 1; }
       "$bin" --version
 
-      name="mellow-$VERSION-linux-$ARCH"
+      name="mellow-$VERSION-$target"
       stage="$(mktemp -d)"
       out=/workspace/dist/linux
 
@@ -99,5 +99,13 @@ SPEC
     '
 done
 
-(cd "$out" && sha256sum ./*.tar.gz ./*.deb ./*.rpm 2>/dev/null >SHA256SUMS || shasum -a 256 ./*.tar.gz ./*.deb ./*.rpm >SHA256SUMS)
+# Bare file names, so SHA256SUMS lines match release asset names exactly.
+(
+  cd "$out"
+  if command -v sha256sum >/dev/null; then
+    sha256sum -- *.tar.gz *.deb *.rpm
+  else
+    shasum -a 256 -- *.tar.gz *.deb *.rpm
+  fi
+) >"$out/SHA256SUMS"
 ls -la "$out"

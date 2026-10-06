@@ -1,7 +1,9 @@
-name: release-artifacts
+name: release
 
+# Push a tag vX.Y.Z (matching Cargo.toml) to publish a release.
+# A tag vX.Y.Z-dryrunN runs everything but publishes a draft release and
+# pushes the formula to the tap's dry-run branch, leaving users untouched.
 on:
-  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -9,40 +11,164 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: release (${{ matrix.os }})
+  check:
+    name: check (${{ matrix.os }})
     strategy:
-      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          case "${GITHUB_REF_NAME#v}" in
+            "$version" | "$version"-dryrun*) ;;
+            *) echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2; exit 1 ;;
+          esac
+          grep -q "^## $version" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-${{ matrix.os }}
-      - run: bash scripts/native-ci.sh verify
-      - run: bash scripts/native-ci.sh release
+          shared-key: ${{ matrix.os }}
+      - name: Full check gate
+        timeout-minutes: 15
+        run: bash scripts/native-ci.sh verify
       - run: bash scripts/native-ci.sh crate
-      - name: Package binary
-        id: package
-        shell: bash
+      - name: Shellcheck
+        if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
-          bash scripts/native-ci.sh archive
-          bash scripts/native-ci.sh archive-install
-          artifact="mellow-${RUNNER_OS}-${RUNNER_ARCH}"
-          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          shellcheck scripts/*.sh
+          shellcheck -s sh scripts/install.sh
+
+  macos:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+      - run: bash scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.package.outputs.artifact }}
-          path: |
-            dist/${{ steps.package.outputs.artifact }}.tar.gz
-            dist/${{ steps.package.outputs.artifact }}.tar.gz.sha256
-            dist/${{ steps.package.outputs.artifact }}/BUILD.txt
+          name: macos
+          path: dist/macos/*.tar.gz
           if-no-files-found: error
+
+  linux:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static binary, .tar.gz, .deb and .rpm
+        run: bash scripts/package-linux.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            dist/linux/*.tar.gz
+            dist/linux/*.deb
+            dist/linux/*.rpm
+          if-no-files-found: error
+
+  release:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.files.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release notes
+        id: files
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          cp scripts/install.sh dist/
+          (cd dist && sha256sum -- *.tar.gz *.deb *.rpm install.sh > SHA256SUMS)
+          cat dist/SHA256SUMS
+          [ "$(grep -c '\.tar\.gz$' dist/SHA256SUMS)" -eq 4 ] || { echo 'expected 4 archives' >&2; exit 1; }
+          # Notes: the CHANGELOG section for this version; title from its heading.
+          awk -v v="$version" '/^## / { if (on) exit; on = (index($0, "## " v) == 1); next } on' \
+            CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "empty release notes for $version" >&2; exit 1; }
+          heading=$(grep -m1 "^## $version" CHANGELOG.md)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "title=Mellow ${heading#\#\# }" >> "$GITHUB_OUTPUT"
+      - name: Install script installs this release
+        run: |
+          set -euo pipefail
+          MELLOW_DOWNLOAD_URL="file://$PWD/dist" MELLOW_INSTALL_DIR="$RUNNER_TEMP/bin" sh dist/install.sh
+          [ "$("$RUNNER_TEMP/bin/mellow" --version)" = "mellow ${{ steps.files.outputs.version }}" ]
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.files.outputs.title }}
+        run: |
+          set -euo pipefail
+          draft=()
+          case "$GITHUB_REF_NAME" in *-dryrun*) draft=(--draft) ;; esac
+          # Never --prerelease: releases/latest (used by install.sh) skips those.
+          gh release create "$GITHUB_REF_NAME" "${draft[@]}" --verify-tag \
+            --title "$TITLE" --notes-file notes.md \
+            dist/*.tar.gz dist/*.deb dist/*.rpm dist/install.sh dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: dist/SHA256SUMS
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: checksums
+      - name: Generate formula
+        run: bash scripts/homebrew-formula.sh "${{ needs.release.outputs.version }}" SHA256SUMS > mellow.rb
+      - uses: actions/checkout@v4
+        with:
+          repository: ritru-labs/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Push formula to ritru-labs/homebrew-tap
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          branch=main
+          case "$GITHUB_REF_NAME" in *-dryrun*) branch=dry-run; git checkout -B dry-run ;; esac
+          mkdir -p Formula
+          cp ../mellow.rb Formula/mellow.rb
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/mellow.rb
+          git diff --cached --quiet && { echo 'Formula unchanged'; exit 0; }
+          git commit -m "mellow ${{ needs.release.outputs.version }}"
+          if [ "$branch" = main ]; then git push origin HEAD:main; else git push --force origin HEAD:dry-run; fi
