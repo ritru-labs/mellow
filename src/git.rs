@@ -164,7 +164,75 @@ pub struct GitRepository {
     /// Per-file results of the last refresh, shared by clones so the
     /// background refresh and forced refreshes reuse each other's work.
     cache: Arc<Mutex<RefreshCache>>,
+    /// Set on the copy handed to a background operation, so the editor can
+    /// stop it; `None` runs Git uninterruptibly, as before.
+    cancel: Option<GitCancel>,
 }
+
+/// Stops a background Git operation: the running `git` and everything it
+/// started (ssh, hooks) share one process group, which is killed as a whole.
+#[derive(Debug, Clone, Default)]
+pub struct GitCancel {
+    state: Arc<Mutex<CancelState>>,
+}
+
+#[derive(Debug, Default)]
+struct CancelState {
+    cancelled: bool,
+    running: Option<u32>,
+}
+
+impl GitCancel {
+    pub fn cancel(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.cancelled = true;
+        if let Some(pid) = state.running {
+            kill_process_group(pid);
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancelled
+    }
+
+    fn run(&self, mut command: Command) -> Result<std::process::Output> {
+        let child = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.cancelled {
+                bail!("cancelled");
+            }
+            let child = command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("failed to execute git")?;
+            state.running = Some(child.id());
+            child
+        };
+        let output = child.wait_with_output().context("failed to wait for git");
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.running = None;
+        if state.cancelled {
+            bail!("cancelled");
+        }
+        output
+    }
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    // git_command makes every git a session (and so process group) leader.
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; a stale group is reported as ESRCH and ignored.
+        unsafe { libc::kill(-pid, libc::SIGTERM) };
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
 
 /// File metadata that changes whenever the file's bytes do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,11 +334,31 @@ impl GitRepository {
         Ok(Some(Self {
             root: PathBuf::from(root),
             cache: Arc::default(),
+            cancel: None,
         }))
+    }
+
+    /// A copy whose Git commands stop when `cancel` is triggered.
+    pub fn cancellable(&self, cancel: GitCancel) -> Self {
+        Self {
+            cancel: Some(cancel),
+            ..self.clone()
+        }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn git(&self, args: &[&str]) -> Result<std::process::Output> {
+        match &self.cancel {
+            Some(cancel) => {
+                let mut command = git_command(&self.root);
+                command.args(args);
+                cancel.run(command)
+            }
+            None => run_git(&self.root, args),
+        }
     }
 
     pub fn refresh(&self) -> Result<GitSnapshot> {
@@ -359,7 +447,7 @@ impl GitRepository {
     /// HEAD's commit (None before the first commit) and the index file's
     /// metadata: when either changes, every cached diff is stale.
     fn head_and_index(&self) -> (Option<String>, Option<StatKey>) {
-        let Ok(output) = run_git(&self.root, &["rev-parse", "--git-path", "index", "HEAD"]) else {
+        let Ok(output) = self.git(&["rev-parse", "--git-path", "index", "HEAD"]) else {
             return (None, None);
         };
         let text = String::from_utf8_lossy(&output.stdout);
@@ -450,10 +538,7 @@ impl GitRepository {
     }
 
     fn ahead_behind(&self) -> (usize, usize) {
-        let Ok(output) = run_git(
-            &self.root,
-            &["rev-list", "--left-right", "--count", "HEAD...@{u}"],
-        ) else {
+        let Ok(output) = self.git(&["rev-list", "--left-right", "--count", "HEAD...@{u}"]) else {
             return (0, 0);
         };
         if !output.status.success() {
@@ -513,18 +598,18 @@ impl GitRepository {
         if message.is_empty() {
             bail!("commit message cannot be empty");
         }
-        let staged = run_git(&self.root, &["diff", "--cached", "--quiet"])?;
+        let staged = self.git(&["diff", "--cached", "--quiet"])?;
         match staged.status.code() {
             Some(0) => bail!("there are no staged changes to commit"),
             Some(1) => {}
             _ => bail!("failed to inspect staged changes: {}", stderr_text(&staged)),
         }
 
-        let output = run_git(&self.root, &["commit", "-m", message])?;
+        let output = self.git(&["commit", "-m", message])?;
         if !output.status.success() {
             bail!("git commit failed: {}", stderr_text(&output));
         }
-        let head = run_git(&self.root, &["rev-parse", "--short=12", "HEAD"])?;
+        let head = self.git(&["rev-parse", "--short=12", "HEAD"])?;
         if !head.status.success() {
             bail!(
                 "commit created but HEAD lookup failed: {}",
@@ -535,14 +620,11 @@ impl GitRepository {
     }
 
     pub fn branches(&self) -> Result<Vec<GitBranch>> {
-        let output = run_git(
-            &self.root,
-            &[
-                "for-each-ref",
-                "--format=%(HEAD)%09%(refname:short)",
-                "refs/heads",
-            ],
-        )?;
+        let output = self.git(&[
+            "for-each-ref",
+            "--format=%(HEAD)%09%(refname:short)",
+            "refs/heads",
+        ])?;
         if !output.status.success() {
             bail!("git branch list failed: {}", stderr_text(&output));
         }
@@ -572,7 +654,7 @@ impl GitRepository {
         if name.is_empty() {
             bail!("branch name cannot be empty");
         }
-        let check = run_git(&self.root, &["check-ref-format", "--branch", name])?;
+        let check = self.git(&["check-ref-format", "--branch", name])?;
         if !check.status.success() {
             bail!("invalid branch name: {}", stderr_text(&check));
         }
@@ -585,7 +667,7 @@ impl GitRepository {
         if old_name.is_empty() || new_name.is_empty() {
             bail!("branch names cannot be empty");
         }
-        let check = run_git(&self.root, &["check-ref-format", "--branch", new_name])?;
+        let check = self.git(&["check-ref-format", "--branch", new_name])?;
         if !check.status.success() {
             bail!("invalid branch name: {}", stderr_text(&check));
         }
@@ -647,21 +729,18 @@ impl GitRepository {
     pub fn branch_contains_path(&self, branch: &str, path: &Path) -> Result<bool> {
         let relative = self.repository_relative_path(path)?;
         let spec = format!("{branch}:{}", path_arg(&relative));
-        let output = run_git(&self.root, &["cat-file", "-e", &spec])?;
+        let output = self.git(&["cat-file", "-e", &spec])?;
         Ok(output.status.success())
     }
 
     pub fn history(&self, limit: usize) -> Result<Vec<GitCommit>> {
         let limit = limit.clamp(1, 200).to_string();
-        let output = run_git(
-            &self.root,
-            &[
-                "log",
-                "--date=short",
-                &format!("--max-count={limit}"),
-                "--pretty=format:%H%x09%h%x09%ad%x09%an%x09%s",
-            ],
-        )?;
+        let output = self.git(&[
+            "log",
+            "--date=short",
+            &format!("--max-count={limit}"),
+            "--pretty=format:%H%x09%h%x09%ad%x09%an%x09%s",
+        ])?;
         if !output.status.success() {
             bail!("git log failed: {}", stderr_text(&output));
         }
@@ -689,7 +768,7 @@ impl GitRepository {
     }
 
     pub fn conflict_paths(&self) -> Result<Vec<PathBuf>> {
-        let output = run_git(&self.root, &["ls-files", "-u", "-z"])?;
+        let output = self.git(&["ls-files", "-u", "-z"])?;
         if !output.status.success() {
             bail!("git conflict scan failed: {}", stderr_text(&output));
         }
@@ -730,10 +809,7 @@ impl GitRepository {
     }
 
     pub fn upstream_ref(&self) -> Result<String> {
-        let output = run_git(
-            &self.root,
-            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        )?;
+        let output = self.git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?;
         if !output.status.success() {
             bail!(
                 "current branch has no configured upstream: {}",
@@ -757,10 +833,7 @@ impl GitRepository {
 
     pub fn blame(&self, path: &Path) -> Result<Vec<GitBlameLine>> {
         let relative = self.repository_relative_path(path)?;
-        let output = run_git(
-            &self.root,
-            &["blame", "--line-porcelain", "--", &path_arg(&relative)],
-        )?;
+        let output = self.git(&["blame", "--line-porcelain", "--", &path_arg(&relative)])?;
         if !output.status.success() {
             bail!("git blame failed: {}", stderr_text(&output));
         }
@@ -806,7 +879,7 @@ impl GitRepository {
     }
 
     fn branch_name(&self) -> String {
-        run_git(&self.root, &["branch", "--show-current"])
+        self.git(&["branch", "--show-current"])
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
@@ -815,10 +888,7 @@ impl GitRepository {
     }
 
     fn status_files(&self) -> Result<Vec<GitFileChange>> {
-        let output = run_git(
-            &self.root,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        )?;
+        let output = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
         if !output.status.success() {
             bail!("git status failed: {}", stderr_text(&output));
         }
@@ -887,7 +957,7 @@ impl GitRepository {
                 path_string.as_str(),
             ],
         };
-        let output = run_git(&self.root, &args)?;
+        let output = self.git(&args)?;
         if !output.status.success() {
             bail!(
                 "git diff failed for {}: {}",
@@ -902,18 +972,15 @@ impl GitRepository {
 
     fn line_changes_for_path(&self, path: &Path) -> Result<HashMap<usize, GitLineChange>> {
         let path_string = path_arg(path);
-        let output = run_git(
-            &self.root,
-            &[
-                "diff",
-                "HEAD",
-                "--no-ext-diff",
-                "--no-color",
-                "--unified=0",
-                "--",
-                path_string.as_str(),
-            ],
-        )?;
+        let output = self.git(&[
+            "diff",
+            "HEAD",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=0",
+            "--",
+            path_string.as_str(),
+        ])?;
         if !output.status.success() {
             return Ok(HashMap::new());
         }
@@ -980,7 +1047,7 @@ impl GitRepository {
     }
 
     fn run_checked(&self, args: &[&str]) -> Result<()> {
-        let output = run_git(&self.root, args)?;
+        let output = self.git(args)?;
         if !output.status.success() {
             bail!("git command failed: {}", stderr_text(&output));
         }

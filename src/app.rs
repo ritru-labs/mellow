@@ -16,8 +16,8 @@ use crate::{
     command::{COMMAND_SPECS, Command},
     cursor::Cursor,
     git::{
-        GitBlameLine, GitBranch, GitCommit, GitHunk, GitHunkStage, GitLineChange, GitRepository,
-        GitSnapshot,
+        GitBlameLine, GitBranch, GitCancel, GitCommit, GitHunk, GitHunkStage, GitLineChange,
+        GitRepository, GitSnapshot,
     },
     input::TextInput,
     keymap,
@@ -286,6 +286,63 @@ struct BackgroundGitRefresh {
     snapshot: Option<Result<GitSnapshot, String>>,
 }
 
+/// A fetch, pull, push or commit running off the input thread, so network
+/// waits and commit hooks never freeze typing.
+struct GitOperation {
+    kind: GitOperationKind,
+    started: Instant,
+    cancel: GitCancel,
+    receiver: Receiver<Result<GitOperationDone, String>>,
+    /// The progress line last shown, replaced only while still on screen.
+    progress: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitOperationKind {
+    Fetch,
+    Pull,
+    Push,
+    Commit,
+}
+
+impl GitOperationKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Fetch => "fetch",
+            Self::Pull => "pull",
+            Self::Push => "push",
+            Self::Commit => "commit",
+        }
+    }
+
+    fn progress(self) -> &'static str {
+        match self {
+            Self::Fetch => "Fetching",
+            Self::Pull => "Pulling",
+            Self::Push => "Pushing",
+            Self::Commit => "Committing",
+        }
+    }
+}
+
+fn network_failure(prefix: &str, error: &anyhow::Error) -> String {
+    let error = error.to_string();
+    format!("{prefix}: {error}{}", crate::git::credential_hint(&error))
+}
+
+enum GitOperationDone {
+    Fetched,
+    /// Fetched; the fast-forward itself runs on the input thread so it can
+    /// re-check for unsaved edits made while the network was busy.
+    PullFetched {
+        upstream: String,
+    },
+    Pushed,
+    Committed {
+        oid: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct WorkspaceEditMember {
     path: PathBuf,
@@ -356,6 +413,8 @@ pub struct App {
     /// Periodic Git refresh running off the input thread, so a slow `git`
     /// never delays typing or Escape.
     git_refresh_receiver: Option<Receiver<BackgroundGitRefresh>>,
+    /// The one fetch, pull, push or commit allowed to run at a time.
+    git_operation: Option<GitOperation>,
     ai_config: Option<ai::AiProviderConfig>,
     pub ai_setup: AiSetupForm,
     pub ai_review_scroll: u16,
@@ -657,6 +716,7 @@ impl App {
             ai_proposal: None,
             ai_receiver: None,
             git_refresh_receiver: None,
+            git_operation: None,
             ai_config: if cfg!(test) {
                 None
             } else {
@@ -796,6 +856,7 @@ impl App {
             self.poll_language_service();
             self.poll_ai_request();
             self.poll_inline_suggestion();
+            self.poll_git_operation();
             self.refresh_git_state(false);
             self.poll_external_file_changes();
             if terminal::termination_requested() {
@@ -4888,12 +4949,15 @@ impl App {
     }
 
     fn begin_git_commit(&mut self) {
+        if self.git_operation_blocks_start() {
+            return;
+        }
         self.refresh_git_state(true);
         if self.git_repository.is_none() {
             self.status = Some("No Git repository found".to_owned());
             return;
         }
-        self.git_commit_query.clear();
+        // Not cleared: a message from a failed commit stays for the retry.
         self.mode = AppMode::GitCommitInput;
         self.status = Some("Commit staged changes · Enter commit · Esc cancel".to_owned());
     }
@@ -4916,20 +4980,18 @@ impl App {
                 self.git_commit_query.delete();
             }
             KeyCode::Enter => {
-                let message = self.git_commit_query.as_str().to_owned();
-                let Some(repository) = self.git_repository.clone() else {
-                    self.mode = AppMode::Editing;
+                let message = self.git_commit_query.as_str().trim().to_owned();
+                if message.is_empty() {
+                    self.status = Some("Commit message cannot be empty".to_owned());
                     return;
-                };
-                match repository.commit_staged(&message) {
-                    Ok(oid) => {
-                        self.mode = AppMode::Editing;
-                        self.git_commit_query.clear();
-                        self.refresh_git_state(true);
-                        self.status = Some(format!("Committed {oid}"));
-                    }
-                    Err(error) => self.status = Some(format!("Commit failed: {error}")),
                 }
+                self.mode = AppMode::Editing;
+                self.start_git_operation(GitOperationKind::Commit, move |repository| {
+                    repository
+                        .commit_staged(&message)
+                        .map(|oid| GitOperationDone::Committed { oid })
+                        .map_err(|error| error.to_string())
+                });
             }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
@@ -5392,30 +5454,46 @@ impl App {
     }
 
     fn git_fetch(&mut self) {
-        self.refresh_git_state(true);
-        let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+        if self.git_operation_blocks_start() {
             return;
-        };
-        match repository.fetch() {
-            Ok(()) => {
-                self.refresh_git_state(true);
-                self.status = Some("Git fetch complete".to_owned());
-            }
-            Err(error) => {
-                self.status = Some(format!(
-                    "Git fetch failed: {error}{}",
-                    crate::git::credential_hint(&error.to_string())
-                ))
-            }
         }
+        self.refresh_git_state(true);
+        self.start_git_operation(GitOperationKind::Fetch, |repository| {
+            repository
+                .fetch()
+                .map(|()| GitOperationDone::Fetched)
+                .map_err(|error| network_failure("Git fetch failed", &error))
+        });
     }
 
     fn git_pull_fast_forward(&mut self) {
+        if self.git_operation_blocks_start() {
+            return;
+        }
         self.refresh_git_state(true);
         if self.any_dirty_tabs() {
             self.status =
                 Some("Pull blocked: save/discard all dirty Mellow buffers first".to_owned());
+            return;
+        }
+        self.start_git_operation(GitOperationKind::Pull, |repository| {
+            repository
+                .fetch()
+                .map_err(|error| network_failure("Git pull fetch failed", &error))?;
+            repository
+                .upstream_ref()
+                .map(|upstream| GitOperationDone::PullFetched { upstream })
+                .map_err(|error| format!("Git pull blocked: {error}"))
+        });
+    }
+
+    /// Second half of a pull, after the background fetch: local and quick.
+    fn finish_git_pull(&mut self, upstream: String) {
+        if self.any_dirty_tabs() {
+            self.status = Some(
+                "Pull stopped: a buffer was edited during the fetch; save or discard, then pull again"
+                    .to_owned(),
+            );
             return;
         }
         let Some(repository) = self.git_repository.clone() else {
@@ -5425,21 +5503,6 @@ impl App {
         let open_paths: Vec<PathBuf> = (0..self.tabs.len())
             .filter_map(|index| self.session_document_for_tab(index).map(|doc| doc.path))
             .collect();
-
-        if let Err(error) = repository.fetch() {
-            self.status = Some(format!(
-                "Git pull fetch failed: {error}{}",
-                crate::git::credential_hint(&error.to_string())
-            ));
-            return;
-        }
-        let upstream = match repository.upstream_ref() {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                self.status = Some(format!("Git pull blocked: {error}"));
-                return;
-            }
-        };
         for path in &open_paths {
             match repository.branch_contains_path(&upstream, path) {
                 Ok(true) => {}
@@ -5471,19 +5534,115 @@ impl App {
     }
 
     fn git_push(&mut self) {
+        if self.git_operation_blocks_start() {
+            return;
+        }
         self.refresh_git_state(true);
+        self.start_git_operation(GitOperationKind::Push, |repository| {
+            repository
+                .push()
+                .map(|()| GitOperationDone::Pushed)
+                .map_err(|error| network_failure("Git push failed", &error))
+        });
+    }
+
+    /// Refuses a second fetch, pull, push or commit while one is running.
+    fn git_operation_blocks_start(&mut self) -> bool {
+        let Some(operation) = &self.git_operation else {
+            return false;
+        };
+        self.status = Some(format!(
+            "Git {} is still running · Ctrl+P, Cancel Git operation",
+            operation.kind.name()
+        ));
+        true
+    }
+
+    fn start_git_operation(
+        &mut self,
+        kind: GitOperationKind,
+        work: impl FnOnce(&GitRepository) -> Result<GitOperationDone, String> + Send + 'static,
+    ) {
         let Some(repository) = self.git_repository.clone() else {
             self.status = Some("No Git repository found".to_owned());
             return;
         };
-        match repository.push() {
-            Ok(()) => self.status = Some("Git push complete".to_owned()),
-            Err(error) => {
-                self.status = Some(format!(
-                    "Git push failed: {error}{}",
-                    crate::git::credential_hint(&error.to_string())
-                ))
+        let cancel = GitCancel::default();
+        let repository = repository.cancellable(cancel.clone());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work(&repository));
+        });
+        let progress = format!("{}… · Ctrl+P, Cancel Git operation", kind.progress());
+        self.status = Some(progress.clone());
+        self.git_operation = Some(GitOperation {
+            kind,
+            started: Instant::now(),
+            cancel,
+            receiver,
+            progress,
+        });
+    }
+
+    fn cancel_git_operation(&mut self) {
+        let Some(operation) = &self.git_operation else {
+            self.status = Some("No Git operation is running".to_owned());
+            return;
+        };
+        operation.cancel.cancel();
+        self.status = Some(format!("Cancelling Git {}…", operation.kind.name()));
+    }
+
+    fn poll_git_operation(&mut self) {
+        let Some(operation) = self.git_operation.as_mut() else {
+            return;
+        };
+        let result = match operation.receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => {
+                let cancelling = operation.cancel.is_cancelled();
+                let showing = self.status.as_deref() == Some(operation.progress.as_str());
+                if showing && !cancelling {
+                    let seconds = operation.started.elapsed().as_secs();
+                    if seconds > 0 {
+                        operation.progress = format!(
+                            "{}… {seconds}s · Ctrl+P, Cancel Git operation",
+                            operation.kind.progress()
+                        );
+                        self.status = Some(operation.progress.clone());
+                    }
+                }
+                return;
             }
+            Err(mpsc::TryRecvError::Disconnected) => Err("Git worker stopped".to_owned()),
+        };
+        let Some(operation) = self.git_operation.take() else {
+            return;
+        };
+        if operation.cancel.is_cancelled() {
+            self.refresh_git_state(true);
+            self.status = Some(format!("Git {} cancelled", operation.kind.name()));
+            return;
+        }
+        match result {
+            Ok(GitOperationDone::Fetched) => {
+                self.refresh_git_state(true);
+                self.status = Some("Git fetch complete".to_owned());
+            }
+            Ok(GitOperationDone::PullFetched { upstream }) => self.finish_git_pull(upstream),
+            Ok(GitOperationDone::Pushed) => {
+                self.refresh_git_state(true);
+                self.status = Some("Git push complete".to_owned());
+            }
+            Ok(GitOperationDone::Committed { oid }) => {
+                self.git_commit_query.clear();
+                self.refresh_git_state(true);
+                self.status = Some(format!("Committed {oid}"));
+            }
+            Err(error) if operation.kind == GitOperationKind::Commit => {
+                self.status = Some(format!("Commit failed: {error} · message kept for retry"));
+            }
+            Err(error) => self.status = Some(error),
         }
     }
 
@@ -9081,6 +9240,7 @@ impl App {
             Command::GitFetch => self.git_fetch(),
             Command::GitPull => self.git_pull_fast_forward(),
             Command::GitPush => self.git_push(),
+            Command::GitCancel => self.cancel_git_operation(),
             Command::GitStageFile => self.git_stage_active_file(),
             Command::GitUnstageFile => self.git_unstage_active_file(),
             Command::GitConflicts => self.begin_git_conflicts(),
@@ -10281,6 +10441,207 @@ mod tests {
             "stale worker result dropped"
         );
         assert_eq!(app.git_snapshot.files.len(), 1);
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[cfg(unix)]
+    fn install_git_hook(dir: &std::path::Path, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = dir.join(".git/hooks").join(name);
+        std::fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn wait_for_git_operation(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.git_operation.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.poll_git_operation();
+        }
+        assert!(app.git_operation.is_none(), "Git operation never finished");
+    }
+
+    fn type_commit_message(app: &mut App, message: &str) {
+        let key = |code| KeyEvent::new(code, crossterm::event::KeyModifiers::empty());
+        app.execute(Command::GitCommit);
+        assert_eq!(app.mode, AppMode::GitCommitInput);
+        for ch in message.chars() {
+            app.handle_git_commit_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_git_commit_key(key(KeyCode::Enter));
+    }
+
+    /// A workspace whose branch tracks a bare `remote` beside it.
+    fn git_workspace_with_remote() -> (tempfile::TempDir, tempfile::TempDir) {
+        let dir = git_workspace();
+        let remote = tempfile::tempdir().unwrap();
+        git_in(remote.path(), &["init", "-q", "--bare"]);
+        let remote_path = remote.path().to_str().unwrap();
+        git_in(dir.path(), &["remote", "add", "origin", remote_path]);
+        git_in(dir.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+        (dir, remote)
+    }
+
+    /// Step 2 regression: a slow pre-commit hook froze the whole editor.
+    #[cfg(unix)]
+    #[test]
+    fn git_commit_runs_hooks_in_the_background_and_the_editor_stays_usable() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        install_git_hook(dir.path(), "pre-commit", "sleep 2");
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+
+        let started = Instant::now();
+        type_commit_message(&mut app, "slow hook");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "Enter returned while the hook still runs"
+        );
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Committing…"))
+        );
+
+        app.execute(Command::Insert('!'));
+        assert!(app.any_dirty_tabs(), "typing works during the commit");
+        app.execute(Command::GitPush);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Git commit is still running"))
+        );
+
+        wait_for_git_operation(&mut app);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Committed ")),
+            "{:?}",
+            app.status
+        );
+        assert_eq!(
+            git_in(dir.path(), &["log", "-1", "--format=%s"]),
+            "slow hook"
+        );
+        assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_git_commit_kills_its_hook_and_keeps_the_message() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        install_git_hook(dir.path(), "pre-commit", "sleep 30");
+        let before = git_in(dir.path(), &["rev-parse", "HEAD"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+
+        type_commit_message(&mut app, "never lands");
+        std::thread::sleep(Duration::from_millis(200));
+        app.execute(Command::GitCancel);
+        let started = Instant::now();
+        wait_for_git_operation(&mut app);
+
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "hook was killed"
+        );
+        assert_eq!(app.status.as_deref(), Some("Git commit cancelled"));
+        assert_eq!(git_in(dir.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(app.git_commit_query.as_str(), "never lands");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_push_runs_in_the_background() {
+        let (dir, remote) = git_workspace_with_remote();
+        std::fs::write(dir.path().join("demo.txt"), "pushed\n").unwrap();
+        git_in(dir.path(), &["commit", "-q", "-am", "to push"]);
+        install_git_hook(dir.path(), "pre-push", "sleep 2");
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+
+        let started = Instant::now();
+        app.execute(Command::GitPush);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(app.git_operation.is_some());
+
+        wait_for_git_operation(&mut app);
+        assert_eq!(app.status.as_deref(), Some("Git push complete"));
+        assert_eq!(
+            git_in(remote.path(), &["log", "-1", "--format=%s"]),
+            "to push"
+        );
+    }
+
+    /// The fast-forward reloads open buffers from disk, so edits made while
+    /// the fetch ran in the background must stop it rather than be replaced.
+    #[test]
+    fn git_pull_stops_when_a_buffer_was_edited_during_the_fetch() {
+        let (dir, remote) = git_workspace_with_remote();
+        let other = tempfile::tempdir().unwrap();
+        git_in(
+            other.path(),
+            &["clone", "-q", remote.path().to_str().unwrap(), "."],
+        );
+        git_in(
+            other.path(),
+            &["config", "user.email", "mellow@example.invalid"],
+        );
+        git_in(other.path(), &["config", "user.name", "Mellow Tests"]);
+        std::fs::write(other.path().join("demo.txt"), "upstream\n").unwrap();
+        git_in(other.path(), &["commit", "-q", "-am", "upstream"]);
+        git_in(other.path(), &["push", "-q"]);
+
+        let path = dir.path().join("demo.txt");
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitPull);
+        app.execute(Command::Insert('!'));
+        wait_for_git_operation(&mut app);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Pull stopped")),
+            "{:?}",
+            app.status
+        );
+        assert!(app.any_dirty_tabs(), "the edit survived");
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), "upstream\n");
+
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitPull);
+        wait_for_git_operation(&mut app);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Fast-forwarded from origin/")),
+            "{:?}",
+            app.status
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "upstream\n");
+        assert_eq!(app.buffer.line_text(0), "upstream");
     }
 
     /// Audit: the LSP preview must show the actual change, not edit counts.

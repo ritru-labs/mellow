@@ -67,6 +67,7 @@ pub enum Command {
     GitFetch,
     GitPull,
     GitPush,
+    GitCancel,
     GitStageFile,
     GitUnstageFile,
     GitConflicts,
@@ -822,6 +823,14 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         label: "Push current branch",
         category: "Git",
         help: "Push using normal Git upstream configuration; never force-push",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::GitCancel,
+        id: "git.cancel",
+        label: "Cancel Git operation",
+        category: "Git",
+        help: "Stop the fetch, pull, push or commit running in the background",
         bindings: &[],
     },
     CommandSpec {
