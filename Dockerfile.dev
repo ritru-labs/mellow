@@ -1,0 +1,6 @@
+FROM rust:1.90-bookworm
+
+RUN rustup component add rustfmt clippy
+
+WORKDIR /workspace
+CMD ["bash"]

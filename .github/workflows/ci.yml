@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
+      - name: Shared verification
+        timeout-minutes: 10
+        run: bash scripts/native-ci.sh verify
+      - run: bash scripts/native-ci.sh release
+      - run: bash scripts/native-ci.sh crate
+      - name: Install smoke test
+        shell: bash
+        run: bash scripts/native-ci.sh install

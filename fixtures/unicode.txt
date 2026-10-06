@@ -1,0 +1,8 @@
+Mellow unicode fixture
+English: Modern terminal editor
+Telugu: నమస్తే ప్రపంచం
+Japanese: こんにちは世界
+Emoji: 👩‍💻 ✨ 🚀
+Combining: café
+Wide chars: 漢字かなカナ
+Tabs:	one	two	three

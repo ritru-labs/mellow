@@ -1,0 +1,48 @@
+name: release-artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.os }}
+      - run: bash scripts/native-ci.sh verify
+      - run: bash scripts/native-ci.sh release
+      - run: bash scripts/native-ci.sh crate
+      - name: Package binary
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/native-ci.sh archive
+          bash scripts/native-ci.sh archive-install
+          artifact="mellow-${RUNNER_OS}-${RUNNER_ARCH}"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: |
+            dist/${{ steps.package.outputs.artifact }}.tar.gz
+            dist/${{ steps.package.outputs.artifact }}.tar.gz.sha256
+            dist/${{ steps.package.outputs.artifact }}/BUILD.txt
+          if-no-files-found: error
