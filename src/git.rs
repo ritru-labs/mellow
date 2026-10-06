@@ -1373,16 +1373,25 @@ mod tests {
     /// Git (and ssh) must never prompt on the editor's terminal.
     #[test]
     fn git_runs_outside_the_editors_terminal_session() {
+        use std::io::{BufRead, BufReader};
+
         let dir = repo();
-        let output = git_command(dir.path())
-            .args(["-c", "alias.session=!ps -o sid= -p $$", "session"])
-            .output()
+        // The alias shell prints its pid and stays alive so getsid can read
+        // it; `ps -o sid=` is Linux-only, getsid works on every Unix.
+        let mut child = git_command(dir.path())
+            .args(["-c", "alias.session=!echo $$; exec sleep 30", "session"])
+            .stdout(Stdio::piped())
+            .spawn()
             .unwrap();
-        assert!(output.status.success(), "{}", stderr_text(&output));
-        let child_session: i32 = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
+        let mut line = String::new();
+        BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut line)
             .unwrap();
+        let pid: libc::pid_t = line.trim().parse().unwrap();
+        let child_session = unsafe { libc::getsid(pid) };
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let _ = child.wait();
+        assert!(child_session > 0, "getsid({pid}) failed");
         let own_session = unsafe { libc::getsid(0) };
         assert_ne!(child_session, own_session);
 

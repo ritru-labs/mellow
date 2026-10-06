@@ -192,7 +192,7 @@ fn orphan_drafts_in(
             found.push((modified, record));
         }
     }
-    found.sort_by(|left, right| left.0.cmp(&right.0));
+    found.sort_by_key(|left| left.0);
     found.into_iter().map(|(_, record)| record).collect()
 }
 
