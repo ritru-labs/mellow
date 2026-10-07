@@ -3,6 +3,20 @@
 Mellow runs on macOS (Apple silicon and Intel) and Linux (x86_64 and ARM64).
 Windows is not supported; inside WSL, use the Linux instructions.
 
+## Before you install
+
+- Use an interactive terminal on macOS or Linux, on Apple silicon/ARM64 or
+  x86_64. You do not need a graphical desktop, custom font or TrueColor support.
+- Prebuilt binaries do not require Rust. The installer needs `sh`, `tar`,
+  `curl` (or `wget` when running a downloaded script), and `shasum` or `sha256sum`.
+- Building with Cargo requires Rust 1.90+ and a working C compiler/linker.
+- Git features require system `git`. Language servers and formatters are
+  separate optional installs; basic editing needs neither. AI needs explicit
+  setup and is not required.
+
+Choose **one** installation method below. Check your platform with `uname -sm`
+if you are selecting a release archive manually.
+
 ## Install script (macOS and Linux)
 
 ```bash
@@ -11,16 +25,20 @@ curl -fsSL https://github.com/ritru-labs/mellow/releases/latest/download/install
 
 The script picks the right build for your system, checks its SHA-256 checksum
 and installs `mellow` to `~/.local/bin`. If that folder is not on your `PATH`
-yet, it prints the line to add. Nothing else on your system is changed.
+yet, it prints the line to add. The script replaces an existing binary at that location; it does not configure your shell PATH.
 
 Options, set before `sh`:
 
 | Variable | Effect |
 | --- | --- |
-| `MELLOW_VERSION=0.2.0` | Install that version instead of the latest |
+| `MELLOW_VERSION=0.2.1` | Install that version instead of the latest |
 | `MELLOW_INSTALL_DIR=/some/dir` | Install somewhere other than `~/.local/bin` |
 
-For example: `curl -fsSL …/install.sh | MELLOW_INSTALL_DIR="$HOME/bin" sh`.
+For example, choose a different install directory:
+
+```bash
+curl -fsSL https://github.com/ritru-labs/mellow/releases/latest/download/install.sh | MELLOW_INSTALL_DIR="$HOME/bin" sh
+```
 
 ## Homebrew (macOS and Linux)
 
@@ -29,7 +47,7 @@ brew install ritru-labs/tap/mellow
 ```
 
 On macOS, use Homebrew or the install script rather than downloading the archive
-in a browser: the builds are not yet signed by Apple, so macOS blocks
+in a browser: the builds are not yet signed by Apple, so macOS may block
 browser-downloaded copies.
 
 ## Debian and Ubuntu
@@ -54,9 +72,10 @@ instead of `dnf`. On openSUSE:
 sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.2.1/mellow-0.2.1-1.x86_64.rpm
 ```
 
-The Linux builds are static, so they run on old and new distributions alike.
+The release workflow targets static musl Linux binaries to reduce dependencies
+on a distribution-specific C library.
 
-**Tested on** (install, then edit, save and quit in a real terminal): Amazon
+**Repository-reported validation coverage** (install, edit, save and quit in a real terminal): Amazon
 Linux 2 and 2023, Rocky Linux 9, AlmaLinux 8, CentOS Stream 9, Fedora,
 openSUSE Leap 15.6, Debian 11 and 12, Ubuntu 20.04, 22.04 and 24.04, Alpine
 3.20 and Arch Linux, on x86_64 and ARM64; and macOS on Apple silicon.
@@ -97,6 +116,11 @@ cargo install --locked --path .
 ```bash
 mellow --version
 ```
+
+The version should print as `mellow 0.2.1` for the documented release (a newer
+installed release will print its own version). Run `mellow --help` for CLI usage,
+then follow [Make your first edit](getting-started.md). If the shell cannot find
+it, see [PATH troubleshooting](faq.md#mellow-command-not-found).
 
 ## Update and uninstall
 

@@ -1,164 +1,98 @@
 ---
-title: The calm terminal editor
-hide:
-  - navigation
-  - toc
+title: Mellow terminal editor
 ---
 
-<div class="mellow-hero" markdown>
+<div class="mellow-intro" markdown>
 
-<img class="mellow-logo" src="assets/logo.svg" alt="">
+<p class="mellow-eyebrow">MELLOW · DOCUMENTATION · 0.2.1 BETA</p>
 
-# Mellow
+# Edit files in your terminal. Start with the keys you know.
 
-<p class="mellow-tagline"><strong>The calm terminal editor.</strong><br>
-No modes, no manual: just start typing.</p>
+Mellow is a **modeless terminal text editor for macOS and Linux**, written in
+Rust by Ritru Labs. Open a text file or a project folder, type immediately,
+and save with `Ctrl+S`. There is no insert mode to enter or command language
+to learn before your first edit.
 
 [Install Mellow](install.md){ .md-button .md-button--primary }
-[Get started](getting-started.md){ .md-button }
-[GitHub](https://github.com/ritru-labs/mellow){ .md-button }
-
-<p class="mellow-meta">Version 0.2.1 beta · macOS and Linux · free and open source (Apache-2.0) · crafted by Ritru Labs</p>
+[Make your first edit](getting-started.md){ .md-button }
 
 </div>
 
-<div class="mellow-install" markdown>
+## What is this repository?
 
-=== "macOS and Linux"
+[`ritru-labs/mellow`](https://github.com/ritru-labs/mellow) contains the native
+`mellow` executable, its Rust source and tests, packaging scripts, and this
+MkDocs documentation site. The website explains the editor; the editor itself
+runs inside your terminal, locally or on a machine you reach over SSH.
 
-    ```bash
-    curl -fsSL https://github.com/ritru-labs/mellow/releases/latest/download/install.sh | sh
-    ```
+Mellow is useful for people who want to edit configuration, notes, scripts or
+source code without leaving the shell, including people unfamiliar with modal
+editors. Core editing works offline and needs no account, AI provider or
+language server. It is an Apache-2.0 open-source project, currently in beta.
 
-=== "Homebrew"
+![Mellow editing a Rust project, with a file tree on the left and a shell below the editor](images/hero.png){ .mellow-shot }
 
-    ```bash
-    brew install ritru-labs/tap/mellow
-    ```
-
-=== "Cargo"
-
-    ```bash
-    cargo install mellow --locked
-    ```
-
-=== ".deb / .rpm"
-
-    Packages for Debian, Ubuntu, Fedora, RHEL, Amazon Linux and more:
-    see [Install](install.md).
-
-</div>
-
-![Mellow editing a Rust project: the file tree, Git changes in the gutter, and the built-in terminal](images/hero.png){ .mellow-shot .mellow-hero-shot }
-
-<div class="mellow-section" markdown>
-
-## Everything you need, nothing to memorise
-
-Familiar keys, a mouse that works, and every command one search away. Mellow
-keeps what makes terminal editors great (speed, SSH, the keyboard) and drops
-the learning curve.
-
-</div>
+## Start here
 
 <div class="grid cards" markdown>
 
--   :material-keyboard-outline: **No modes**
+- **1 · Install**
 
-    Typing types. `Ctrl+S` saves, `Ctrl+Z` undoes, `Ctrl+Q` quits: the keys
-    you already know work.
+    Choose a binary package, Homebrew or Cargo and check your terminal setup.
 
--   :material-magnify: **Every command, one search away**
+    [Installation and prerequisites →](install.md)
 
-    `Ctrl+P` finds any action by name, and `F1` shows the keys your terminal
-    can send.
+- **2 · Make a first edit**
 
--   :material-source-branch: **Git built in**
+    Create a practice file, save it, quit, and verify the result in your shell.
 
-    Changes in the gutter, stage or revert a hunk, commit, branch, pull and
-    push, all in the background with a cancel.
+    [Five-minute quickstart →](getting-started.md)
 
--   :material-console: **A real terminal**
+- **3 · Work on a project**
 
-    `Ctrl+T` opens your shell beside your code; press it again to come back.
+    Find files, search text, compare panes, run a command and review Git changes.
 
--   :material-auto-fix: **Tidy code on save**
+    [Everyday workflows →](usage.md)
 
-    Smart indentation as you type, and optional format on save with rustfmt,
-    ruff, shfmt, prettier, gofmt and more.
+- **4 · Understand the code**
 
--   :material-lightbulb-on-outline: **Language servers**
+    See how buffers, terminal rendering and optional integrations fit together.
 
-    Completion while you type, problems, and go to definition for Rust, Python,
-    TypeScript, Go and more.
-
--   :material-shield-check-outline: **Your work is safe**
-
-    Crash recovery brings unsaved edits back, saves are atomic, and Mellow
-    asks before overwriting a file that changed on disk.
-
--   :material-creation-outline: **AI, only if you want it**
-
-    Claude, OpenAI, Gemini or local Ollama. Every change is shown for review
-    before it applies, and nothing is sent unless you ask.
-
--   :material-palette-outline: **Six themes and a mouse**
-
-    Dark, Light, Tokyo Night, Catppuccin, Gruvbox and High Contrast. Click,
-    drag, double-click and scroll, or keep your terminal's own selection.
+    [Architecture and repository map →](ARCHITECTURE.md)
 
 </div>
 
-<div class="mellow-section" markdown>
+## What works today?
 
-## Find any command in a keystroke
+| Capability in 0.2.1 | What you need |
+| --- | --- |
+| Editing, undo/redo, mouse selection, tabs, split panes, file search and replace | The Mellow binary and an interactive terminal |
+| Project file picker, file tree, project search, session restore and crash journals | A local project folder; UTF-8 text files |
+| Six themes, configurable keys and settings | No extra packages |
+| Built-in shell sessions | A supported Unix environment and a shell |
+| Git changes, staging, commits, branches, history, fetch, pull and push | System `git`; existing repository and authentication for remote operations |
+| Tree-sitter highlighting for Rust, Python, JSON, Shell, YAML and Terraform/HCL | Bundled with Mellow |
+| Completion, diagnostics, navigation and other language-aware actions | A separately installed [language server](language-servers.md); capabilities vary by server |
+| Format on save | A separately installed [formatter](settings.md#format-on-save), and the setting enabled |
+| AI explanations, reviewed selection edits and optional inline suggestions | Explicit [AI setup](ai.md), a reachable provider and a key where required |
 
-Press `Ctrl+P` and type what you want to do: "git", "theme", "split",
-"format". The palette shows the shortcut for next time.
+## Know the boundaries
 
-</div>
+Mellow is a text editor with optional integrations, not a complete IDE or an
+autonomous coding agent. Native Windows is unsupported; use the Linux build
+inside WSL. Files must be UTF-8 and no larger than 100 MiB. Files over 5 MiB
+use reduced functionality without parsing or language servers.
 
-![The command palette listing Git commands](images/palette.png){ .mellow-shot }
+Project search is bounded and reports skipped files or truncated results.
+Language-server and AI integrations exist, but have not been tested against
+every live server or provider account. See [limitations and troubleshooting](faq.md)
+before depending on a particular workflow. Design goals and future hardening
+are identified separately in the [architecture](ARCHITECTURE.md).
 
-<div class="mellow-section" markdown>
+## Find an answer
 
-## Tidy code every time you save
-
-Turn on **Format on save** and Mellow runs your language's own formatter when
-you save. If the formatter is missing or the file has a syntax error, your
-text is saved as typed and the status line tells you why.
-[How it works](settings.md#format-on-save)
-
-</div>
-
-![The Settings screen with Format on save switched on](images/settings.png){ .mellow-shot }
-
-<div class="mellow-section" markdown>
-
-## Six themes, readable everywhere
-
-Dark, Light, High Contrast, Tokyo Night, Catppuccin Mocha and Gruvbox Dark,
-each checked for readable contrast, with fallbacks for terminals without true
-colour. [All themes](themes.md)
-
-</div>
-
-![The same file in the Dark, Light, Tokyo Night and Gruvbox Dark themes](images/themes.png){ .mellow-shot }
-
-<div class="mellow-section" markdown>
-
-## Runs where you work
-
-macOS on Apple silicon and Intel; Linux on x86_64 and ARM64. Tested on Amazon
-Linux, Rocky, AlmaLinux, CentOS Stream, Fedora, openSUSE, Debian, Ubuntu,
-Alpine and Arch. Works the same over SSH.
-
-</div>
-
-<div class="mellow-cta" markdown>
-
-[Install Mellow](install.md){ .md-button .md-button--primary }
-[Read the keys](keys.md){ .md-button }
-[Report an issue](https://github.com/ritru-labs/mellow/issues){ .md-button }
-
-</div>
+- **A key or command:** [Keyboard reference](keys.md), or `Ctrl+P` inside Mellow.
+- **Appearance or behavior:** [Settings](settings.md) and [themes](themes.md).
+- **Something did not work:** [Troubleshooting](faq.md).
+- **Contributing or publishing docs:** [Development guide](development.md).
+- **A bug to report:** [GitHub issues](https://github.com/ritru-labs/mellow/issues).
