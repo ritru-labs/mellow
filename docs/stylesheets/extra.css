@@ -1,0 +1,134 @@
+/* Mellow's own colours: a deep night header with a mint accent. */
+:root > * {
+  --md-primary-fg-color: #1b1d2a;
+  --md-primary-fg-color--light: #2b2d3a;
+  --md-primary-fg-color--dark: #12131c;
+  --md-accent-fg-color: #1fa886;
+  --md-typeset-a-color: #12866b;
+}
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #14151f;
+  --md-typeset-a-color: #3ecfa7;
+  --md-accent-fg-color: #3ecfa7;
+}
+
+/* ---------------------------------------------------------------- hero */
+.mellow-hero {
+  text-align: center;
+  padding: 2.5rem 0 0.5rem;
+}
+.mellow-hero .mellow-logo {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 0.4rem;
+}
+.md-typeset .mellow-hero h1 {
+  font-size: 3.4rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.6rem;
+  color: var(--md-default-fg-color);
+}
+.mellow-tagline {
+  font-size: 1.35rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+  margin: 0 auto 1.6rem;
+  max-width: 34rem;
+}
+.mellow-tagline strong {
+  color: var(--md-default-fg-color);
+}
+.mellow-hero .md-button {
+  margin: 0.25rem 0.35rem;
+}
+.md-typeset .mellow-hero .md-button--primary {
+  background: #1fa886;
+  border-color: #1fa886;
+  color: #fff;
+}
+.md-typeset .mellow-hero .md-button--primary:hover {
+  background: #178a6e;
+  border-color: #178a6e;
+}
+.mellow-meta {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.6rem;
+}
+
+.mellow-install {
+  max-width: 46rem;
+  margin: 1.6rem auto 0;
+  text-align: left;
+}
+
+/* Screenshots carry their own window frame and shadow. */
+.md-typeset img.mellow-shot {
+  display: block;
+  margin: 1.2rem auto;
+  max-width: 100%;
+}
+.mellow-hero-shot {
+  margin: 0.5rem auto 1rem;
+  max-width: 64rem;
+}
+
+/* ---------------------------------------------------------------- sections */
+.md-typeset .mellow-section {
+  text-align: center;
+  margin-top: 3.2rem;
+}
+.md-typeset .mellow-section h2 {
+  font-size: 1.9rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.4rem;
+}
+.md-typeset .mellow-section > p {
+  max-width: 40rem;
+  margin-left: auto;
+  margin-right: auto;
+  color: var(--md-default-fg-color--light);
+  font-size: 1.05rem;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.6rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+}
+.md-typeset .grid.cards .twemoji {
+  color: var(--md-accent-fg-color);
+}
+
+.mellow-cta {
+  text-align: center;
+  margin: 3.5rem 0 1rem;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .md-typeset .mellow-hero h1 {
+    font-size: 2.4rem;
+  }
+  .mellow-tagline {
+    font-size: 1.1rem;
+  }
+}
+
+/* Outline buttons must stay visible on the dark scheme. */
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: #e6e8f0;
+  border-color: #4a4e66;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #3ecfa7;
+  border-color: #3ecfa7;
+  background: transparent;
+}
+[data-md-color-scheme="slate"] .mellow-hero .mellow-logo {
+  border-radius: 16px;
+  box-shadow: 0 0 0 1px #2f3245;
+}

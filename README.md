@@ -7,7 +7,7 @@ keeps what makes terminal editors useful (speed, SSH, the keyboard) and drops th
 learning curve: familiar keys, a mouse that works, and every command one search
 away.
 
-![Mellow in four themes](docs/images/themes.png)
+![Mellow editing a Rust project: file tree, Git changes in the gutter and the built-in terminal](docs/images/hero.png)
 
 **Version 0.2.1, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
@@ -92,7 +92,9 @@ format_on_save = true   # tidy with rustfmt, ruff, shfmt, prettier... on save
 ```
 
 Themes: `dark`, `light`, `high-contrast`, `tokyo-night`, `catppuccin-mocha`,
-`gruvbox-dark`. Everything else:
+`gruvbox-dark`.
+
+![The same file in four of the six themes](docs/images/themes.png) Everything else:
 [Settings](https://ritru-labs.github.io/mellow/settings/).
 
 ## Known limits
