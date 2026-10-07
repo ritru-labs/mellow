@@ -132,3 +132,40 @@
   border-radius: 16px;
   box-shadow: 0 0 0 1px #2f3245;
 }
+
+/* Documentation-first introduction: retain the sidebar and readable line length. */
+.mellow-intro {
+  padding: 1.4rem 1.5rem 1.2rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-left: 4px solid #1fa886;
+  border-radius: 0.6rem;
+  background: var(--md-code-bg-color);
+}
+.md-typeset .mellow-intro h1 {
+  max-width: 28ch;
+  margin: 0.5rem 0 1rem;
+  color: var(--md-default-fg-color);
+  font-size: 2rem;
+  font-weight: 750;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.mellow-eyebrow {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--md-typeset-a-color);
+}
+.mellow-intro .md-button { margin: 0.3rem 0.3rem 0 0; }
+.md-typeset .md-button--primary {
+  background: #12765f;
+  border-color: #12765f;
+  color: #fff;
+}
+.md-typeset { line-height: 1.65; }
+.md-typeset h2 { font-weight: 650; }
+@media screen and (max-width: 44.9375em) {
+  .mellow-intro { padding: 1rem; }
+  .md-typeset .mellow-intro h1 { font-size: 1.65rem; }
+  .mellow-intro .md-button { display: block; text-align: center; margin-right: 0; }
+}
