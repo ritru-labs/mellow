@@ -4407,6 +4407,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
             if app.copy_on_select { "On" } else { "Off" }.to_owned(),
         ),
         (
+            "Format on save",
+            if app.format_on_save { "On" } else { "Off" }.to_owned(),
+        ),
+        (
             "AI assistant",
             app.ai_config_summary()
                 .unwrap_or_else(|| "Not set up · Enter to set up".to_owned()),

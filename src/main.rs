@@ -5,6 +5,7 @@ mod buffer;
 mod claude;
 mod command;
 mod cursor;
+mod format;
 mod git;
 mod input;
 mod keymap;

@@ -288,37 +288,44 @@ impl Buffer {
     }
 
     pub fn language(&self) -> &'static str {
-        let Some(path) = &self.path else {
-            return "Plain Text";
-        };
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            return "Plain Text";
-        };
-        match ext.to_ascii_lowercase().as_str() {
-            "rs" => "Rust",
-            "py" => "Python",
-            "js" | "mjs" | "cjs" => "JavaScript",
-            "ts" | "mts" | "cts" => "TypeScript",
-            "jsx" => "React JSX",
-            "tsx" => "React TSX",
-            "json" => "JSON",
-            "toml" => "TOML",
-            "tf" | "tfvars" => "Terraform",
-            "yaml" | "yml" => "YAML",
-            "md" | "markdown" => "Markdown",
-            "html" | "htm" => "HTML",
-            "css" | "scss" | "sass" => "CSS",
-            "sh" | "bash" | "zsh" => "Shell",
-            "c" | "h" => "C",
-            "cpp" | "cc" | "cxx" | "hpp" => "C++",
-            "go" => "Go",
-            "java" => "Java",
-            "sql" => "SQL",
-            "xml" | "svg" => "XML",
-            _ => "Plain Text",
-        }
+        language_for_path(self.path.as_deref())
     }
+}
 
+/// The language of a file name, as `Buffer::language` reports it.
+pub fn language_for_path(path: Option<&Path>) -> &'static str {
+    let Some(path) = path else {
+        return "Plain Text";
+    };
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return "Plain Text";
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" => "Rust",
+        "py" => "Python",
+        "js" | "mjs" | "cjs" => "JavaScript",
+        "ts" | "mts" | "cts" => "TypeScript",
+        "jsx" => "React JSX",
+        "tsx" => "React TSX",
+        "json" => "JSON",
+        "toml" => "TOML",
+        "tf" | "tfvars" => "Terraform",
+        "yaml" | "yml" => "YAML",
+        "md" | "markdown" => "Markdown",
+        "html" | "htm" => "HTML",
+        "css" | "scss" | "sass" => "CSS",
+        "sh" | "bash" | "zsh" => "Shell",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" => "C++",
+        "go" => "Go",
+        "java" => "Java",
+        "sql" => "SQL",
+        "xml" | "svg" => "XML",
+        _ => "Plain Text",
+    }
+}
+
+impl Buffer {
     pub const fn line_ending(&self) -> LineEnding {
         self.line_ending
     }
@@ -634,15 +641,6 @@ impl Buffer {
         let line_start = self.text.line_to_char(cursor.row);
         cursor.col =
             self.grapheme_col_for_char_offset(cursor.row, target.saturating_sub(line_start));
-        self.mark_edited(Some(*cursor));
-    }
-
-    pub fn insert_newline(&mut self, cursor: &mut Cursor) {
-        self.checkpoint(Some(*cursor));
-        let index = self.char_index(cursor.row, cursor.col);
-        self.text.insert(index, self.line_ending.as_str());
-        cursor.row += 1;
-        cursor.col = 0;
         self.mark_edited(Some(*cursor));
     }
 
@@ -1797,7 +1795,8 @@ mod tests {
         assert_eq!(buffer.line_ending(), LineEnding::CrLf);
 
         let mut cursor = Cursor::new(0, 3);
-        buffer.insert_newline(&mut cursor);
+        // Enter inserts "\n" plus indentation through insert_text.
+        buffer.insert_text(&mut cursor, "\n");
         buffer.save().unwrap();
 
         let saved = fs::read(&path).unwrap();

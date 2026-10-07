@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **Format on save** for every language: turn on "Format on save" in Settings
+  (or `format_on_save = true`) and saving runs the file's standard formatter,
+  such as rustfmt, ruff, shfmt, prettier, gofmt or terraform fmt. Off by
+  default. A missing or failing formatter never blocks the save, and one
+  `Ctrl+Z` undoes the formatting. `MELLOW_FORMAT_<LANGUAGE>` picks another one.
+- **Smart Enter**: a new line keeps the current indentation and steps in after
+  `{`, `(` or `[` (and `:` in Python and YAML); between brackets the closer
+  moves to its own line.
+
 ### Changed
 
 - The crash-recovery journal is written on a background thread, at most

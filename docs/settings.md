@@ -28,6 +28,7 @@ copy_on_select = false
 | `explorer_visible` | `false` | Show the file tree when Mellow starts |
 | `auto_completion` | `true` | Suggest completions while typing |
 | `copy_on_select` | `false` | Copy to the clipboard when you select with the mouse |
+| `format_on_save` | `false` | Tidy the file with its language's formatter when you save ([details](#format-on-save)) |
 
 Lines starting with `#` are comments. An unknown setting or theme name is
 reported with its line number. Mellow writes the file only when you change a
@@ -40,6 +41,47 @@ setting; starting Mellow never rewrites it.
 | `MELLOW_SETTINGS=/path/file.conf` | Use another settings file |
 | `MELLOW_KEYBOARD_PROTOCOL=off` | Don't enable the kitty keyboard protocol |
 | `MELLOW_LSP_RUST`, `MELLOW_LSP_PYTHON`, … | Use another [language server](language-servers.md) program |
+| `MELLOW_FORMAT_PYTHON`, `MELLOW_FORMAT_SHELL`, … | Use another [formatter](#format-on-save) command |
+
+## Format on save
+
+Turn it on in Settings ("Format on save") or with `format_on_save = true`.
+When you save, Mellow runs the file's standard formatter and saves the tidied
+text. It never guesses indentation itself: in Python or YAML, indentation is
+part of the meaning, so only the language's own formatter may change it.
+
+| Language | Formatter (first one installed is used) |
+| --- | --- |
+| Rust | `rustfmt` |
+| Python | `ruff format`, then `black` |
+| Shell | `shfmt` |
+| YAML | `prettier`, then `yamlfmt` |
+| JSON | `prettier`, then `jq` |
+| TOML | `taplo` |
+| Terraform | `terraform fmt` |
+| Go | `gofmt` |
+| JavaScript, TypeScript, CSS, HTML, Markdown | `prettier` |
+| C, C++, Java | `clang-format` |
+
+- Install the formatters you want with your usual tools, for example
+  `brew install ruff shfmt prettier`. Mellow does not bundle them.
+- The formatter runs in the file's folder, so project settings such as
+  `rustfmt.toml`, `pyproject.toml` or `.prettierrc` apply.
+- Formatting is one edit: `Ctrl+Z` after saving shows your text as typed.
+- If the formatter is missing, fails (for example on a syntax error) or takes
+  over 10 seconds, the file is saved exactly as typed and the status line says
+  why.
+- Windows (CRLF) line endings are kept.
+- To use another formatter, set `MELLOW_FORMAT_<LANGUAGE>` to a command that
+  reads the file on stdin and prints the result; `{path}` is replaced by the
+  file's path. For example:
+
+    ```bash
+    export MELLOW_FORMAT_PYTHON="black -q --stdin-filename {path} -"
+    ```
+
+While you type, Enter keeps the current indentation and indents one more
+level after `{`, `(` or `[` (and after `:` in Python and YAML), in every file.
 
 ## Command-line options
 

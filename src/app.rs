@@ -407,6 +407,9 @@ pub struct App {
     pub show_indent_guides: bool,
     pub auto_completion_enabled: bool,
     pub copy_on_select: bool,
+    pub format_on_save: bool,
+    /// `MELLOW_FORMAT_<LANGUAGE>` overrides, read once at startup.
+    formatter_overrides: std::collections::HashMap<String, String>,
     pub settings_selected: usize,
     pub ai_query: TextInput,
     ai_context: Option<AiContextSnapshot>,
@@ -715,6 +718,8 @@ impl App {
             show_indent_guides: editor_settings.show_indent_guides,
             auto_completion_enabled: editor_settings.auto_completion,
             copy_on_select: editor_settings.copy_on_select,
+            format_on_save: editor_settings.format_on_save,
+            formatter_overrides: crate::format::overrides_from_env(),
             settings_selected: 0,
             ai_query: TextInput::default(),
             ai_context: None,
@@ -1088,6 +1093,7 @@ impl App {
             explorer_visible: self.explorer_visible,
             auto_completion: self.auto_completion_enabled,
             copy_on_select: self.copy_on_select,
+            format_on_save: self.format_on_save,
         }
     }
 
@@ -1101,7 +1107,7 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent) {
-        const COUNT: usize = 8;
+        const COUNT: usize = 9;
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
@@ -1143,7 +1149,8 @@ impl App {
                         }
                     }
                     6 => self.copy_on_select = !self.copy_on_select,
-                    7 => {
+                    7 => self.format_on_save = !self.format_on_save,
+                    8 => {
                         self.open_ai_setup(false);
                         return;
                     }
@@ -2534,6 +2541,7 @@ impl App {
                     path = self.workspace_root.join(path);
                 }
                 let prior_key = self.buffer.recovery_key();
+                let note = self.format_before_save(&path);
                 match self.buffer.save_as(path.clone()) {
                     Ok(()) => {
                         let _ = self.journal.clear_now(&prior_key);
@@ -2542,7 +2550,10 @@ impl App {
                         self.post_save_action = PostSaveAction::None;
                         self.save_as_query.clear();
                         self.mode = AppMode::Editing;
-                        self.status = Some(format!("Saved as {}", self.short_path(&path)));
+                        self.status = Some(match note {
+                            Some(note) => format!("Saved as {} · {note}", self.short_path(&path)),
+                            None => format!("Saved as {}", self.short_path(&path)),
+                        });
                         self.reset_active_code_intelligence();
                         self.finish_post_save(post_action);
                     }
@@ -2589,21 +2600,114 @@ impl App {
                 self.mode = AppMode::SaveConflict;
                 self.status = None;
             }
-            Ok(None) => match self.buffer.save() {
-                Ok(()) => {
-                    let _ = self.journal.clear_now(&self.buffer.recovery_key());
-                    self.last_journal_revision = None;
-                    self.status = Some("Saved".to_owned());
-                    self.finish_post_save(post_action);
+            Ok(None) => {
+                let note = self
+                    .buffer
+                    .path()
+                    .cloned()
+                    .and_then(|path| self.format_before_save(&path));
+                match self.buffer.save() {
+                    Ok(()) => {
+                        let _ = self.journal.clear_now(&self.buffer.recovery_key());
+                        self.last_journal_revision = None;
+                        self.status = Some(match note {
+                            Some(note) => format!("Saved · {note}"),
+                            None => "Saved".to_owned(),
+                        });
+                        self.finish_post_save(post_action);
+                    }
+                    Err(error) => {
+                        self.status = Some(format!("Save failed: {error}"));
+                    }
                 }
-                Err(error) => {
-                    self.status = Some(format!("Save failed: {error}"));
-                }
-            },
+            }
             Err(error) => {
                 self.status = Some(format!("Save failed: {error}"));
             }
         }
+    }
+
+    /// Enter keeps the line's indentation and steps in after a line that
+    /// opens a block: `{`, `(` or `[` in any file, `:` in Python and YAML.
+    /// Between a bracket pair the closer moves to its own line. One undo
+    /// removes it all.
+    fn smart_newline(&mut self) {
+        use unicode_segmentation::UnicodeSegmentation;
+        let line = self.buffer.line_text(self.cursor.row);
+        let graphemes: Vec<&str> = line.graphemes(true).collect();
+        let col = self.cursor.col.min(graphemes.len());
+        let before = graphemes[..col].concat();
+        let after = graphemes[col..].concat();
+        let base: String = before
+            .chars()
+            .take_while(|ch| matches!(ch, ' ' | '\t'))
+            .collect();
+        let trimmed = before.trim_end();
+        let colon_opens = matches!(self.buffer.language(), "Python" | "YAML");
+        let opener = trimmed
+            .chars()
+            .last()
+            .filter(|ch| matches!(ch, '{' | '(' | '[') || (colon_opens && *ch == ':'));
+        let Some(opener) = opener else {
+            self.buffer
+                .insert_text(&mut self.cursor, &format!("\n{base}"));
+            return;
+        };
+        let inner = format!("{base}{}", self.buffer.indent_unit());
+        let closer = match opener {
+            '{' => Some('}'),
+            '(' => Some(')'),
+            '[' => Some(']'),
+            _ => None,
+        };
+        if closer.is_some() && after.trim_start().starts_with(closer.unwrap_or_default()) {
+            self.buffer
+                .insert_text(&mut self.cursor, &format!("\n{inner}\n{base}"));
+            self.cursor.row -= 1;
+            self.cursor.col = inner.chars().count();
+        } else {
+            self.buffer
+                .insert_text(&mut self.cursor, &format!("\n{inner}"));
+        }
+    }
+
+    /// With format on save on, runs the file's formatter over the buffer as
+    /// one undoable edit. Returns a note for the status line; any problem
+    /// leaves the text exactly as typed.
+    fn format_before_save(&mut self, path: &std::path::Path) -> Option<String> {
+        if !self.format_on_save {
+            return None;
+        }
+        let language = crate::buffer::language_for_path(Some(path));
+        let command = match crate::format::formatter_for(language, path, &self.formatter_overrides)
+        {
+            Ok(command) => command,
+            Err(reason) => return Some(format!("not formatted: {reason}")),
+        };
+        let program = std::path::Path::new(&command[0]).file_name().map_or_else(
+            || command[0].clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let original = self.buffer.contents();
+        let formatted = match crate::format::run(&command, &original, path) {
+            Ok(formatted) => formatted,
+            Err(error) => return Some(format!("not formatted: {error}")),
+        };
+        let crlf = matches!(self.buffer.line_ending(), crate::buffer::LineEnding::CrLf);
+        if crate::format::match_line_endings(&formatted, crlf) == original {
+            return Some(format!("already tidy ({program})"));
+        }
+        let cursor = self.cursor;
+        let last_row = self.buffer.line_count().saturating_sub(1);
+        let end = Cursor::new(last_row, self.buffer.grapheme_count(last_row));
+        self.buffer
+            .replace_range(Cursor::new(0, 0), end, &formatted, &mut self.cursor);
+        // Stay on the same line; formatting moves text, not the reader.
+        self.cursor.row = cursor.row.min(self.buffer.line_count().saturating_sub(1));
+        self.cursor.col = cursor.col.min(self.buffer.grapheme_count(self.cursor.row));
+        self.selection_anchor = None;
+        self.sync_code_intelligence_after_edit();
+        Some(format!("formatted with {program}"))
     }
 
     fn handle_save_conflict_key(&mut self, key: KeyEvent) {
@@ -7868,7 +7972,7 @@ impl App {
                 if mouse.column > x
                     && mouse.column < x + width - 1
                     && mouse.row >= y
-                    && mouse.row < y + 8
+                    && mouse.row < y + 9
                 {
                     self.settings_selected = usize::from(mouse.row - y);
                     self.handle_settings_key(KeyEvent::new(
@@ -9544,7 +9648,7 @@ impl App {
                         self.selection_anchor,
                     );
                 } else {
-                    self.buffer.insert_newline(&mut self.cursor);
+                    self.smart_newline();
                 }
             }
             Command::Backspace => {
@@ -12960,6 +13064,190 @@ mod tests {
 
         assert_eq!(recovery::load(&kept).unwrap().unwrap().content, "keep me");
         recovery::clear(&kept).unwrap();
+    }
+
+    /// Opens `text` as `name` with the cursor at the end of line `row`, then
+    /// presses Enter.
+    fn press_enter_at_end(name: &str, text: &str, row: usize) -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.cursor = Cursor::new(row, app.buffer.grapheme_count(row));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        (dir, app)
+    }
+
+    #[test]
+    fn enter_keeps_the_indentation_of_the_line_in_every_file_type() {
+        for (name, text) in [
+            ("main.rs", "fn main() {\n    let x = 1;\n}\n"),
+            ("deploy.sh", "if true; then\n    echo hi\nfi\n"),
+            ("notes.txt", "list:\n    first item\n"),
+        ] {
+            let (_dir, app) = press_enter_at_end(name, text, 1);
+            assert_eq!(app.buffer.line_text(2), "    ", "{name}");
+            assert_eq!(app.cursor, Cursor::new(2, 4), "{name}");
+        }
+    }
+
+    #[test]
+    fn enter_after_a_block_opener_indents_one_more_level() {
+        let cases = [
+            ("lib.py", "def area(r):\n", "    "),
+            ("lib.py", "    if r > 0:\n", "        "),
+            ("config.yaml", "services:\n", "    "),
+            ("main.rs", "fn main() {\n", "    "),
+            ("app.js", "call(\n", "    "),
+            ("data.json", "[\n", "    "),
+        ];
+        for (name, text, expected) in cases {
+            let (_dir, app) = press_enter_at_end(name, text, 0);
+            assert_eq!(app.buffer.line_text(1), expected, "{name}: {text:?}");
+        }
+        // `:` opens a block only where the language says so.
+        let (_dir, app) = press_enter_at_end("notes.txt", "Note:\n", 0);
+        assert_eq!(app.buffer.line_text(1), "");
+    }
+
+    #[test]
+    fn enter_between_brackets_puts_the_closer_on_its_own_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "    if ok {}\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.cursor = Cursor::new(0, 11); // between { and }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        assert_eq!(app.buffer.contents(), "    if ok {\n        \n    }\n");
+        assert_eq!(app.cursor, Cursor::new(1, 8));
+
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "    if ok {}\n", "one undo");
+    }
+
+    #[test]
+    fn enter_indents_with_tabs_in_a_tab_indented_file() {
+        let (_dir, app) = press_enter_at_end("Makefile", "all:\n\tcc main.c\n", 1);
+        assert_eq!(app.buffer.line_text(2), "\t");
+        let (_dir, app) = press_enter_at_end("main.go", "func main() {\n\tx := 1\n}\n", 0);
+        assert_eq!(app.buffer.line_text(1), "\t");
+    }
+
+    /// A workspace with `name` holding `text` and an executable fake
+    /// formatter `fmt.sh` running `script` (stdin to stdout).
+    #[cfg(unix)]
+    fn format_fixture(name: &str, text: &str, script: &str) -> (tempfile::TempDir, PathBuf, App) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        let formatter = dir.path().join("fmt.sh");
+        std::fs::write(&formatter, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&formatter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.formatter_overrides = std::collections::HashMap::from([(
+            crate::buffer::language_for_path(Some(&path)).to_owned(),
+            formatter.to_string_lossy().into_owned(),
+        )]);
+        (dir, path, app)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_on_save_runs_the_formatter_and_one_undo_restores_the_typed_text() {
+        let (_dir, path, mut app) = format_fixture("calc.py", "x=1\n", "sed 's/=/ = /'");
+        app.format_on_save = true;
+        app.execute(Command::Insert('#'));
+        app.execute(Command::Save);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "#x = 1\n");
+        assert_eq!(app.status.as_deref(), Some("Saved · formatted with fmt.sh"));
+        assert!(!app.buffer.is_dirty());
+        app.execute(Command::Undo);
+        assert_eq!(
+            app.buffer.contents(),
+            "#x=1\n",
+            "one undo removes the formatting"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_on_save_is_off_unless_chosen() {
+        let (_dir, path, mut app) = format_fixture("calc.py", "x=1\n", "sed 's/=/ = /'");
+        assert!(!app.format_on_save);
+        app.execute(Command::Insert('#'));
+        app.execute(Command::Save);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "#x=1\n");
+        assert_eq!(app.status.as_deref(), Some("Saved"));
+    }
+
+    /// A syntax error or a missing formatter must never cost the save.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_or_missing_formatter_saves_the_text_unchanged_and_says_why() {
+        let (_dir, path, mut app) = format_fixture(
+            "deploy.sh",
+            "echo hi\n",
+            "echo 'deploy.sh:2:1: if statement must end with fi' >&2; exit 1",
+        );
+        app.format_on_save = true;
+        app.execute(Command::Insert('#'));
+        app.execute(Command::Save);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "#echo hi\n");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("Saved · not formatted: fmt.sh: deploy.sh:2:1: if statement must end with fi")
+        );
+
+        app.formatter_overrides
+            .insert("Shell".to_owned(), "/nonexistent/shfmt".to_owned());
+        app.execute(Command::Insert('#'));
+        app.execute(Command::Save);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "##echo hi\n");
+        assert!(
+            app.status.as_deref().is_some_and(|status| status
+                .starts_with("Saved · not formatted: could not start /nonexistent/shfmt")),
+            "{:?}",
+            app.status
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_on_save_keeps_windows_line_endings() {
+        let (_dir, path, mut app) = format_fixture("a.py", "a=1\r\nb=2\r\n", "sed 's/=/ = /'");
+        app.format_on_save = true;
+        app.execute(Command::Insert('#'));
+        app.execute(Command::Save);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#a = 1\r\nb = 2\r\n"
+        );
+    }
+
+    /// The real thing, where rustfmt is installed (CI has it).
+    #[test]
+    fn format_on_save_with_rustfmt_tidies_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "fn main(){let x=1;println!(\"{x}\");}\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.formatter_overrides.clear();
+        if crate::format::formatter_for("Rust", &path, &app.formatter_overrides).is_err() {
+            return; // rustfmt not installed here
+        }
+        app.format_on_save = true;
+        app.execute(Command::Save);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n"
+        );
+        assert_eq!(
+            app.status.as_deref(),
+            Some("Saved · formatted with rustfmt")
+        );
     }
 
     /// P1 regression: every keystroke wrote and fsynced the recovery journal

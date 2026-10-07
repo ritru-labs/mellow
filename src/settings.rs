@@ -17,6 +17,8 @@ pub struct EditorSettings {
     pub explorer_visible: bool,
     pub auto_completion: bool,
     pub copy_on_select: bool,
+    /// Run the language's formatter (rustfmt, ruff, shfmt...) when saving.
+    pub format_on_save: bool,
 }
 
 impl Default for EditorSettings {
@@ -30,6 +32,8 @@ impl Default for EditorSettings {
             auto_completion: true,
             // Dragging should never silently replace the system clipboard.
             copy_on_select: false,
+            // Never reformat someone's files unless they ask for it.
+            format_on_save: false,
         }
     }
 }
@@ -85,6 +89,7 @@ pub fn load_from(path: &Path) -> Result<EditorSettings> {
             "explorer_visible" => settings.explorer_visible = parse_bool(path, index, value)?,
             "auto_completion" => settings.auto_completion = parse_bool(path, index, value)?,
             "copy_on_select" => settings.copy_on_select = parse_bool(path, index, value)?,
+            "format_on_save" => settings.format_on_save = parse_bool(path, index, value)?,
             _ => anyhow::bail!("{}:{} unknown setting '{}'", path.display(), index + 1, key),
         }
     }
@@ -96,7 +101,7 @@ pub fn write(settings: EditorSettings) -> Result<PathBuf> {
     let parent = path.parent().context("settings path has no parent")?;
     fs::create_dir_all(parent)?;
     let text = format!(
-        "theme = {}\nword_wrap = {}\nshow_whitespace = {}\nshow_indent_guides = {}\nexplorer_visible = {}\nauto_completion = {}\ncopy_on_select = {}\n",
+        "theme = {}\nword_wrap = {}\nshow_whitespace = {}\nshow_indent_guides = {}\nexplorer_visible = {}\nauto_completion = {}\ncopy_on_select = {}\nformat_on_save = {}\n",
         settings.theme_preset.config_name(),
         settings.word_wrap,
         settings.show_whitespace,
@@ -104,6 +109,7 @@ pub fn write(settings: EditorSettings) -> Result<PathBuf> {
         settings.explorer_visible,
         settings.auto_completion,
         settings.copy_on_select,
+        settings.format_on_save,
     );
     let temp = parent.join(format!(".settings-{}.tmp", std::process::id()));
     let mut options = OpenOptions::new();
@@ -183,6 +189,17 @@ fn parse_bool(path: &Path, index: usize, value: &str) -> Result<bool> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn format_on_save_is_off_by_default_and_read_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.conf");
+        assert!(!EditorSettings::default().format_on_save);
+        fs::write(&path, "format_on_save = true\n").unwrap();
+        assert!(load_from(&path).unwrap().format_on_save);
+        fs::write(&path, "format_on_save = off\n").unwrap();
+        assert!(!load_from(&path).unwrap().format_on_save);
+    }
 
     #[test]
     fn design_lock_copy_on_select_setting_is_optional_and_explicit() {

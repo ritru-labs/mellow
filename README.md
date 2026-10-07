@@ -86,6 +86,7 @@ Change settings in the Settings screen (`Ctrl+P`, then "Open settings"), or edit
 ```ini
 theme = tokyo-night
 word_wrap = true
+format_on_save = true   # tidy with rustfmt, ruff, shfmt, prettier... on save
 ```
 
 Themes: `dark`, `light`, `high-contrast`, `tokyo-night`, `catppuccin-mocha`,
