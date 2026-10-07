@@ -32,6 +32,12 @@ brew install ritru-labs/tap/mellow
 On macOS, use one of these two rather than downloading in a browser: the builds
 are not yet signed by Apple, so macOS blocks browser downloads.
 
+With Cargo (Rust 1.90 or newer):
+
+```bash
+cargo install mellow --locked
+```
+
 Debian/Ubuntu `.deb`, Fedora/RHEL `.rpm`, plain archives and building from
 source: see [Install](https://ritru-labs.github.io/mellow/install/).
 

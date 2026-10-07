@@ -64,6 +64,14 @@ against `SHA256SUMS`, unpack it and put `mellow` on your `PATH`:
 | Linux x86_64 | `mellow-<version>-x86_64-unknown-linux-musl.tar.gz` |
 | Linux ARM64 | `mellow-<version>-aarch64-unknown-linux-musl.tar.gz` |
 
+## With Cargo
+
+If you have Rust 1.90 or newer:
+
+```bash
+cargo install mellow --locked
+```
+
 ## From source
 
 With Rust 1.90 or newer:
@@ -88,6 +96,7 @@ mellow --version
 | Homebrew | `brew upgrade mellow` | `brew uninstall mellow` |
 | `.deb` | install the newer `.deb` | `sudo apt remove mellow` |
 | `.rpm` | install the newer `.rpm` | `sudo dnf remove mellow` |
+| Cargo | `cargo install mellow --locked` | `cargo uninstall mellow` |
 
 Your settings and recovery data live in `~/.config/mellow` and
 `~/.local/state/mellow`; delete those folders to remove them too.
