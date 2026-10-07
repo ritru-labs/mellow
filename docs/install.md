@@ -47,9 +47,19 @@ On ARM64, use `mellow_0.2.0_arm64.deb`.
 sudo dnf install https://github.com/ritru-labs/mellow/releases/download/v0.2.0/mellow-0.2.0-1.x86_64.rpm
 ```
 
-On ARM64, use `mellow-0.2.0-1.aarch64.rpm`.
+On ARM64, use `mellow-0.2.0-1.aarch64.rpm`. On Amazon Linux 2, use `yum`
+instead of `dnf`. On openSUSE:
+
+```bash
+sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.2.0/mellow-0.2.0-1.x86_64.rpm
+```
 
 The Linux builds are static, so they run on old and new distributions alike.
+
+**Tested on** (install, then edit, save and quit in a real terminal): Amazon
+Linux 2 and 2023, Rocky Linux 9, AlmaLinux 8, CentOS Stream 9, Fedora,
+openSUSE Leap 15.6, Debian 11 and 12, Ubuntu 20.04, 22.04 and 24.04, Alpine
+3.20 and Arch Linux, on x86_64 and ARM64; and macOS on Apple silicon.
 
 ## Any Linux or macOS, by hand
 
