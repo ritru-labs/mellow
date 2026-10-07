@@ -21,6 +21,7 @@ exclude = [
     "Makefile",
     "compose.yml",
     "docs",
+    "mkdocs.yml",
     "packaging",
     "scripts",
 ]

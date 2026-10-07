@@ -1,0 +1,56 @@
+site_name: Mellow
+site_description: The calm terminal editor. No modes, no manual, just start typing.
+site_url: https://ritru-labs.github.io/mellow/
+repo_url: https://github.com/ritru-labs/mellow
+repo_name: ritru-labs/mellow
+edit_uri: edit/main/docs/
+copyright: Mellow is crafted by Ritru Labs. Apache-2.0.
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - content.code.copy
+    - navigation.footer
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Getting started: getting-started.md
+  - Keys: keys.md
+  - Themes: themes.md
+  - Settings: settings.md
+  - Language servers: language-servers.md
+  - AI: ai.md
+  - FAQ: faq.md
+  - Project:
+      - Product: PRODUCT.md
+      - Design contract: DESIGN_CONTRACT.md
+      - Architecture: ARCHITECTURE.md
+      - Testing: TESTING.md
+      - Visual QA: VISUAL_QA.md
+      - Release checklist: RELEASE_CHECKLIST.md
