@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (beta)
+
+Format on save for every language, smart Enter, and a faster crash journal.
 
 ### Added
 
