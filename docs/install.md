@@ -35,23 +35,23 @@ browser-downloaded copies.
 ## Debian and Ubuntu
 
 ```bash
-curl -fsSLO https://github.com/ritru-labs/mellow/releases/download/v0.2.0/mellow_0.2.0_amd64.deb
-sudo apt install ./mellow_0.2.0_amd64.deb
+curl -fsSLO https://github.com/ritru-labs/mellow/releases/download/v0.2.1/mellow_0.2.1_amd64.deb
+sudo apt install ./mellow_0.2.1_amd64.deb
 ```
 
-On ARM64, use `mellow_0.2.0_arm64.deb`.
+On ARM64, use `mellow_0.2.1_arm64.deb`.
 
 ## Fedora, RHEL, Rocky, Alma
 
 ```bash
-sudo dnf install https://github.com/ritru-labs/mellow/releases/download/v0.2.0/mellow-0.2.0-1.x86_64.rpm
+sudo dnf install https://github.com/ritru-labs/mellow/releases/download/v0.2.1/mellow-0.2.1-1.x86_64.rpm
 ```
 
-On ARM64, use `mellow-0.2.0-1.aarch64.rpm`. On Amazon Linux 2, use `yum`
+On ARM64, use `mellow-0.2.1-1.aarch64.rpm`. On Amazon Linux 2, use `yum`
 instead of `dnf`. On openSUSE:
 
 ```bash
-sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.2.0/mellow-0.2.0-1.x86_64.rpm
+sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.2.1/mellow-0.2.1-1.x86_64.rpm
 ```
 
 The Linux builds are static, so they run on old and new distributions alike.

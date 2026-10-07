@@ -39,10 +39,12 @@ shows the keys. [Getting started](getting-started.md) covers the first minute.
 - Mouse support: click, drag, double-click, scroll.
 - Six themes, a project file tree, tabs and split panes.
 - Find and replace, in one file or the whole project.
+- Smart indentation as you type, and optional format on save with your
+  language's formatter (rustfmt, ruff, shfmt, prettier...).
 - A Git panel: changes, staging, commit, branches, pull and push.
 - A built-in terminal.
 - Language servers for completion, problems and go to definition.
 - Optional AI that shows every change for review before applying it.
 - Crash recovery: unsaved work comes back after a crash.
 
-Mellow 0.2.0 is a beta. It runs on macOS and Linux.
+Mellow 0.2.1 is a beta. It runs on macOS and Linux.

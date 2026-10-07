@@ -9,7 +9,7 @@ away.
 
 ![Mellow in four themes](docs/images/themes.png)
 
-**Version 0.2.0, beta.** Runs on macOS and Linux. Documentation:
+**Version 0.2.1, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
 
 ## Install
@@ -71,6 +71,8 @@ ones yours can send. All keys: [Keys](https://ritru-labs.github.io/mellow/keys/)
 - Mouse support: click, drag, double-click, scroll.
 - Six themes, a project file tree, tabs and split panes.
 - Find and replace in a file or across the project.
+- Smart indentation as you type, and optional format on save with your
+  language's formatter (rustfmt, ruff, shfmt, prettier...).
 - A Git panel: changes, staging, commit, branches, pull and push, all running in
   the background.
 - A built-in terminal.
