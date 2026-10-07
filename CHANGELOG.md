@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The crash-recovery journal is written on a background thread, at most
+  about once a second while you type, instead of being synced to disk on
+  every keystroke. A slow disk no longer slows typing. Saving, closing and
+  quitting still wait for it, so no stale draft is left behind.
+
 ## 0.2.0 (beta)
 
 First release you can install with one command.

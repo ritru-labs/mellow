@@ -1,8 +1,12 @@
+#[cfg(test)]
+use std::sync::Arc;
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::mpsc,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -132,6 +136,182 @@ pub fn remove_journal(journal: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error)
             .with_context(|| format!("failed to remove recovery journal {}", journal.display())),
+    }
+}
+
+/// Writes journals on a background thread, so the disk syncs behind crash
+/// safety never delay typing. Queued jobs for one journal are merged: only
+/// the newest write or clear for it reaches the disk.
+pub struct JournalWriter {
+    /// `None` if the thread could not start; jobs then run inline.
+    jobs: Option<mpsc::Sender<Job>>,
+    failures: mpsc::Receiver<String>,
+    report: mpsc::Sender<String>,
+    #[cfg(test)]
+    test: Arc<WriterTestHooks>,
+}
+
+enum Job {
+    Write(RecoveryKey, String),
+    Clear(RecoveryKey),
+    Idle(mpsc::Sender<()>),
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct WriterTestHooks {
+    paused: std::sync::atomic::AtomicBool,
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+/// Holds the journal thread before its next batch, like a stalled disk.
+#[cfg(test)]
+pub struct PausedJournal(Arc<WriterTestHooks>);
+
+#[cfg(test)]
+impl Drop for PausedJournal {
+    fn drop(&mut self) {
+        self.0
+            .paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Longest wait for queued journal work at a sync point (quit, save, close).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl JournalWriter {
+    pub fn start() -> Self {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (report, failures) = mpsc::channel();
+        #[cfg(test)]
+        let test = Arc::new(WriterTestHooks::default());
+        let worker_report = report.clone();
+        #[cfg(test)]
+        let worker_test = Arc::clone(&test);
+        let started = thread::Builder::new()
+            .name("mellow-journal".to_owned())
+            .spawn(move || {
+                while let Ok(first) = inbox.recv() {
+                    #[cfg(test)]
+                    while worker_test.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    let mut latest: Vec<(RecoveryKey, Option<String>)> = Vec::new();
+                    let mut idle_waiters = Vec::new();
+                    for job in std::iter::once(first).chain(inbox.try_iter()) {
+                        let (key, content) = match job {
+                            Job::Write(key, content) => (key, Some(content)),
+                            Job::Clear(key) => (key, None),
+                            Job::Idle(waiter) => {
+                                idle_waiters.push(waiter);
+                                continue;
+                            }
+                        };
+                        match latest.iter_mut().find(|(queued, _)| *queued == key) {
+                            Some(entry) => entry.1 = content,
+                            None => latest.push((key, content)),
+                        }
+                    }
+                    for (key, content) in latest {
+                        #[cfg(test)]
+                        if content.is_some() {
+                            worker_test
+                                .writes
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let result = match content {
+                            Some(content) => write(&key, &content).map(drop),
+                            None => clear(&key),
+                        };
+                        if let Err(error) = result {
+                            let _ = worker_report.send(error.to_string());
+                        }
+                    }
+                    for waiter in idle_waiters {
+                        let _ = waiter.send(());
+                    }
+                }
+            });
+        Self {
+            jobs: started.ok().map(|_| jobs),
+            failures,
+            report,
+            #[cfg(test)]
+            test,
+        }
+    }
+
+    /// Queues the newest content of a journal.
+    pub fn write(&self, key: RecoveryKey, content: String) {
+        self.queue(Job::Write(key, content));
+    }
+
+    /// Queues removal of a journal.
+    pub fn clear(&self, key: RecoveryKey) {
+        self.queue(Job::Clear(key));
+    }
+
+    fn queue(&self, job: Job) {
+        let job = match &self.jobs {
+            Some(jobs) => match jobs.send(job) {
+                Ok(()) => return,
+                Err(mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        let result = match job {
+            Job::Write(key, content) => write(&key, &content).map(drop),
+            Job::Clear(key) => clear(&key),
+            Job::Idle(_) => Ok(()),
+        };
+        if let Err(error) = result {
+            let _ = self.report.send(error.to_string());
+        }
+    }
+
+    /// Waits until everything queued so far is on disk.
+    pub fn wait_idle(&self) {
+        let Some(jobs) = &self.jobs else {
+            return;
+        };
+        let (done, finished) = mpsc::channel();
+        if jobs.send(Job::Idle(done)).is_ok() {
+            let _ = finished.recv_timeout(IDLE_TIMEOUT);
+        }
+    }
+
+    /// Writes now, after anything queued, so an older queued write can never
+    /// land on top of it.
+    pub fn write_now(&self, key: &RecoveryKey, content: &str) -> Result<PathBuf> {
+        self.wait_idle();
+        write(key, content)
+    }
+
+    /// Clears now, after anything queued, so a queued write can never bring
+    /// the journal back.
+    pub fn clear_now(&self, key: &RecoveryKey) -> Result<()> {
+        self.wait_idle();
+        clear(key)
+    }
+
+    /// Errors from background writes since the last call.
+    pub fn take_failures(&self) -> Vec<String> {
+        self.failures.try_iter().collect()
+    }
+
+    /// Holds the worker before its next batch until the guard is dropped.
+    #[cfg(test)]
+    pub fn pause(&self) -> PausedJournal {
+        self.test
+            .paused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        PausedJournal(Arc::clone(&self.test))
+    }
+
+    #[cfg(test)]
+    pub fn writes_performed(&self) -> usize {
+        self.test.writes.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -282,6 +462,45 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn queued_journal_work_keeps_only_the_newest_job_per_journal() {
+        let dir = tempdir().unwrap();
+        let key = |name: &str| RecoveryKey::File(dir.path().join(name));
+        let writer = JournalWriter::start();
+
+        let paused = writer.pause();
+        writer.write(key("a"), "old".to_owned());
+        writer.write(key("a"), "new".to_owned());
+        writer.write(key("gone"), "saved meanwhile".to_owned());
+        writer.clear(key("gone"));
+        writer.write(key("b"), "kept".to_owned());
+        drop(paused);
+        writer.wait_idle();
+
+        assert_eq!(load(&key("a")).unwrap().unwrap().content, "new");
+        assert!(load(&key("gone")).unwrap().is_none());
+        assert_eq!(load(&key("b")).unwrap().unwrap().content, "kept");
+        assert_eq!(writer.writes_performed(), 2, "a once, b once");
+        assert!(writer.take_failures().is_empty());
+        clear(&key("a")).unwrap();
+        clear(&key("b")).unwrap();
+    }
+
+    /// Saving clears the journal: a write still queued from typing must not
+    /// land afterwards and offer stale text as "unsaved" on the next start.
+    #[test]
+    fn clear_now_is_never_overtaken_by_a_queued_write() {
+        let dir = tempdir().unwrap();
+        let key = RecoveryKey::File(dir.path().join("saved.txt"));
+        let writer = JournalWriter::start();
+        for round in 0..20 {
+            writer.write(key.clone(), format!("typed before save {round}"));
+            writer.clear_now(&key).unwrap();
+            writer.wait_idle();
+            assert!(load(&key).unwrap().is_none(), "round {round}");
+        }
+    }
 
     #[test]
     fn recovery_round_trip_and_clear() {

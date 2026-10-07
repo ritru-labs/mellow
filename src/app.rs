@@ -41,6 +41,8 @@ use crate::{
 const TAB_WIDTH: usize = 4;
 const MOUSE_SCROLL_LINES: usize = 3;
 const LAUNCH_BANNER_DURATION: Duration = Duration::from_secs(6);
+/// While typing, a dirty buffer's journal is rewritten at most this often.
+const JOURNAL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -532,6 +534,9 @@ pub struct App {
     should_quit: bool,
     post_save_action: PostSaveAction,
     last_journal_revision: Option<u64>,
+    /// Crash-recovery journals are written off the input thread.
+    journal: recovery::JournalWriter,
+    last_journal_sent: Instant,
     is_mouse_dragging: bool,
     last_click_at: Option<Instant>,
     last_click_pos: Option<(u16, u16)>,
@@ -831,6 +836,11 @@ impl App {
             should_quit: false,
             post_save_action: PostSaveAction::None,
             last_journal_revision: None,
+            journal: recovery::JournalWriter::start(),
+            // Already due: the first edit is journaled at once.
+            last_journal_sent: Instant::now()
+                .checked_sub(JOURNAL_INTERVAL)
+                .unwrap_or_else(Instant::now),
             is_mouse_dragging: false,
             last_click_at: None,
             launch_banner_until: None,
@@ -859,8 +869,10 @@ impl App {
             self.poll_git_operation();
             self.refresh_git_state(false);
             self.poll_external_file_changes();
+            self.journal_if_due();
             if terminal::termination_requested() {
                 self.sync_recovery_journal();
+                self.flush_journal();
                 self.sync_session_state();
                 self.should_quit = true;
                 break;
@@ -894,25 +906,27 @@ impl App {
                         continue;
                     }
                     self.handle_key(key);
-                    self.sync_recovery_journal();
+                    self.journal_if_due();
                 }
                 Event::Paste(text) => {
                     if is_too_small {
                         continue;
                     }
                     self.handle_paste(&text);
-                    self.sync_recovery_journal();
+                    self.journal_if_due();
                 }
                 Event::Mouse(mouse) => {
                     if is_too_small {
                         continue;
                     }
                     self.handle_mouse(mouse, size.width, size.height);
-                    self.sync_recovery_journal();
+                    self.journal_if_due();
                 }
                 Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {}
             }
         }
+        // Queued clears must land, or the next start would offer stale drafts.
+        self.flush_journal();
         self.sync_session_state();
         Ok(())
     }
@@ -2522,8 +2536,8 @@ impl App {
                 let prior_key = self.buffer.recovery_key();
                 match self.buffer.save_as(path.clone()) {
                     Ok(()) => {
-                        let _ = recovery::clear(&prior_key);
-                        let _ = recovery::clear(&self.buffer.recovery_key());
+                        let _ = self.journal.clear_now(&prior_key);
+                        let _ = self.journal.clear_now(&self.buffer.recovery_key());
                         let post_action = self.post_save_action;
                         self.post_save_action = PostSaveAction::None;
                         self.save_as_query.clear();
@@ -2577,7 +2591,7 @@ impl App {
             }
             Ok(None) => match self.buffer.save() {
                 Ok(()) => {
-                    let _ = recovery::clear(&self.buffer.recovery_key());
+                    let _ = self.journal.clear_now(&self.buffer.recovery_key());
                     self.last_journal_revision = None;
                     self.status = Some("Saved".to_owned());
                     self.finish_post_save(post_action);
@@ -2615,7 +2629,7 @@ impl App {
                 let post_action = self.post_save_action;
                 match self.buffer.force_save() {
                     Ok(()) => {
-                        let _ = recovery::clear(&self.buffer.recovery_key());
+                        let _ = self.journal.clear_now(&self.buffer.recovery_key());
                         self.last_journal_revision = None;
                         self.post_save_action = PostSaveAction::None;
                         self.conflict_reason = None;
@@ -2650,8 +2664,9 @@ impl App {
                     // Journal the draft under this buffer before letting go of the
                     // earlier session's copy, so a crash here loses nothing.
                     self.sync_recovery_journal();
+                    let journaled = self.flush_journal();
                     if let Some(journal) = record.orphan_journal
-                        && self.last_journal_revision.is_some()
+                        && journaled
                         && let Err(error) = recovery::remove_journal(&journal)
                     {
                         self.status = Some(format!("Recovery cleanup failed: {error}"));
@@ -2659,7 +2674,7 @@ impl App {
                 }
             }
             KeyCode::Char('d' | 'D') => {
-                let _ = recovery::clear(&self.buffer.recovery_key());
+                let _ = self.journal.clear_now(&self.buffer.recovery_key());
                 if let Some(journal) = self
                     .recovery_candidate
                     .as_ref()
@@ -2675,25 +2690,53 @@ impl App {
         }
     }
 
+    /// Queues the active buffer's journal: its content while dirty, removal
+    /// once clean. The disk work happens on the journal thread.
     fn sync_recovery_journal(&mut self) {
+        self.last_journal_sent = Instant::now();
         if self.buffer.is_dirty() {
             let revision = self.buffer.revision();
             if self.last_journal_revision == Some(revision) {
                 return;
             }
-
-            match recovery::write(&self.buffer.recovery_key(), &self.buffer.contents()) {
-                Ok(_) => self.last_journal_revision = Some(revision),
-                Err(error) => {
-                    self.status = Some(format!("Recovery journal failed: {error}"));
-                }
-            }
+            self.journal
+                .write(self.buffer.recovery_key(), self.buffer.contents());
+            self.last_journal_revision = Some(revision);
         } else {
-            if let Err(error) = recovery::clear(&self.buffer.recovery_key()) {
-                self.status = Some(format!("Recovery cleanup failed: {error}"));
-            }
+            self.journal.clear(self.buffer.recovery_key());
             self.last_journal_revision = None;
         }
+    }
+
+    /// Called after every input event and loop tick: journals a changed
+    /// buffer at most once per `JOURNAL_INTERVAL`, so typing never waits on
+    /// the disk and copying a large buffer per keystroke is avoided.
+    fn journal_if_due(&mut self) {
+        self.report_journal_failures();
+        let changed = if self.buffer.is_dirty() {
+            self.last_journal_revision != Some(self.buffer.revision())
+        } else {
+            self.last_journal_revision.is_some()
+        };
+        if changed && self.last_journal_sent.elapsed() >= JOURNAL_INTERVAL {
+            self.sync_recovery_journal();
+        }
+    }
+
+    /// Waits for queued journal work; false if any of it failed.
+    fn flush_journal(&mut self) -> bool {
+        self.journal.wait_idle();
+        self.report_journal_failures()
+    }
+
+    fn report_journal_failures(&mut self) -> bool {
+        let Some(error) = self.journal.take_failures().pop() else {
+            return true;
+        };
+        self.status = Some(format!("Recovery journal failed: {error}"));
+        // Write the active buffer again on the next tick.
+        self.last_journal_revision = None;
+        false
     }
 
     fn begin_save_as(&mut self, post_action: PostSaveAction) {
@@ -4283,8 +4326,9 @@ impl App {
             }
 
             if index == self.active_tab {
-                if let Err(error) =
-                    recovery::write(&self.buffer.recovery_key(), &self.buffer.contents())
+                if let Err(error) = self
+                    .journal
+                    .write_now(&self.buffer.recovery_key(), &self.buffer.contents())
                 {
                     recovery_warnings.push(format!(
                         "recovery journal failed for {}: {error}",
@@ -4294,8 +4338,9 @@ impl App {
                     self.last_journal_revision = Some(self.buffer.revision());
                 }
             } else if let Some(state) = self.tabs[index].state.as_mut() {
-                if let Err(error) =
-                    recovery::write(&state.buffer.recovery_key(), &state.buffer.contents())
+                if let Err(error) = self
+                    .journal
+                    .write_now(&state.buffer.recovery_key(), &state.buffer.contents())
                 {
                     recovery_warnings.push(format!(
                         "recovery journal failed for {}: {error}",
@@ -4324,8 +4369,9 @@ impl App {
                     path.display()
                 ));
             }
-            if let Err(error) =
-                recovery::write(&state.buffer.recovery_key(), &state.buffer.contents())
+            if let Err(error) = self
+                .journal
+                .write_now(&state.buffer.recovery_key(), &state.buffer.contents())
             {
                 recovery_warnings.push(format!(
                     "recovery journal failed for {}: {error}",
@@ -4465,16 +4511,18 @@ impl App {
             }
 
             if *index == self.active_tab {
-                if let Err(error) =
-                    recovery::write(&self.buffer.recovery_key(), &self.buffer.contents())
+                if let Err(error) = self
+                    .journal
+                    .write_now(&self.buffer.recovery_key(), &self.buffer.contents())
                 {
                     recovery_warnings.push(format!("{}: {error}", path.display()));
                 } else {
                     self.last_journal_revision = Some(self.buffer.revision());
                 }
             } else if let Some(state) = self.tabs[*index].state.as_mut() {
-                if let Err(error) =
-                    recovery::write(&state.buffer.recovery_key(), &state.buffer.contents())
+                if let Err(error) = self
+                    .journal
+                    .write_now(&state.buffer.recovery_key(), &state.buffer.contents())
                 {
                     recovery_warnings.push(format!("{}: {error}", path.display()));
                 } else {
@@ -7620,7 +7668,7 @@ impl App {
                 .close_document(closing_path.as_deref());
         }
         if clear_recovery {
-            let _ = recovery::clear(&closing_key);
+            let _ = self.journal.clear_now(&closing_key);
         }
 
         if self.tabs.len() == 1 {
@@ -7739,7 +7787,7 @@ impl App {
 
     fn discard_current_and_continue_quit(&mut self) {
         if self.tabs.len() == 1 {
-            let _ = recovery::clear(&self.buffer.recovery_key());
+            let _ = self.journal.clear_now(&self.buffer.recovery_key());
             self.should_quit = true;
         } else {
             self.close_active_tab_now(true);
@@ -7860,7 +7908,7 @@ impl App {
                     }
                     if mouse.column >= inner_x + 20 && mouse.column < inner_x + 33 {
                         if self.tabs.len() == 1 {
-                            let _ = recovery::clear(&self.buffer.recovery_key());
+                            let _ = self.journal.clear_now(&self.buffer.recovery_key());
                             self.should_quit = true;
                         } else {
                             self.close_active_tab_now(true);
@@ -12829,10 +12877,12 @@ mod tests {
         app.buffer
             .insert_text(&mut app.cursor, "FIRST_UNSAVED_DRAFT");
         app.sync_recovery_journal();
+        app.flush_journal();
         let first = app.buffer.recovery_key();
 
         app.execute(Command::NewFile);
         app.sync_recovery_journal();
+        app.flush_journal();
         assert_eq!(
             recovery::load(&first).unwrap().unwrap().content,
             "FIRST_UNSAVED_DRAFT",
@@ -12842,6 +12892,7 @@ mod tests {
         app.buffer
             .insert_text(&mut app.cursor, "SECOND_UNSAVED_DRAFT");
         app.sync_recovery_journal();
+        app.flush_journal();
         let second = app.buffer.recovery_key();
         assert_ne!(first, second);
         assert_eq!(
@@ -12894,18 +12945,60 @@ mod tests {
         app.workspace_root = dir.path().to_path_buf();
         app.buffer.insert_text(&mut app.cursor, "keep me");
         app.sync_recovery_journal();
+        app.flush_journal();
         let kept = app.buffer.recovery_key();
 
         app.execute(Command::NewFile);
         app.buffer.insert_text(&mut app.cursor, "save me");
         app.sync_recovery_journal();
+        app.flush_journal();
         app.execute(Command::Save);
         app.save_as_query.set("saved.txt".to_owned());
         app.handle_save_as_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
         app.sync_recovery_journal();
+        app.flush_journal();
 
         assert_eq!(recovery::load(&kept).unwrap().unwrap().content, "keep me");
         recovery::clear(&kept).unwrap();
+    }
+
+    /// P1 regression: every keystroke wrote and fsynced the recovery journal
+    /// on the input thread, so a slow disk slowed typing.
+    #[test]
+    fn typing_never_waits_for_the_recovery_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.txt");
+        std::fs::write(&path, "base\n").unwrap();
+        let key = RecoveryKey::File(path.clone());
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+
+        let stalled_disk = app.journal.pause();
+        for ch in "abcdefghij".chars() {
+            app.execute(Command::Insert(ch));
+            app.journal_if_due();
+        }
+        assert!(
+            recovery::load(&key).unwrap().is_none(),
+            "no journal I/O happens on the input thread"
+        );
+        drop(stalled_disk);
+
+        app.flush_journal();
+        assert_eq!(
+            recovery::load(&key).unwrap().unwrap().content,
+            "abase\n",
+            "the first edit is journaled at once, the rest are throttled"
+        );
+        std::thread::sleep(JOURNAL_INTERVAL);
+        app.journal_if_due();
+        app.flush_journal();
+        assert_eq!(
+            recovery::load(&key).unwrap().unwrap().content,
+            app.buffer.contents(),
+            "a pause in typing journals the latest text"
+        );
+        assert_eq!(app.journal.writes_performed(), 2);
+        recovery::clear(&key).unwrap();
     }
 
     #[test]
@@ -12918,6 +13011,7 @@ mod tests {
         app.cursor = Cursor::new(0, 4);
         app.execute(Command::Insert('!'));
         app.sync_recovery_journal();
+        app.flush_journal();
 
         let record = recovery::load(&RecoveryKey::File(path.clone()))
             .unwrap()
