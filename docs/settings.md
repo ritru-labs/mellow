@@ -39,6 +39,7 @@ setting; starting Mellow never rewrites it.
 | Variable | Effect |
 | --- | --- |
 | `MELLOW_SETTINGS=/path/file.conf` | Use another settings file |
+| `MELLOW_KEYMAP=/path/keybindings.conf` | Use another [keybindings file](keys.md#custom-keybindings) |
 | `MELLOW_KEYBOARD_PROTOCOL=off` | Don't enable the kitty keyboard protocol |
 | `MELLOW_LSP_RUST`, `MELLOW_LSP_PYTHON`, … | Use another [language server](language-servers.md) program |
 | `MELLOW_FORMAT_PYTHON`, `MELLOW_FORMAT_SHELL`, … | Use another [formatter](#format-on-save) command |
@@ -95,5 +96,13 @@ level after `{`, `(` or `[` (and after `:` in Python and YAML), in every file.
 
 | Folder | Contents |
 | --- | --- |
-| `~/.config/mellow` | `settings.conf`, and `ai.conf` if you set up AI |
+| `~/.config/mellow` | `settings.conf`, optional `keybindings.conf`, and `ai.conf` if you set up AI |
 | `~/.local/state/mellow` | Open tabs per project, and recovery copies of unsaved edits |
+
+Set `XDG_CONFIG_HOME` or `XDG_STATE_HOME` to change the corresponding base
+folder; Mellow appends `/mellow`. `MELLOW_SETTINGS` overrides only the settings
+file, not AI configuration, keybindings or recovery storage. Shell environment
+changes apply to newly launched Mellow processes.
+
+Recovery data may contain unsaved text. Keep it until you have recovered or
+saved the work you need; deleting it is not a reset that preserves drafts.

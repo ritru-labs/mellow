@@ -1,7 +1,8 @@
 # Keys
 
 `F1` shows the keys your terminal can send, and `Ctrl+P` finds every command by
-name, so you never need to memorise this page.
+name, so you never need to memorise this page. A terminal can still intercept its own
+shortcuts before Mellow receives them.
 
 ## Everyday
 
@@ -64,3 +65,20 @@ foot and others):
 
 Inside the built-in terminal, keys go to the shell: `Ctrl+C` interrupts the
 running program instead of copying. `Ctrl+T` returns to the editor.
+
+## Custom keybindings
+
+Create `~/.config/mellow/keybindings.conf` (or use
+`$XDG_CONFIG_HOME/mellow/keybindings.conf`). Each line maps a command ID to one
+or more comma-separated keys. For example, keep `Ctrl+S` and add `F2` for save:
+
+```ini
+file.save = Ctrl+S, F2
+```
+
+Use **Reload keybindings** in the palette after editing, or restart Mellow.
+`MELLOW_KEYMAP=/path/keybindings.conf` selects another file. Set a command to
+`none` to remove its bindings. Conflicting bindings, unknown command IDs and
+unsupported chords are reported as errors; fix the file instead of assuming
+the override took effect. The full command IDs are defined in
+[`src/command.rs`](https://github.com/ritru-labs/mellow/blob/main/src/command.rs).

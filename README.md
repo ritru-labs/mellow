@@ -12,6 +12,18 @@ away.
 **Version 0.2.1, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
 
+## Understand the project
+
+Mellow is a native Rust executable for editing local UTF-8 files in a terminal.
+Use it for notes, configuration, scripts and source code, locally or over SSH.
+Core editing needs no account or language server. Git, formatters, language
+servers and AI are optional integrations with separate prerequisites.
+
+- [First edit](https://ritru-labs.github.io/mellow/getting-started/): create, save and verify a practice file.
+- [Everyday workflows](https://ritru-labs.github.io/mellow/usage/): navigation, search, panes, shell and Git.
+- [Architecture](https://ritru-labs.github.io/mellow/ARCHITECTURE/): source layout and implemented boundaries.
+- [Development and docs](https://ritru-labs.github.io/mellow/development/): builds, checks and publication.
+
 ## Install
 
 macOS and Linux:
@@ -102,7 +114,7 @@ Themes: `dark`, `light`, `high-contrast`, `tokyo-night`, `catppuccin-mocha`,
 - Files must be UTF-8 and at most 100 MiB.
 - Language servers and AI providers are supported but not yet tested end to end
   against every live server and account.
-- Project search reads saved files only.
+- Project search includes unsaved text for discovered open files, with scan and result limits.
 
 ## Development
 
