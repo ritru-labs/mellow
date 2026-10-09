@@ -461,6 +461,68 @@ pub fn complete_inline(config: &AiProviderConfig, request: &InlineRequest) -> Re
     Ok(clean_inline(&text))
 }
 
+const COMMIT_SYSTEM: &str = concat!(
+    "You write Git commit messages from a staged diff. ",
+    "Reply with the commit message only: no code fences, quotes or commentary. ",
+    "Line 1 is an imperative summary under 72 characters. ",
+    "Optionally add a blank line and a short body of plain sentences about why. ",
+    "Describe only what the diff changes."
+);
+/// Longer diffs are cut so one request stays small; the model is told.
+const COMMIT_DIFF_CHARS: usize = 12_000;
+
+/// Drafts a commit message for staged changes. Nothing is committed here;
+/// the caller shows the draft for review.
+pub fn commit_message(config: &AiProviderConfig, diff: &str) -> Result<String> {
+    if let Some(problem) = endpoint_problem(&config.endpoint) {
+        bail!("AI address refused: {problem}");
+    }
+    let shown: String = diff.chars().take(COMMIT_DIFF_CHARS).collect();
+    let note = if diff.chars().count() > COMMIT_DIFF_CHARS {
+        "\n(diff truncated)"
+    } else {
+        ""
+    };
+    let user = format!("Staged diff:\n{shown}{note}");
+    let text = match config.provider {
+        AiProvider::Claude => claude::send(
+            config,
+            &claude::Exchange {
+                system: COMMIT_SYSTEM,
+                user: &user,
+                max_tokens: 1_024,
+                effort: "low",
+                timeout: ASK_TIMEOUT,
+            },
+        )?,
+        _ => chat_completion(config, COMMIT_SYSTEM, &user, ASK_TIMEOUT)?,
+    };
+    Ok(clean_commit_message(&text))
+}
+
+/// Removes code fences and wrapping quotes from a drafted message.
+fn clean_commit_message(text: &str) -> String {
+    let body: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .collect();
+    body.join("\n").trim().trim_matches('"').trim().to_owned()
+}
+
+#[cfg(test)]
+mod commit_message_tests {
+    use super::clean_commit_message;
+
+    #[test]
+    fn strips_fences_and_quotes_from_a_drafted_message() {
+        let raw = "```\n\"Add staged diff reader\n\nRead the index without locks.\"\n```\n";
+        assert_eq!(
+            clean_commit_message(raw),
+            "Add staged diff reader\n\nRead the index without locks."
+        );
+    }
+}
+
 /// Strips fences and limits a suggestion to a few lines.
 fn clean_inline(text: &str) -> String {
     let mut body = text.trim_end_matches(['\n', '\r', ' ']).to_owned();

@@ -415,6 +415,7 @@ pub struct App {
     ai_context: Option<AiContextSnapshot>,
     pub ai_proposal: Option<AiProposal>,
     ai_receiver: Option<Receiver<Result<AiProposal, String>>>,
+    commit_message_receiver: Option<Receiver<Result<String, String>>>,
     /// Periodic Git refresh running off the input thread, so a slow `git`
     /// never delays typing or Escape.
     git_refresh_receiver: Option<Receiver<BackgroundGitRefresh>>,
@@ -725,6 +726,7 @@ impl App {
             ai_context: None,
             ai_proposal: None,
             ai_receiver: None,
+            commit_message_receiver: None,
             git_refresh_receiver: None,
             git_operation: None,
             ai_config: if cfg!(test) {
@@ -870,6 +872,7 @@ impl App {
             self.poll_auto_completion();
             self.poll_language_service();
             self.poll_ai_request();
+            self.poll_commit_message();
             self.poll_inline_suggestion();
             self.poll_git_operation();
             self.refresh_git_state(false);
@@ -5111,7 +5114,9 @@ impl App {
         }
         // Not cleared: a message from a failed commit stays for the retry.
         self.mode = AppMode::GitCommitInput;
-        self.status = Some("Commit staged changes · Enter commit · Esc cancel".to_owned());
+        self.status = Some(
+            "Commit staged changes · Enter commit · Ctrl+G draft a message · Esc cancel".to_owned(),
+        );
     }
 
     fn handle_git_commit_key(&mut self, key: KeyEvent) {
@@ -5145,6 +5150,13 @@ impl App {
                         .map_err(|error| error.to_string())
                 });
             }
+            KeyCode::Char('g')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.generate_commit_message();
+            }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
                     crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
@@ -5153,6 +5165,72 @@ impl App {
                 self.git_commit_query.insert_char(ch)
             }
             _ => {}
+        }
+    }
+
+    fn generate_commit_message(&mut self) {
+        if self.commit_message_receiver.is_some() {
+            self.status = Some("Already writing a commit message".to_owned());
+            return;
+        }
+        let Some(config) = self.ai_config.clone() else {
+            self.status =
+                Some("AI is not set up yet · open Set up AI from the command palette".to_owned());
+            return;
+        };
+        let Some(repository) = self.git_repository.clone() else {
+            self.status = Some("No Git repository found".to_owned());
+            return;
+        };
+        let diff = match repository.staged_diff() {
+            Ok(diff) => diff,
+            Err(error) => {
+                self.status = Some(format!("Could not read staged changes: {error}"));
+                return;
+            }
+        };
+        if diff.trim().is_empty() {
+            self.status = Some("Nothing is staged to write a message for".to_owned());
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = ai::commit_message(&config, &diff).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        self.commit_message_receiver = Some(receiver);
+        self.status = Some("Writing a commit message…".to_owned());
+    }
+
+    fn poll_commit_message(&mut self) {
+        let result =
+            self.commit_message_receiver
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("commit message worker disconnected".to_owned()))
+                    }
+                });
+        let Some(result) = result else {
+            return;
+        };
+        self.commit_message_receiver = None;
+        // The user may have left the commit box while the draft was written;
+        // then the draft is dropped rather than typed into another screen.
+        if self.mode != AppMode::GitCommitInput {
+            return;
+        }
+        match result {
+            Ok(message) if message.is_empty() => {
+                self.status = Some("AI returned an empty commit message".to_owned());
+            }
+            Ok(message) => {
+                self.git_commit_query.set(message);
+                self.status = Some("Message drafted · review it, then Enter to commit".to_owned());
+            }
+            Err(error) => self.status = Some(format!("AI: {error}")),
         }
     }
 
@@ -10695,6 +10773,43 @@ mod tests {
             "slow hook"
         );
         assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[test]
+    fn ctrl_g_says_when_ai_is_not_set_up_and_keeps_the_message() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.begin_git_commit();
+        app.handle_git_commit_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, AppMode::GitCommitInput);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("AI is not set up"),
+            "{:?}",
+            app.status
+        );
+        assert!(app.git_commit_query.is_empty());
+    }
+
+    #[test]
+    fn staged_diff_is_read_only_and_shows_only_staged_changes() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        std::fs::write(dir.path().join("other.txt"), "not staged\n").unwrap();
+        let repository = crate::git::GitRepository::discover(dir.path())
+            .unwrap()
+            .unwrap();
+        let diff = repository.staged_diff().unwrap();
+        assert!(diff.contains("demo.txt"), "{diff}");
+        assert!(!diff.contains("other.txt"), "{diff}");
+        // The index is unchanged: the file is still staged, nothing committed.
+        assert!(git_in(dir.path(), &["diff", "--cached", "--name-only"]).contains("demo.txt"));
     }
 
     #[cfg(unix)]

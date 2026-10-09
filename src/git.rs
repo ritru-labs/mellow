@@ -350,6 +350,18 @@ impl GitRepository {
         &self.root
     }
 
+    /// Text of the staged changes, for drafting a commit message. Read-only.
+    pub fn staged_diff(&self) -> Result<String> {
+        let output = git_command(&self.root)
+            .args(["diff", "--cached", "--no-color", "--no-ext-diff"])
+            .output()
+            .context("could not run git diff")?;
+        if !output.status.success() {
+            bail!("git diff --cached failed");
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     fn git(&self, args: &[&str]) -> Result<std::process::Output> {
         match &self.cancel {
             Some(cancel) => {

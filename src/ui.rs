@@ -3305,7 +3305,7 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )),
             Line::raw(""),
             Line::from(Span::styled(
-                "Enter commit staged changes · Esc cancel",
+                "Enter commit · Ctrl+G draft message · Esc cancel",
                 Style::default().fg(app.theme.faint),
             )),
         ]),
