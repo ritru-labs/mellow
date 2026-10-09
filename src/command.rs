@@ -77,7 +77,7 @@ pub enum Command {
     KeepBothConflict,
     GoToSymbol,
     FixProblemWithAi,
-    AskAiShellCommand,
+    AskAiShell,
     CancelSelection,
     MoveLeft,
     MoveRight,
@@ -864,7 +864,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         bindings: &[],
     },
     CommandSpec {
-        command: Command::AskAiShellCommand,
+        command: Command::AskAiShell,
         id: "ai.shell_command",
         label: "Ask AI for a shell command",
         category: "AI",

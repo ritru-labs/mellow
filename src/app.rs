@@ -9771,7 +9771,7 @@ impl App {
             Command::GitBlame => self.begin_git_blame(),
             Command::GoToSymbol => self.begin_go_to_symbol(),
             Command::FixProblemWithAi => self.fix_problem_with_ai(),
-            Command::AskAiShellCommand => self.begin_ai_shell(),
+            Command::AskAiShell => self.begin_ai_shell(),
             Command::KeepOursConflict => {
                 self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
             }
@@ -11127,7 +11127,7 @@ mod tests {
     #[test]
     fn asking_for_a_shell_command_without_ai_opens_setup() {
         let mut app = App::new(crate::buffer::Buffer::empty(None));
-        app.execute(Command::AskAiShellCommand);
+        app.execute(Command::AskAiShell);
         assert_ne!(app.mode, AppMode::AiPrompt);
         assert!(!app.ai_shell_request);
     }
