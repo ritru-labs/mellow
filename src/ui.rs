@@ -320,6 +320,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         AppMode::GitHistory => render_git_history(frame, area, app),
         AppMode::GitBlame => render_git_blame(frame, area, app),
         AppMode::GitConflicts => render_git_conflicts(frame, area, app),
+        AppMode::Symbols => render_symbols(frame, area, app),
     }
 }
 
@@ -674,7 +675,7 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         " / "
     };
-    let mut segments = app.breadcrumb_segments();
+    let mut segments = app.breadcrumb_with_symbol();
     let mut truncated = false;
     while segments.len() > 1
         && UnicodeWidthStr::width(segments.join(separator).as_str()) > available.saturating_sub(4)
@@ -2387,6 +2388,89 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     for (x, item) in status_layout(app, area.width) {
         buffer.set_string(area.x + x, area.y, &item.text, item.style.bg(theme.surface));
     }
+}
+
+fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = app.theme;
+    let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
+    let popup_height = 15.min(area.height.saturating_sub(2)).max(8);
+    let popup = centered_rect(area, popup_width, popup_height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(if theme.unicode_symbols {
+                BorderType::Rounded
+            } else {
+                BorderType::Plain
+            })
+            .border_style(Style::default().fg(theme.mint))
+            .title(Span::styled(
+                overlay_title(app, "Go to symbol"),
+                Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(theme.elevated)),
+        popup,
+    );
+    let inner = inset(popup, 2, 1);
+    let width = inner.width as usize;
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "> ",
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            app.symbol_query.as_str().to_owned(),
+            Style::default().fg(theme.text),
+        ),
+    ])];
+    let symbols = app.filtered_symbols();
+    let rows = (inner.height as usize).saturating_sub(3).max(1);
+    if symbols.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching symbols",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        let selected = app.symbol_selected.min(symbols.len() - 1);
+        let first = if selected >= rows {
+            selected + 1 - rows
+        } else {
+            0
+        };
+        for (index, symbol) in symbols.iter().enumerate().skip(first).take(rows) {
+            let is_selected = index == selected;
+            let background = if is_selected {
+                theme.elevated2
+            } else {
+                theme.elevated
+            };
+            let marker = if is_selected { ">" } else { " " };
+            let label = format!("{marker} {:<8} {}", symbol.kind, symbol.name);
+            let label = display_slice(&label, 0, width.saturating_sub(8), TAB_WIDTH);
+            let line_no = format!("line {}", symbol.start_row + 1);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{label:<w$}", w = width.saturating_sub(line_no.len() + 1)),
+                    Style::default()
+                        .fg(if is_selected { theme.text } else { theme.muted })
+                        .bg(background),
+                ),
+                Span::styled(
+                    format!(" {line_no}"),
+                    Style::default().fg(theme.faint).bg(background),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        "↑↓ choose · Enter jump · Esc close",
+        Style::default().fg(theme.faint),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.elevated)),
+        inner,
+    );
 }
 
 fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -5937,6 +6021,20 @@ mod tests {
         assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
         assert!(text.contains("+ let total = 1;"), "{text}");
         assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn go_to_symbol_overlay_fits_at_80_by_24() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut app = crate::app::App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.mode = crate::app::AppMode::Symbols;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Go to symbol"), "{text}");
+        assert!(text.contains("fn       main"), "{text}");
+        assert!(text.contains("line 1"), "{text}");
+        assert!(text.contains("Enter jump"), "{text}");
     }
 
     #[test]

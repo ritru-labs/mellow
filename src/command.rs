@@ -75,6 +75,7 @@ pub enum Command {
     KeepOursConflict,
     KeepTheirsConflict,
     KeepBothConflict,
+    GoToSymbol,
     CancelSelection,
     MoveLeft,
     MoveRight,
@@ -859,6 +860,14 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         category: "Git",
         help: "List unresolved merge conflicts and open them at conflict markers",
         bindings: &[],
+    },
+    CommandSpec {
+        command: Command::GoToSymbol,
+        id: "navigation.go_to_symbol",
+        label: "Go to symbol",
+        category: "Navigation",
+        help: "Jump to a function, type or other definition in this file",
+        bindings: &[KeyBinding::CtrlShiftChar('o')],
     },
     CommandSpec {
         command: Command::KeepOursConflict,

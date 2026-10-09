@@ -238,6 +238,89 @@ impl SyntaxDocument {
     }
 }
 
+/// A named definition in the file: where it starts and ends, for the outline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxSymbol {
+    pub kind: &'static str,
+    pub name: String,
+    /// Zero-based rows of the definition's first and last line.
+    pub start_row: usize,
+    pub end_row: usize,
+}
+
+/// Definition node kinds per language, with the label shown for each.
+fn symbol_kinds(language_name: &str) -> &'static [(&'static str, &'static str)] {
+    match language_name {
+        "Rust" => &[
+            ("function_item", "fn"),
+            ("struct_item", "struct"),
+            ("enum_item", "enum"),
+            ("trait_item", "trait"),
+            ("impl_item", "impl"),
+            ("mod_item", "mod"),
+            ("type_item", "type"),
+            ("const_item", "const"),
+            ("static_item", "static"),
+        ],
+        "Python" => &[
+            ("function_definition", "def"),
+            ("class_definition", "class"),
+        ],
+        "Shell" => &[("function_definition", "fn")],
+        _ => &[],
+    }
+}
+
+impl SyntaxDocument {
+    /// Named definitions in document order, parents before their children.
+    pub fn symbols(&self) -> Vec<SyntaxSymbol> {
+        let kinds = symbol_kinds(&self.language_name);
+        let mut found = Vec::new();
+        if kinds.is_empty() {
+            return found;
+        }
+        collect_symbols(
+            self.tree.root_node(),
+            self.source.as_bytes(),
+            kinds,
+            &mut found,
+        );
+        found
+    }
+}
+
+fn collect_symbols(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    kinds: &[(&'static str, &'static str)],
+    found: &mut Vec<SyntaxSymbol>,
+) {
+    if let Some((_, kind)) = kinds
+        .iter()
+        .find(|(node_kind, _)| *node_kind == node.kind())
+    {
+        // An impl block is named by the type it implements, not by a `name` field.
+        let name_node = if node.kind() == "impl_item" {
+            node.child_by_field_name("type")
+        } else {
+            node.child_by_field_name("name")
+        };
+        if let Some(name) = name_node.and_then(|name| name.utf8_text(source).ok()) {
+            found.push(SyntaxSymbol {
+                kind,
+                name: name.to_owned(),
+                start_row: node.start_position().row,
+                end_row: node.end_position().row,
+            });
+        }
+    }
+    for index in 0..node.child_count() {
+        if let Some(child) = node.child(index) {
+            collect_symbols(child, source, kinds, found);
+        }
+    }
+}
+
 #[cfg(test)]
 pub fn supports_language(language_name: &str) -> bool {
     language_for(language_name).is_some()
@@ -452,6 +535,62 @@ fn walk_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outline_lists_rust_definitions_with_their_rows() {
+        let source =
+            "struct Point;\n\nimpl Point {\n    fn new() -> Self { Point }\n}\n\nfn main() {}\n";
+        let document = SyntaxDocument::new("Rust", source, 1).unwrap().unwrap();
+        let outline: Vec<(&str, String, usize)> = document
+            .symbols()
+            .into_iter()
+            .map(|symbol| (symbol.kind, symbol.name, symbol.start_row))
+            .collect();
+        assert_eq!(
+            outline,
+            vec![
+                ("struct", "Point".to_owned(), 0),
+                ("impl", "Point".to_owned(), 2),
+                ("fn", "new".to_owned(), 3),
+                ("fn", "main".to_owned(), 6),
+            ]
+        );
+    }
+
+    #[test]
+    fn outline_lists_python_and_shell_definitions() {
+        let python = SyntaxDocument::new(
+            "Python",
+            "class Box:\n    def open(self):\n        pass\n",
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        let names: Vec<String> = python
+            .symbols()
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect();
+        assert_eq!(names, ["Box", "open"]);
+
+        let shell = SyntaxDocument::new("Shell", "greet() {\n  echo hi\n}\n", 1)
+            .unwrap()
+            .unwrap();
+        let names: Vec<String> = shell
+            .symbols()
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect();
+        assert_eq!(names, ["greet"]);
+    }
+
+    #[test]
+    fn languages_without_definitions_have_an_empty_outline() {
+        let json = SyntaxDocument::new("JSON", "{\"a\": 1}\n", 1)
+            .unwrap()
+            .unwrap();
+        assert!(json.symbols().is_empty());
+    }
 
     #[test]
     fn line_index_points_match_counting_from_the_top() {

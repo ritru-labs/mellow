@@ -87,6 +87,7 @@ pub enum AppMode {
     GitHistory,
     GitBlame,
     GitConflicts,
+    Symbols,
 }
 
 #[derive(Debug)]
@@ -464,6 +465,8 @@ pub struct App {
     pub quick_open_query: TextInput,
     pub quick_open_candidates: Vec<PathBuf>,
     pub quick_open_selected: usize,
+    pub symbol_query: TextInput,
+    pub symbol_selected: usize,
     recent_files: Vec<PathBuf>,
     pub explorer_visible: bool,
     pub explorer_focused: bool,
@@ -772,6 +775,8 @@ impl App {
             quick_open_candidates: Vec::new(),
             quick_open_selected: 0,
             recent_files: Vec::new(),
+            symbol_query: TextInput::default(),
+            symbol_selected: 0,
             explorer_visible: editor_settings.explorer_visible,
             explorer_focused: false,
             explorer_files: Vec::new(),
@@ -1056,6 +1061,7 @@ impl App {
             AppMode::GitHistory => self.handle_git_history_key(key),
             AppMode::GitBlame => self.handle_git_blame_key(key),
             AppMode::GitConflicts => self.handle_git_conflicts_key(key),
+            AppMode::Symbols => self.handle_symbols_key(key),
             AppMode::Editing => {
                 if self.ghost_is_visible() {
                     match key.code {
@@ -2508,7 +2514,8 @@ impl App {
             | AppMode::ConfirmGitBranchDelete
             | AppMode::GitHistory
             | AppMode::GitBlame
-            | AppMode::GitConflicts => {}
+            | AppMode::GitConflicts
+            | AppMode::Symbols => {}
         }
 
         if self.buffer.revision() != revision_before {
@@ -5606,6 +5613,74 @@ impl App {
         self.status = Some("Kept the chosen side · Ctrl+Z undoes it".to_owned());
     }
 
+    fn begin_go_to_symbol(&mut self) {
+        let has_symbols = self
+            .syntax_document
+            .as_ref()
+            .is_some_and(|document| !document.symbols().is_empty());
+        if !has_symbols {
+            self.status = Some("This file has no symbols to jump to".to_owned());
+            return;
+        }
+        self.symbol_query.clear();
+        self.symbol_selected = 0;
+        self.mode = AppMode::Symbols;
+        self.status = None;
+    }
+
+    /// Definitions whose names contain the query, in document order.
+    pub fn filtered_symbols(&self) -> Vec<crate::syntax_tree::SyntaxSymbol> {
+        let query = self.symbol_query.as_str().trim().to_lowercase();
+        self.syntax_document
+            .as_ref()
+            .map(|document| document.symbols())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|symbol| query.is_empty() || symbol.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn handle_symbols_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Editing;
+                self.status = None;
+            }
+            KeyCode::Up => self.symbol_selected = self.symbol_selected.saturating_sub(1),
+            KeyCode::Down => {
+                let len = self.filtered_symbols().len();
+                if len > 0 {
+                    self.symbol_selected = (self.symbol_selected + 1).min(len - 1);
+                }
+            }
+            KeyCode::Enter => {
+                let symbols = self.filtered_symbols();
+                if let Some(symbol) =
+                    symbols.get(self.symbol_selected.min(symbols.len().saturating_sub(1)))
+                {
+                    self.cursor = Cursor::new(symbol.start_row, 0);
+                    self.selection_anchor = None;
+                    self.should_scroll_to_cursor = true;
+                    self.mode = AppMode::Editing;
+                    self.status = None;
+                }
+            }
+            KeyCode::Backspace => {
+                self.symbol_query.backspace();
+                self.symbol_selected = 0;
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+                ) =>
+            {
+                self.symbol_query.insert_char(ch);
+                self.symbol_selected = 0;
+            }
+            _ => {}
+        }
+    }
+
     fn begin_git_conflicts(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
@@ -7613,6 +7688,26 @@ impl App {
         segments
     }
 
+    /// The file path plus the definition the cursor is in, for the breadcrumb bar.
+    pub fn breadcrumb_with_symbol(&self) -> Vec<String> {
+        let mut segments = self.breadcrumb_segments();
+        if let Some(symbol) = self.enclosing_symbol() {
+            segments.push(symbol.name);
+        }
+        segments
+    }
+
+    /// The innermost definition that contains the cursor row, for the breadcrumb.
+    pub fn enclosing_symbol(&self) -> Option<crate::syntax_tree::SyntaxSymbol> {
+        let row = self.cursor.row;
+        self.syntax_document
+            .as_ref()?
+            .symbols()
+            .into_iter()
+            .filter(|symbol| symbol.start_row <= row && row <= symbol.end_row)
+            .max_by_key(|symbol| symbol.start_row)
+    }
+
     pub fn explorer_entry_expanded(&self, path: &std::path::Path) -> bool {
         self.explorer_expanded.contains(path)
     }
@@ -9556,6 +9651,7 @@ impl App {
             Command::GitBranches => self.begin_git_branches(),
             Command::GitHistory => self.begin_git_history(),
             Command::GitBlame => self.begin_git_blame(),
+            Command::GoToSymbol => self.begin_go_to_symbol(),
             Command::KeepOursConflict => {
                 self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
             }
@@ -10871,6 +10967,52 @@ mod tests {
             "slow hook"
         );
         assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[test]
+    fn go_to_symbol_filters_by_name_and_jumps_to_the_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {}\n\nfn helper() {}\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.execute(Command::GoToSymbol);
+        assert_eq!(app.mode, AppMode::Symbols);
+        for ch in "help".chars() {
+            app.handle_symbols_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(app.filtered_symbols().len(), 1);
+        app.handle_symbols_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.cursor.row, 2);
+    }
+
+    #[test]
+    fn breadcrumb_ends_with_the_definition_under_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {\n    let x = 1;\n}\n\nfn other() {}\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.cursor = Cursor::new(1, 4);
+        assert_eq!(
+            app.breadcrumb_with_symbol().last().map(String::as_str),
+            Some("main")
+        );
+        app.cursor = Cursor::new(4, 0);
+        assert_eq!(
+            app.breadcrumb_with_symbol().last().map(String::as_str),
+            Some("other")
+        );
+    }
+
+    #[test]
+    fn go_to_symbol_explains_when_a_file_has_none() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.execute(Command::GoToSymbol);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("This file has no symbols to jump to")
+        );
     }
 
     #[test]
