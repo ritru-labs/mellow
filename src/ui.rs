@@ -2602,10 +2602,19 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.faint),
         ))
     } else {
-        Line::from(Span::styled(
-            display_slice(description, 0, inner.width as usize, TAB_WIDTH),
-            Style::default().fg(theme.muted),
-        ))
+        let connector = if theme.unicode_symbols { "⎿ " } else { "> " };
+        Line::from(vec![
+            Span::styled(connector, Style::default().fg(theme.faint)),
+            Span::styled(
+                display_slice(
+                    description,
+                    0,
+                    inner.width.saturating_sub(2) as usize,
+                    TAB_WIDTH,
+                ),
+                Style::default().fg(theme.muted),
+            ),
+        ])
     });
 
     frame.render_widget(
