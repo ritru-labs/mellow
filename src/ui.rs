@@ -3983,23 +3983,50 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ));
 }
 
+/// One frame of the "working" spinner. It is derived from the clock rather
+/// than stored state: the event loop redraws at least every 100 ms, so the
+/// frame advances on its own while an AI request is in flight.
+fn working_frame(unicode: bool) -> &'static str {
+    const BRAILLE: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const ASCII: [&str; 4] = ["|", "/", "-", "\\"];
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() / 100);
+    if unicode {
+        BRAILLE[(tick % BRAILLE.len() as u128) as usize]
+    } else {
+        ASCII[(tick % ASCII.len() as u128) as usize]
+    }
+}
+
 fn render_ai_waiting(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
-    let popup = anchored_rect(area, app, 84, 5);
+    // Four content rows (status, query, gap, note) plus the border.
+    let popup = anchored_rect(area, app, 84, 6);
     frame.render_widget(Clear, popup);
     let block = ai_box(
         app,
-        format!(" {spark} {} is thinking… ", app.ai_provider_name()),
+        format!(" {spark} {} is working ", app.ai_provider_name()),
     );
     let inner = inset(block.inner(popup), 1, 0);
     frame.render_widget(block, popup);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(
-                format!("> {}", app.ai_query.as_str()),
-                Style::default().fg(theme.text),
-            ),
+            Line::from(vec![
+                Span::styled(
+                    format!("{} ", working_frame(theme.unicode_symbols)),
+                    Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Working on it", Style::default().fg(theme.text)),
+            ]),
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(theme.faint)),
+                Span::styled(
+                    app.ai_query.as_str().to_owned(),
+                    Style::default().fg(theme.muted),
+                ),
+            ]),
             Line::raw(""),
             Line::styled(
                 "Nothing changes until you accept. Esc stops waiting.",
@@ -4024,8 +4051,9 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .lines()
         .map(|line| UnicodeWidthStr::width(line).div_ceil(text_width).max(1))
         .sum();
+    // Blank line, change-count connector, then one row per removed and added line.
     let diff_rows = proposal.replacement.as_deref().map_or(0, |replacement| {
-        1 + app.ai_before_text().lines().count() + replacement.lines().count()
+        2 + app.ai_before_text().lines().count() + replacement.lines().count()
     });
     let height = (summary_rows + diff_rows + 5) as u16;
     let popup = centered_rect(
@@ -4050,12 +4078,28 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         inner.width,
         inner.height.saturating_sub(footer_rows),
     );
-    let mut lines = vec![Line::styled(
-        proposal.summary.clone(),
-        Style::default().fg(theme.text),
-    )];
+    // Agent-style result: a bullet headline, then a connector that says how
+    // many lines change, then the diff itself.
+    let bullet = if theme.unicode_symbols { "● " } else { "* " };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            bullet,
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(proposal.summary.clone(), Style::default().fg(theme.text)),
+    ])];
     if let Some(replacement) = proposal.replacement.as_deref() {
+        let removed = app.ai_before_text().lines().count();
+        let added = replacement.lines().count();
+        let connector = if theme.unicode_symbols { "⎿ " } else { "> " };
         lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {connector} "), Style::default().fg(theme.faint)),
+            Span::styled(
+                format!("+{added} added  −{removed} removed"),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
         let width = inner.width as usize;
         let add_bg = theme.diff_add_bg;
         let del_bg = theme.diff_del_bg;
@@ -5859,6 +5903,58 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    #[test]
+    fn ai_review_reads_as_an_agent_result_with_a_change_count() {
+        use crate::{ai::AiProposal, app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::AiReview;
+        app.ai_proposal = Some(AiProposal {
+            summary: "Rename the variable".to_owned(),
+            replacement: Some("let total = 1;\nlet sum = total;".to_owned()),
+        });
+        let rows = render_rows(&app, 100, 30);
+        let text = rows.join("\n");
+        assert!(text.contains("● Rename the variable"), "{text}");
+        assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
+        assert!(text.contains("+ let total = 1;"), "{text}");
+        assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn ai_surfaces_keep_their_actions_at_80_by_24() {
+        use crate::{ai::AiProposal, app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+
+        app.mode = AppMode::AiPrompt;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("Enter send"), "{text}");
+        assert!(text.contains("Esc cancel"), "{text}");
+
+        app.mode = AppMode::AiWaiting;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("Working on it"), "{text}");
+        assert!(text.contains("Esc stops waiting"), "{text}");
+
+        app.mode = AppMode::AiReview;
+        app.ai_proposal = Some(AiProposal {
+            summary: "Tidy the loop".to_owned(),
+            replacement: Some("for x in xs {}".to_owned()),
+        });
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Tidy the loop"), "{text}");
+        assert!(text.contains("Accept"), "{text}");
+        assert!(text.contains("Reject"), "{text}");
+    }
+
+    #[test]
+    fn working_spinner_has_an_ascii_fallback() {
+        for _ in 0..20 {
+            let frame = super::working_frame(false);
+            assert!(["|", "/", "-", "\\"].contains(&frame), "{frame}");
+        }
+        assert!(super::working_frame(true).chars().count() == 1);
     }
 
     #[test]
