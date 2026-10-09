@@ -2405,7 +2405,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             })
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Commands ",
+                overlay_title(app, "Commands"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -2552,7 +2552,7 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
             })
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Open file ",
+                overlay_title(app, "Open file"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -2913,7 +2913,7 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
     let theme = app.theme;
     let block = Block::default()
-        .title(" References ")
+        .title(overlay_title(app, "References"))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
@@ -3043,7 +3043,7 @@ fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 82, 16);
     frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(" Quick fixes ")
+        .title(overlay_title(app, "Quick fixes"))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
@@ -3186,7 +3186,11 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 theme.warning
             }))
             .title(Span::styled(
-                format!(" Problems · {} ", problems.len()),
+                format!(
+                    " {} Problems · {} ",
+                    overlay_marker(theme.unicode_symbols),
+                    problems.len()
+                ),
                 Style::default()
                     .fg(if problems.is_empty() {
                         theme.muted
@@ -3313,7 +3317,7 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 76, 18);
     frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(" Branches ")
+        .title(overlay_title(app, "Branches"))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
@@ -3521,7 +3525,7 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 100, 22);
     frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(" History ")
+        .title(overlay_title(app, "History"))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
@@ -3598,7 +3602,10 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             })
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                format!(" Changes · {branch} · {unstaged} not staged · {staged} staged "),
+                format!(
+                    " {} Changes · {branch} · {unstaged} not staged · {staged} staged ",
+                    overlay_marker(theme.unicode_symbols)
+                ),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -3981,6 +3988,16 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
             },
         inner.y,
     ));
+}
+
+/// Marker that opens every list overlay title, matching the agent-style AI panels.
+fn overlay_marker(unicode: bool) -> &'static str {
+    if unicode { "●" } else { "*" }
+}
+
+/// Title for a list overlay: " ● Name " (or " * Name " without Unicode).
+fn overlay_title(app: &App, name: &str) -> String {
+    format!(" {} {name} ", overlay_marker(app.theme.unicode_symbols))
 }
 
 /// One frame of the "working" spinner. It is derived from the clock rather
@@ -5285,7 +5302,7 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
             })
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Search all files ",
+                overlay_title(app, "Search all files"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -5920,6 +5937,18 @@ mod tests {
         assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
         assert!(text.contains("+ let total = 1;"), "{text}");
         assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn list_overlay_titles_open_with_the_agent_marker() {
+        use crate::{app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Palette;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Commands"), "{text}");
+        app.mode = AppMode::QuickOpen;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Open file"), "{text}");
     }
 
     #[test]
