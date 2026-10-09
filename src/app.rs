@@ -5552,6 +5552,58 @@ impl App {
         }
     }
 
+    /// Keeps one side of the merge-conflict block under the cursor. This is
+    /// one undoable edit, and the cursor moves to the start of the result.
+    fn resolve_conflict_at_cursor(&mut self, choice: crate::conflict::ConflictChoice) {
+        let lines: Vec<String> = (0..self.buffer.line_count())
+            .map(|row| self.buffer.line_text(row))
+            .collect();
+        let Some(block) = crate::conflict::block_at(&lines, self.cursor.row) else {
+            self.status = Some("The cursor is not inside a merge conflict".to_owned());
+            return;
+        };
+        let resolved = crate::conflict::resolved_lines(&lines, block, choice);
+        let (start, end, replacement) = if resolved.is_empty() {
+            // Nothing to keep: remove the marker lines, including one newline.
+            if block.end + 1 < lines.len() {
+                (
+                    Cursor::new(block.start, 0),
+                    Cursor::new(block.end + 1, 0),
+                    String::new(),
+                )
+            } else if block.start > 0 {
+                let above = block.start - 1;
+                (
+                    Cursor::new(above, self.buffer.grapheme_count(above)),
+                    Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                    String::new(),
+                )
+            } else {
+                (
+                    Cursor::new(block.start, 0),
+                    Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                    String::new(),
+                )
+            }
+        } else {
+            (
+                Cursor::new(block.start, 0),
+                Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                resolved.join("\n"),
+            )
+        };
+        let mut cursor = self.cursor;
+        self.buffer
+            .replace_range(start, end, &replacement, &mut cursor);
+        self.cursor = Cursor::new(
+            block.start.min(self.buffer.line_count().saturating_sub(1)),
+            0,
+        );
+        self.selection_anchor = None;
+        self.should_scroll_to_cursor = true;
+        self.status = Some("Kept the chosen side · Ctrl+Z undoes it".to_owned());
+    }
+
     fn begin_git_conflicts(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
@@ -9467,6 +9519,15 @@ impl App {
             Command::GitBranches => self.begin_git_branches(),
             Command::GitHistory => self.begin_git_history(),
             Command::GitBlame => self.begin_git_blame(),
+            Command::KeepOursConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
+            }
+            Command::KeepTheirsConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Theirs)
+            }
+            Command::KeepBothConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Both)
+            }
             Command::GitFetch => self.git_fetch(),
             Command::GitPull => self.git_pull_fast_forward(),
             Command::GitPush => self.git_push(),
@@ -10773,6 +10834,57 @@ mod tests {
             "slow hook"
         );
         assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[test]
+    fn keeping_a_conflict_side_is_one_undoable_edit() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let text = "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\nend";
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), text);
+        app.cursor = Cursor::new(2, 0);
+        app.execute(Command::KeepTheirsConflict);
+        assert_eq!(app.buffer.contents(), "keep\ntheirs\nend");
+        assert!(app.buffer.can_undo());
+        let mut cursor = app.cursor;
+        assert!(app.buffer.undo(&mut cursor));
+        assert_eq!(app.buffer.contents(), text);
+    }
+
+    #[test]
+    fn keeping_an_empty_side_removes_the_marker_lines() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "a\n<<<<<<< HEAD\n=======\ntheirs\n>>>>>>> topic\nb",
+        );
+        app.cursor = Cursor::new(1, 0);
+        app.execute(Command::KeepOursConflict);
+        assert_eq!(app.buffer.contents(), "a\nb");
+    }
+
+    #[test]
+    fn keep_both_puts_ours_first_and_outside_a_conflict_says_so() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic",
+        );
+        app.cursor = Cursor::new(3, 0);
+        app.execute(Command::KeepBothConflict);
+        assert_eq!(app.buffer.contents(), "ours\ntheirs");
+
+        let mut plain = App::new(Buffer::empty(None));
+        plain
+            .buffer
+            .insert_text(&mut Cursor::default(), "no conflict here");
+        plain.execute(Command::KeepOursConflict);
+        assert_eq!(
+            plain.status.as_deref(),
+            Some("The cursor is not inside a merge conflict")
+        );
     }
 
     #[test]
