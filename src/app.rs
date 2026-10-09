@@ -464,6 +464,7 @@ pub struct App {
     pub quick_open_query: TextInput,
     pub quick_open_candidates: Vec<PathBuf>,
     pub quick_open_selected: usize,
+    recent_files: Vec<PathBuf>,
     pub explorer_visible: bool,
     pub explorer_focused: bool,
     pub explorer_files: Vec<workspace::ExplorerEntry>,
@@ -770,6 +771,7 @@ impl App {
             quick_open_query: TextInput::default(),
             quick_open_candidates: Vec::new(),
             quick_open_selected: 0,
+            recent_files: Vec::new(),
             explorer_visible: editor_settings.explorer_visible,
             explorer_focused: false,
             explorer_files: Vec::new(),
@@ -6540,6 +6542,7 @@ impl App {
     }
 
     pub(crate) fn open_path_in_tab(&mut self, path: PathBuf) -> Result<()> {
+        self.note_recent_file(&path);
         if let Some(index) = self.find_open_tab(&path) {
             self.switch_tab(index);
             return Ok(());
@@ -6585,8 +6588,17 @@ impl App {
 
     pub fn filtered_quick_open_entries(&self) -> Vec<usize> {
         let query = self.quick_open_query.as_str();
-        if is_explicit_path_query(query) || query.trim().is_empty() {
+        if is_explicit_path_query(query) {
             return (0..self.quick_open_candidates.len()).collect();
+        }
+        if query.trim().is_empty() {
+            // Recently opened files first, most recent first; the rest keep their order.
+            let mut all: Vec<usize> = (0..self.quick_open_candidates.len()).collect();
+            all.sort_by_key(|&index| {
+                self.recency_rank(&self.quick_open_candidates[index])
+                    .unwrap_or(usize::MAX)
+            });
+            return all;
         }
         let mut ranked: Vec<(i64, usize)> = self
             .quick_open_candidates
@@ -6596,8 +6608,33 @@ impl App {
                 workspace::fuzzy_score(path, query).map(|score| (score, index))
             })
             .collect();
-        ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+        // Better matches first; among equal scores, recently opened files win.
+        ranked.sort_by_key(|&(score, index)| {
+            (
+                std::cmp::Reverse(score),
+                self.recency_rank(&self.quick_open_candidates[index])
+                    .unwrap_or(usize::MAX),
+                index,
+            )
+        });
         ranked.into_iter().map(|(_, index)| index).collect()
+    }
+
+    /// Where a candidate sits in the recently-opened list, if it is there.
+    fn recency_rank(&self, candidate: &std::path::Path) -> Option<usize> {
+        let absolute = self.workspace_root.join(candidate);
+        self.recent_files
+            .iter()
+            .position(|recent| *recent == absolute)
+    }
+
+    /// Moves a file to the front of the recently-opened list.
+    fn note_recent_file(&mut self, path: &std::path::Path) {
+        const RECENT_FILE_LIMIT: usize = 20;
+        let absolute = self.workspace_root.join(path);
+        self.recent_files.retain(|recent| *recent != absolute);
+        self.recent_files.insert(0, absolute);
+        self.recent_files.truncate(RECENT_FILE_LIMIT);
     }
 
     fn handle_quick_open_key(&mut self, key: KeyEvent) {
@@ -10834,6 +10871,46 @@ mod tests {
             "slow hook"
         );
         assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[test]
+    fn quick_open_lists_recently_opened_files_first() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = PathBuf::from("/work");
+        app.quick_open_candidates = vec![
+            PathBuf::from("a.txt"),
+            PathBuf::from("b.txt"),
+            PathBuf::from("c.txt"),
+        ];
+        app.recent_files = vec![PathBuf::from("/work/c.txt"), PathBuf::from("/work/a.txt")];
+        assert_eq!(app.filtered_quick_open_entries(), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn opening_a_file_moves_it_to_the_front_of_recents() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["one.txt", "two.txt"] {
+            std::fs::write(dir.path().join(name), "x\n").unwrap();
+        }
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.open_path_in_tab(dir.path().join("one.txt")).unwrap();
+        app.open_path_in_tab(dir.path().join("two.txt")).unwrap();
+        app.open_path_in_tab(dir.path().join("one.txt")).unwrap();
+        assert_eq!(
+            app.recent_files,
+            vec![dir.path().join("one.txt"), dir.path().join("two.txt")]
+        );
+    }
+
+    #[test]
+    fn recent_files_break_ties_in_fuzzy_matches() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = PathBuf::from("/work");
+        app.quick_open_candidates = vec![PathBuf::from("util_a.rs"), PathBuf::from("util_b.rs")];
+        app.quick_open_query.set("util");
+        app.recent_files = vec![PathBuf::from("/work/util_b.rs")];
+        assert_eq!(app.filtered_quick_open_entries(), vec![1, 0]);
     }
 
     #[test]
