@@ -264,6 +264,14 @@ pub struct ProblemItem {
     pub cursor: Cursor,
 }
 
+/// One accepted AI edit: what it was, and the buffer revision it produced.
+#[derive(Debug, Clone)]
+struct AiEditRecord {
+    summary: String,
+    path: String,
+    revision_after: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum PostSaveAction {
     #[default]
@@ -419,6 +427,7 @@ pub struct App {
     commit_message_receiver: Option<Receiver<Result<String, String>>>,
     shell_receiver: Option<Receiver<Result<String, String>>>,
     ai_shell_request: bool,
+    ai_edit_history: Vec<AiEditRecord>,
     /// Periodic Git refresh running off the input thread, so a slow `git`
     /// never delays typing or Escape.
     git_refresh_receiver: Option<Receiver<BackgroundGitRefresh>>,
@@ -735,6 +744,7 @@ impl App {
             commit_message_receiver: None,
             shell_receiver: None,
             ai_shell_request: false,
+            ai_edit_history: Vec::new(),
             git_refresh_receiver: None,
             git_operation: None,
             ai_config: if cfg!(test) {
@@ -1810,6 +1820,7 @@ impl App {
             self.cursor,
             self.selection_anchor,
         );
+        self.record_ai_edit(&proposal.summary);
         self.ai_proposal = None;
         self.ai_context = None;
         self.mode = AppMode::Editing;
@@ -5651,6 +5662,67 @@ impl App {
 
     /// Asks AI for one shell command. The answer is typed into the terminal
     /// without Enter, so the user reads it before anything runs.
+    /// Remembers an accepted AI edit, with the buffer revision it left behind.
+    fn record_ai_edit(&mut self, summary: &str) {
+        const LIMIT: usize = 20;
+        self.ai_edit_history.push(AiEditRecord {
+            summary: summary.to_owned(),
+            path: self.buffer.display_path(),
+            revision_after: self.buffer.revision(),
+        });
+        let excess = self.ai_edit_history.len().saturating_sub(LIMIT);
+        self.ai_edit_history.drain(..excess);
+    }
+
+    /// Undoes the latest AI edit, but only while it is still the latest change.
+    fn undo_last_ai_edit(&mut self) {
+        let Some(last) = self.ai_edit_history.last() else {
+            self.status = Some("No AI edit to undo in this session".to_owned());
+            return;
+        };
+        if last.revision_after != self.buffer.revision() || last.path != self.buffer.display_path()
+        {
+            self.status =
+                Some("Other edits came after the last AI edit · Ctrl+Z steps back".to_owned());
+            return;
+        }
+        let summary = last.summary.clone();
+        if self
+            .buffer
+            .undo_with_selection(&mut self.cursor, &mut self.selection_anchor)
+        {
+            self.secondary_cursors.clear();
+            self.rectangular_selection = None;
+            self.clamp_cursor();
+            self.workspace_edit_history = None;
+            self.should_scroll_to_cursor = true;
+            self.ai_edit_history.pop();
+            self.status = Some(format!("Undid AI edit: {summary}"));
+            self.sync_code_intelligence_after_edit();
+        } else {
+            self.status = Some("Nothing to undo".to_owned());
+        }
+    }
+
+    fn show_ai_edit_history(&mut self) {
+        if self.ai_edit_history.is_empty() {
+            self.status = Some("No AI edits accepted in this session yet".to_owned());
+            return;
+        }
+        let summaries: Vec<&str> = self
+            .ai_edit_history
+            .iter()
+            .rev()
+            .take(5)
+            .map(|record| record.summary.as_str())
+            .collect();
+        self.status = Some(format!(
+            "AI edits, latest first ({}): {}",
+            self.ai_edit_history.len(),
+            summaries.join(" · ")
+        ));
+    }
+
     fn begin_ai_shell(&mut self) {
         if self.ai_config.is_none() {
             self.open_ai_setup(true);
@@ -9772,6 +9844,8 @@ impl App {
             Command::GoToSymbol => self.begin_go_to_symbol(),
             Command::FixProblemWithAi => self.fix_problem_with_ai(),
             Command::AskAiShell => self.begin_ai_shell(),
+            Command::AiUndoLastEdit => self.undo_last_ai_edit(),
+            Command::AiEditHistory => self.show_ai_edit_history(),
             Command::KeepOursConflict => {
                 self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
             }
@@ -11121,6 +11195,71 @@ mod tests {
         assert_eq!(
             app.breadcrumb_with_symbol().last().map(String::as_str),
             Some("other")
+        );
+    }
+
+    fn accept_test_ai_edit(app: &mut App) {
+        app.ai_context = Some(super::AiContextSnapshot {
+            revision: app.buffer.revision(),
+            range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
+            before: "let".to_owned(),
+            request_context: String::new(),
+            label: String::new(),
+            path: app.buffer.display_path(),
+            language: "Plain Text".to_owned(),
+        });
+        app.ai_proposal = Some(crate::ai::AiProposal {
+            summary: "Rename to var".to_owned(),
+            replacement: Some("var".to_owned()),
+        });
+        app.mode = AppMode::AiReview;
+        app.apply_ai_proposal();
+    }
+
+    #[test]
+    fn an_accepted_ai_edit_can_be_undone_while_it_is_the_latest_change() {
+        use crate::buffer::Buffer;
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        accept_test_ai_edit(&mut app);
+        assert_eq!(app.buffer.contents(), "var a = 1;");
+        assert_eq!(app.ai_edit_history.len(), 1);
+
+        app.execute(Command::AiUndoLastEdit);
+        assert_eq!(app.buffer.contents(), "let a = 1;");
+        assert!(app.ai_edit_history.is_empty());
+        assert_eq!(app.status.as_deref(), Some("Undid AI edit: Rename to var"));
+    }
+
+    #[test]
+    fn ai_undo_refuses_when_other_edits_came_after_it() {
+        use crate::buffer::Buffer;
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        accept_test_ai_edit(&mut app);
+        let mut typing = Cursor::new(0, 10);
+        app.buffer.insert_text(&mut typing, "!");
+
+        app.execute(Command::AiUndoLastEdit);
+        assert_eq!(app.buffer.contents(), "var a = 1;!");
+        assert_eq!(app.ai_edit_history.len(), 1);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("Other edits came after the last AI edit"),
+            "{:?}",
+            app.status
+        );
+
+        app.execute(Command::AiEditHistory);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("AI edits, latest first (1): Rename to var"),
+            "{:?}",
+            app.status
         );
     }
 
