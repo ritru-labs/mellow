@@ -1,8 +1,11 @@
 // Mellow native gate for an existing Jenkins controller.
 // Create this as a manual Pipeline job (no SCM polling). It runs the same
-// shared gate as GitHub Actions: scripts/native-ci.sh verify.
+// shared gate as GitHub Actions, scripts/native-ci.sh verify, inside a pinned
+// Rust 1.90.0 container. No extra Jenkins plugin is needed: only Docker.
+// The PTY smoke tests open their own terminal (openpty), so the container
+// does not need a TTY.
 pipeline {
-  agent none
+  agent any
   options {
     disableConcurrentBuilds()
     skipDefaultCheckout(true)
@@ -11,29 +14,32 @@ pipeline {
     buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
   }
   parameters {
-    string(name: 'SOURCE_SHA', defaultValue: '', trim: true, description: 'Required full 40-character commit ID')
-    string(name: 'SOURCE_REPOSITORY', defaultValue: 'https://github.com/ritru-labs/mellow.git', description: 'Repository URL to clone')
-    string(name: 'AGENT_LABEL', defaultValue: 'linux-x64', description: 'Jenkins agent label with Rust 1.90.0 and a PTY')
+    string(name: 'SOURCE_SHA', defaultValue: '', trim: true, description: 'Full 40-character commit ID; empty means the branch head')
+    string(name: 'SOURCE_REPOSITORY', defaultValue: 'https://github.com/ritru-labs/mellow.git', description: 'Public repository to clone over HTTPS')
+    string(name: 'SOURCE_BRANCH', defaultValue: 'feature/agent-style-ai-ui', description: 'Branch to build when SOURCE_SHA is empty')
   }
   stages {
     stage('Validate') {
       steps {
         script {
-          if (!(params.SOURCE_SHA ==~ /[0-9a-f]{40}/)) {
+          if (params.SOURCE_SHA && !(params.SOURCE_SHA ==~ /[0-9a-f]{40}/)) {
             error 'SOURCE_SHA must be a full 40-character lowercase commit ID'
           }
         }
       }
     }
     stage('Verify') {
-      agent { label params.AGENT_LABEL }
       steps {
         deleteDir()
         checkout([$class: 'GitSCM',
-          branches: [[name: params.SOURCE_SHA]],
+          branches: [[name: params.SOURCE_SHA ?: "*/${params.SOURCE_BRANCH}"]],
           userRemoteConfigs: [[url: params.SOURCE_REPOSITORY]],
           extensions: [[$class: 'CleanBeforeCheckout']]])
-        sh 'bash scripts/native-ci.sh verify'
+        sh '''
+          docker run --rm \
+            -v "$WORKSPACE:/src" -w /src \
+            rust:1.90.0 bash scripts/native-ci.sh verify
+        '''
       }
     }
   }
