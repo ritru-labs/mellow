@@ -35,10 +35,11 @@ pipeline {
           branches: [[name: params.SOURCE_SHA ?: "*/${params.SOURCE_BRANCH}"]],
           userRemoteConfigs: [[url: params.SOURCE_REPOSITORY]],
           extensions: [[$class: 'CleanBeforeCheckout']]])
+        // Pipe the checkout into the container instead of bind-mounting it:
+        // the Docker daemon cannot see the controller's workspace path.
         sh '''
-          docker run --rm \
-            -v "$WORKSPACE:/src" -w /src \
-            rust:1.90.0 bash scripts/native-ci.sh verify
+          tar -C "$WORKSPACE" -cf - . | docker run --rm -i rust:1.90.0 \
+            bash -c 'mkdir -p /src && tar -C /src -xf - && cd /src && bash scripts/native-ci.sh verify'
         '''
       }
     }
