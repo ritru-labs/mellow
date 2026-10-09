@@ -5790,43 +5790,89 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|path| app.short_path(path))
         .unwrap_or_else(|| "Untitled buffer".to_owned());
 
-    let lines = vec![
-        Line::from(Span::styled(
-            "Mellow found unsaved edits from an earlier interrupted session.",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(source, Style::default().fg(theme.muted))),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
-                " [R] Restore ",
-                Style::default()
-                    .fg(theme.canvas)
-                    .bg(theme.mint)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(
-                " [D] Discard journal ",
-                Style::default()
-                    .fg(theme.canvas)
-                    .bg(theme.error)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Restore keeps the buffer dirty until you save it.",
-            Style::default().fg(theme.faint),
-        )),
-    ];
-
+    // The message may wrap on narrow terminals; it gets the rows above the
+    // buttons so the buttons stay where clicks are tested.
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Mellow found unsaved edits from an earlier interrupted session.",
+                Style::default().fg(theme.text),
+            )),
+            Line::from(Span::styled(source, Style::default().fg(theme.muted))),
+        ])
+        .wrap(ratatui::widgets::Wrap { trim: true })
+        .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(inner.x, inner.y, inner.width, 3),
     );
+    let (restore, discard) = recovery_button_rects(area);
+    let buffer = frame.buffer_mut();
+    buffer.set_stringn(
+        restore.x,
+        restore.y,
+        RECOVERY_RESTORE_LABEL,
+        restore.width as usize,
+        Style::default()
+            .fg(theme.canvas)
+            .bg(theme.mint)
+            .add_modifier(Modifier::BOLD),
+    );
+    buffer.set_stringn(
+        discard.x,
+        discard.y,
+        RECOVERY_DISCARD_LABEL,
+        discard.width as usize,
+        Style::default()
+            .fg(theme.canvas)
+            .bg(theme.error)
+            .add_modifier(Modifier::BOLD),
+    );
+    buffer.set_stringn(
+        inner.x,
+        inner.y + 5,
+        "Restore keeps the buffer dirty until you save it.",
+        inner.width as usize,
+        Style::default().fg(theme.faint),
+    );
+}
+
+const RECOVERY_RESTORE_LABEL: &str = " [R] Restore ";
+const RECOVERY_DISCARD_LABEL: &str = " [D] Discard journal ";
+
+/// A button in the "Unsaved work found" dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryButton {
+    Restore,
+    Discard,
+}
+
+/// Where the recovery dialog draws its two buttons. Drawing and mouse
+/// hit-testing both use this, so a click always lands on what is shown.
+pub fn recovery_button_rects(area: Rect) -> (Rect, Rect) {
+    let popup = centered_rect(area, 68, 9);
+    let inner = inset(popup, 2, 1);
+    let row = inner.y + 3;
+    let restore_width = (RECOVERY_RESTORE_LABEL.len() as u16).min(inner.width);
+    let discard_x = inner.x + restore_width + 3;
+    let discard_width =
+        (RECOVERY_DISCARD_LABEL.len() as u16).min(inner.right().saturating_sub(discard_x));
+    (
+        Rect::new(inner.x, row, restore_width, 1),
+        Rect::new(discard_x, row, discard_width, 1),
+    )
+}
+
+pub fn recovery_button_hit(area: Rect, column: u16, row: u16) -> Option<RecoveryButton> {
+    let (restore, discard) = recovery_button_rects(area);
+    let inside = |rect: Rect| {
+        rect.width > 0 && row == rect.y && column >= rect.x && column < rect.x + rect.width
+    };
+    if inside(restore) {
+        Some(RecoveryButton::Restore)
+    } else if inside(discard) {
+        Some(RecoveryButton::Discard)
+    } else {
+        None
+    }
 }
 
 fn render_save_as(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -6030,6 +6076,30 @@ mod tests {
         assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
         assert!(text.contains("+ let total = 1;"), "{text}");
         assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn recovery_buttons_are_drawn_where_clicks_are_tested() {
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(None));
+        app.mode = crate::app::AppMode::Recovery;
+        for (width, height) in [(80u16, 24u16), (120, 34)] {
+            let rows = render_rows(&app, width, height);
+            let (restore, discard) =
+                super::recovery_button_rects(ratatui::layout::Rect::new(0, 0, width, height));
+            let text_at = |rect: ratatui::layout::Rect| -> String {
+                rows[rect.y as usize]
+                    .chars()
+                    .skip(rect.x as usize)
+                    .take(rect.width as usize)
+                    .collect()
+            };
+            assert_eq!(text_at(restore), " [R] Restore ", "{width}x{height}");
+            assert_eq!(
+                text_at(discard),
+                " [D] Discard journal ",
+                "{width}x{height}"
+            );
+        }
     }
 
     #[test]

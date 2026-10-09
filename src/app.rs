@@ -2789,42 +2789,46 @@ impl App {
 
     fn handle_recovery_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('r' | 'R') | KeyCode::Enter => {
-                if let Some(record) = self.recovery_candidate.take() {
-                    self.buffer.restore_recovery_text(&record.content);
-                    self.cursor = Cursor::new(0, 0);
-                    self.selection_anchor = None;
-                    self.mode = AppMode::Editing;
-                    self.status = Some("Recovered unsaved edits; save to persist them".to_owned());
-                    self.last_journal_revision = None;
-                    self.sync_code_intelligence_after_edit();
-                    // Journal the draft under this buffer before letting go of the
-                    // earlier session's copy, so a crash here loses nothing.
-                    self.sync_recovery_journal();
-                    let journaled = self.flush_journal();
-                    if let Some(journal) = record.orphan_journal
-                        && journaled
-                        && let Err(error) = recovery::remove_journal(&journal)
-                    {
-                        self.status = Some(format!("Recovery cleanup failed: {error}"));
-                    }
-                }
-            }
-            KeyCode::Char('d' | 'D') => {
-                let _ = self.journal.clear_now(&self.buffer.recovery_key());
-                if let Some(journal) = self
-                    .recovery_candidate
-                    .as_ref()
-                    .and_then(|record| record.orphan_journal.as_ref())
-                {
-                    let _ = recovery::remove_journal(journal);
-                }
-                self.recovery_candidate = None;
-                self.mode = AppMode::Editing;
-                self.status = Some("Recovery journal discarded".to_owned());
-            }
+            KeyCode::Char('r' | 'R') | KeyCode::Enter => self.restore_recovery(),
+            KeyCode::Char('d' | 'D') => self.discard_recovery(),
             _ => {}
         }
+    }
+
+    fn restore_recovery(&mut self) {
+        if let Some(record) = self.recovery_candidate.take() {
+            self.buffer.restore_recovery_text(&record.content);
+            self.cursor = Cursor::new(0, 0);
+            self.selection_anchor = None;
+            self.mode = AppMode::Editing;
+            self.status = Some("Recovered unsaved edits; save to persist them".to_owned());
+            self.last_journal_revision = None;
+            self.sync_code_intelligence_after_edit();
+            // Journal the draft under this buffer before letting go of the
+            // earlier session's copy, so a crash here loses nothing.
+            self.sync_recovery_journal();
+            let journaled = self.flush_journal();
+            if let Some(journal) = record.orphan_journal
+                && journaled
+                && let Err(error) = recovery::remove_journal(&journal)
+            {
+                self.status = Some(format!("Recovery cleanup failed: {error}"));
+            }
+        }
+    }
+
+    fn discard_recovery(&mut self) {
+        let _ = self.journal.clear_now(&self.buffer.recovery_key());
+        if let Some(journal) = self
+            .recovery_candidate
+            .as_ref()
+            .and_then(|record| record.orphan_journal.as_ref())
+        {
+            let _ = recovery::remove_journal(journal);
+        }
+        self.recovery_candidate = None;
+        self.mode = AppMode::Editing;
+        self.status = Some("Recovery journal discarded".to_owned());
     }
 
     /// Queues the active buffer's journal: its content while dirty, removal
@@ -8513,10 +8517,19 @@ impl App {
             return;
         }
 
-        if self.mode == AppMode::SaveConflict
-            || self.mode == AppMode::Recovery
-            || self.mode == AppMode::ConfirmRevertHunk
-        {
+        if self.mode == AppMode::Recovery {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                let area = ratatui::layout::Rect::new(0, 0, terminal_width, terminal_height);
+                match ui::recovery_button_hit(area, mouse.column, mouse.row) {
+                    Some(ui::RecoveryButton::Restore) => self.restore_recovery(),
+                    Some(ui::RecoveryButton::Discard) => self.discard_recovery(),
+                    None => {}
+                }
+            }
+            return;
+        }
+
+        if self.mode == AppMode::SaveConflict || self.mode == AppMode::ConfirmRevertHunk {
             return;
         }
 
@@ -13690,6 +13703,40 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().readonly(),
             "the file keeps its read-only mode"
         );
+    }
+
+    #[test]
+    fn clicking_restore_in_the_recovery_dialog_restores_the_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        let (restore, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
+        click(&mut app, restore.x + 2, restore.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "draft from crash");
+    }
+
+    #[test]
+    fn clicking_discard_in_the_recovery_dialog_discards_and_misses_do_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        let (_, discard) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 120, 34));
+
+        // A click beside the buttons keeps the dialog open.
+        click(&mut app, discard.x, discard.y + 1, 120, 34);
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        click(&mut app, discard.x + 1, discard.y, 120, 34);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "disk");
+        assert_eq!(app.status.as_deref(), Some("Recovery journal discarded"));
     }
 
     #[test]
