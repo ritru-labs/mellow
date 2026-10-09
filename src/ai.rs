@@ -500,6 +500,64 @@ pub fn commit_message(config: &AiProviderConfig, diff: &str) -> Result<String> {
     Ok(clean_commit_message(&text))
 }
 
+const SHELL_SYSTEM: &str = concat!(
+    "You turn a request into one shell command for a POSIX shell (bash or zsh). ",
+    "Reply with the command only: one line, no code fences, no explanation, no leading prompt. ",
+    "Never use sudo. Never delete or overwrite files unless the request clearly asks for it."
+);
+const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Turns a plain-language request into one shell command. It is only typed
+/// into the terminal for the user to review; nothing runs here.
+pub fn shell_command(config: &AiProviderConfig, request: &str) -> Result<String> {
+    if let Some(problem) = endpoint_problem(&config.endpoint) {
+        bail!("AI address refused: {problem}");
+    }
+    let text = match config.provider {
+        AiProvider::Claude => claude::send(
+            config,
+            &claude::Exchange {
+                system: SHELL_SYSTEM,
+                user: request,
+                max_tokens: 256,
+                effort: "low",
+                timeout: SHELL_TIMEOUT,
+            },
+        )?,
+        _ => chat_completion(config, SHELL_SYSTEM, request, SHELL_TIMEOUT)?,
+    };
+    clean_shell_command(&text)
+}
+
+/// The first non-empty line, without fences, quotes or a leading `$`.
+fn clean_shell_command(text: &str) -> Result<String> {
+    let line = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .map(|line| line.trim().trim_matches('`').trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let line = line.strip_prefix("$ ").unwrap_or(line).trim();
+    if line.is_empty() {
+        bail!("the AI did not suggest a command");
+    }
+    Ok(line.to_owned())
+}
+
+#[cfg(test)]
+mod shell_command_tests {
+    use super::clean_shell_command;
+
+    #[test]
+    fn keeps_one_command_and_drops_fences_and_prompts() {
+        assert_eq!(
+            clean_shell_command("```bash\n$ du -sh *\n```").unwrap(),
+            "du -sh *"
+        );
+        assert!(clean_shell_command("\n\n").is_err());
+    }
+}
+
 /// Removes code fences and wrapping quotes from a drafted message.
 fn clean_commit_message(text: &str) -> String {
     let body: Vec<&str> = text

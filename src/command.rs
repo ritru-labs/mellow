@@ -77,6 +77,7 @@ pub enum Command {
     KeepBothConflict,
     GoToSymbol,
     FixProblemWithAi,
+    AskAiShellCommand,
     CancelSelection,
     MoveLeft,
     MoveRight,
@@ -860,6 +861,14 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         label: "Show Git conflicts",
         category: "Git",
         help: "List unresolved merge conflicts and open them at conflict markers",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::AskAiShellCommand,
+        id: "ai.shell_command",
+        label: "Ask AI for a shell command",
+        category: "AI",
+        help: "Describe what you want in plain words; the command is typed into the terminal for you to review and run",
         bindings: &[],
     },
     CommandSpec {

@@ -417,6 +417,8 @@ pub struct App {
     pub ai_proposal: Option<AiProposal>,
     ai_receiver: Option<Receiver<Result<AiProposal, String>>>,
     commit_message_receiver: Option<Receiver<Result<String, String>>>,
+    shell_receiver: Option<Receiver<Result<String, String>>>,
+    ai_shell_request: bool,
     /// Periodic Git refresh running off the input thread, so a slow `git`
     /// never delays typing or Escape.
     git_refresh_receiver: Option<Receiver<BackgroundGitRefresh>>,
@@ -731,6 +733,8 @@ impl App {
             ai_proposal: None,
             ai_receiver: None,
             commit_message_receiver: None,
+            shell_receiver: None,
+            ai_shell_request: false,
             git_refresh_receiver: None,
             git_operation: None,
             ai_config: if cfg!(test) {
@@ -880,6 +884,7 @@ impl App {
             self.poll_language_service();
             self.poll_ai_request();
             self.poll_commit_message();
+            self.poll_shell_command();
             self.poll_inline_suggestion();
             self.poll_git_operation();
             self.refresh_git_state(false);
@@ -1548,6 +1553,7 @@ impl App {
     }
 
     fn begin_ai_intent(&mut self) {
+        self.ai_shell_request = false;
         if self.ai_config.is_none() {
             self.open_ai_setup(true);
             return;
@@ -1587,6 +1593,10 @@ impl App {
         let instruction = self.ai_query.as_str().trim().to_owned();
         if instruction.is_empty() {
             self.status = Some("Type a question, or press Tab for a suggestion".to_owned());
+            return;
+        }
+        if self.ai_shell_request {
+            self.start_shell_command(instruction);
             return;
         }
 
@@ -5639,6 +5649,88 @@ impl App {
         self.start_ai_request();
     }
 
+    /// Asks AI for one shell command. The answer is typed into the terminal
+    /// without Enter, so the user reads it before anything runs.
+    fn begin_ai_shell(&mut self) {
+        if self.ai_config.is_none() {
+            self.open_ai_setup(true);
+            return;
+        }
+        self.ai_query.clear();
+        self.ai_proposal = None;
+        self.ai_receiver = None;
+        self.ai_shell_request = true;
+        self.mode = AppMode::AiPrompt;
+        self.status = Some("Describe the command you need · Enter asks AI".to_owned());
+    }
+
+    fn start_shell_command(&mut self, request: String) {
+        let Some(config) = self.ai_config.clone() else {
+            self.ai_shell_request = false;
+            self.status = Some("AI is not set up yet".to_owned());
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = ai::shell_command(&config, &request).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        self.shell_receiver = Some(receiver);
+        self.mode = AppMode::AiWaiting;
+        self.status = None;
+    }
+
+    fn poll_shell_command(&mut self) {
+        if !self.ai_shell_request {
+            self.shell_receiver = None;
+            return;
+        }
+        let result = self
+            .shell_receiver
+            .as_ref()
+            .and_then(|receiver| match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("AI request worker disconnected".to_owned()))
+                }
+            });
+        let Some(result) = result else {
+            return;
+        };
+        self.shell_receiver = None;
+        self.ai_shell_request = false;
+        // The user may have stopped waiting; then the answer is dropped.
+        if self.mode != AppMode::AiWaiting {
+            return;
+        }
+        self.mode = AppMode::Editing;
+        match result {
+            Ok(command) => {
+                let typed = if self.terminal_visible {
+                    self.active_terminal_mut()
+                        .map(|terminal| terminal.write_paste(&command))
+                } else {
+                    None
+                };
+                match typed {
+                    Some(Ok(())) => {
+                        self.terminal_focused = true;
+                        self.status = Some(format!(
+                            "Typed in the terminal, not run yet: {command} · Enter there to run"
+                        ));
+                    }
+                    _ => {
+                        self.status = Some(format!(
+                            "Suggested: {command} · open the terminal (Ctrl+T) to type it"
+                        ));
+                    }
+                }
+            }
+            Err(error) => self.status = Some(format!("AI: {error}")),
+        }
+    }
+
     fn begin_go_to_symbol(&mut self) {
         let has_symbols = self
             .syntax_document
@@ -9679,6 +9771,7 @@ impl App {
             Command::GitBlame => self.begin_git_blame(),
             Command::GoToSymbol => self.begin_go_to_symbol(),
             Command::FixProblemWithAi => self.fix_problem_with_ai(),
+            Command::AskAiShellCommand => self.begin_ai_shell(),
             Command::KeepOursConflict => {
                 self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
             }
@@ -11029,6 +11122,14 @@ mod tests {
             app.breadcrumb_with_symbol().last().map(String::as_str),
             Some("other")
         );
+    }
+
+    #[test]
+    fn asking_for_a_shell_command_without_ai_opens_setup() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.execute(Command::AskAiShellCommand);
+        assert_ne!(app.mode, AppMode::AiPrompt);
+        assert!(!app.ai_shell_request);
     }
 
     #[test]
