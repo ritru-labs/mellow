@@ -5613,6 +5613,32 @@ impl App {
         self.status = Some("Kept the chosen side · Ctrl+Z undoes it".to_owned());
     }
 
+    /// Asks AI to fix the problem on the cursor line. The line is selected as
+    /// the context, so the answer comes back as a reviewable replacement.
+    fn fix_problem_with_ai(&mut self) {
+        let row = self.cursor.row;
+        let Some(problem) = self
+            .problem_items()
+            .into_iter()
+            .find(|problem| problem.cursor.row == row)
+        else {
+            self.status = Some("No problem on this line".to_owned());
+            return;
+        };
+        if self.ai_config.is_none() {
+            self.open_ai_setup(true);
+            return;
+        }
+        self.selection_anchor = Some(Cursor::new(row, 0));
+        self.cursor = Cursor::new(row, self.buffer.grapheme_count(row));
+        self.ai_context = Some(self.build_ai_context());
+        self.ai_query
+            .set(format!("Fix this problem: {}", problem.message));
+        self.ai_proposal = None;
+        self.ai_receiver = None;
+        self.start_ai_request();
+    }
+
     fn begin_go_to_symbol(&mut self) {
         let has_symbols = self
             .syntax_document
@@ -9652,6 +9678,7 @@ impl App {
             Command::GitHistory => self.begin_git_history(),
             Command::GitBlame => self.begin_git_blame(),
             Command::GoToSymbol => self.begin_go_to_symbol(),
+            Command::FixProblemWithAi => self.fix_problem_with_ai(),
             Command::KeepOursConflict => {
                 self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
             }
@@ -11002,6 +11029,34 @@ mod tests {
             app.breadcrumb_with_symbol().last().map(String::as_str),
             Some("other")
         );
+    }
+
+    #[test]
+    fn fix_problem_says_when_the_line_has_no_problem() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.buffer
+            .insert_text(&mut Cursor::default(), "let fine = 1;");
+        app.execute(Command::FixProblemWithAi);
+        assert_eq!(app.status.as_deref(), Some("No problem on this line"));
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn fix_problem_without_ai_opens_setup_instead_of_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        std::fs::write(&path, "fn main( {\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        assert!(
+            app.problem_items()
+                .iter()
+                .any(|problem| problem.cursor.row == 0),
+            "expected a parse problem on the first line"
+        );
+        app.cursor = Cursor::new(0, 0);
+        app.execute(Command::FixProblemWithAi);
+        assert_ne!(app.mode, AppMode::AiReview);
+        assert!(app.ai_proposal.is_none());
     }
 
     #[test]
