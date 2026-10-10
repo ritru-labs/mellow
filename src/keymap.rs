@@ -149,9 +149,22 @@ fn preset_bindings(name: &str) -> Result<HashMap<String, Vec<KeyBinding>>, Strin
             ("workbench.commands", "ctrl+shift+p, f1"),
             ("help.shortcuts", "none"),
         ],
+        // nano: the keys its users already know. Its Ctrl+O is save, Ctrl+X quit,
+        // Ctrl+W search, Ctrl+K cut and Ctrl+U paste. Commands that lose their
+        // usual key here move to Alt+ keys, which every terminal can send.
+        "nano" => &[
+            ("file.save", "ctrl+o"),
+            ("app.quit", "ctrl+x"),
+            ("search.find", "ctrl+w"),
+            ("edit.cut", "ctrl+k"),
+            ("edit.paste", "ctrl+u"),
+            ("file.open", "ctrl+r"),
+            ("file.close_tab", "alt+w"),
+            ("ai.intent", "alt+k"),
+        ],
         other => {
             return Err(format!(
-                "unknown keymap preset '{other}' (choose default or vscode)"
+                "unknown keymap preset '{other}' (choose default, vscode or nano)"
             ));
         }
     };
@@ -459,6 +472,21 @@ mod tests {
         };
         assert_eq!(config.resolve(ctrl('p')), Some(Command::OpenFile));
         assert_eq!(config.resolve(ctrl_shift('p')), Some(Command::ShowPalette));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nano_preset_uses_nano_keys_and_loads_without_conflicts() {
+        let dir = std::env::temp_dir().join(format!("mellow-keymap-n-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys");
+        std::fs::write(&path, "preset = nano\n").unwrap();
+        let config = KeymapConfig::load_from_path(&path).unwrap();
+        let ctrl = |ch: char| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+        assert_eq!(config.resolve(ctrl('o')), Some(Command::Save));
+        assert_eq!(config.resolve(ctrl('x')), Some(Command::Quit));
+        assert_eq!(config.resolve(ctrl('w')), Some(Command::Find));
+        assert_eq!(config.resolve(ctrl('k')), Some(Command::Cut));
         std::fs::remove_dir_all(&dir).ok();
     }
 

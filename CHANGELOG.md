@@ -2,9 +2,32 @@
 
 ## Unreleased
 
-An agent-style look for the AI panels and list overlays.
+An agent-style look, mouse support across overlays, and a set of editing features.
+
+### Added
+
+- **Go to symbol** (`Ctrl+Shift+O`) for Rust, Python and shell files, and a breadcrumb that ends with the function the cursor is in.
+- **Recent files first** in Open file.
+- **Commit message draft** (`Ctrl+G` in the commit box, needs AI).
+- **Fix problem on this line with AI**, **Ask AI for a shell command** (typed into the terminal, not run), and **Undo last AI edit** with a session list of AI edits.
+- **Merge conflicts:** keep ours, theirs or both, one undoable edit each; the status line names them inside a conflict.
+- **Keymap presets:** `preset = vscode` and `preset = nano`.
 
 ### Changed
+
+- **Mouse works in overlays:** click a row in the palette, Open file, Go to symbol, references, Git lists and problems; click dialog buttons; the wheel scrolls lists; a click outside a list closes it.
+- **Recovery:** Esc decides later without losing a draft; Discard all clears several drafts; blank drafts are removed without a prompt.
+- **First keystroke is kept:** any key on the welcome screen dismisses it and reaches the file.
+- **Status colours follow what the app reports**, not the words in the message.
+- Ctrl+Space in the built-in terminal goes to the shell; Ctrl+T leaves the terminal.
+- The built-in terminal tells programs its real colour level (`TERM=xterm` on 16-colour terminals).
+- Copies over 256 KB stay in Mellow when no system clipboard is available.
+- ASCII fallback covers borders, markers and separators, for terminals without Unicode.
+- Save As never replaces a file that appears while saving; saves written in place say so.
+- The 16-colour light theme uses colours that read on white.
+- Errors no longer mention an old version number.
+
+### Also in this release
 
 - The AI review panel opens with a bullet headline and a change count (`+2 added −0 removed`) above the diff.
 - The "working" state shows a spinner (an ASCII fallback is used without Unicode symbols) and fits at 80×24.

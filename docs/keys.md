@@ -60,6 +60,24 @@ foot and others):
 | `Ctrl+Shift+S` | Save As (otherwise use the palette) |
 | `Ctrl+Shift+G` | Git changes |
 | `Ctrl+Shift+M` | Problems |
+| `Ctrl+Shift+O` | Go to symbol: jump to a function, type or other definition (Rust, Python, Shell) |
+
+## Without the kitty protocol
+
+Terminals such as Terminal.app do not send the `Shift` chords above: `Ctrl+Shift+O`
+arrives as plain `Ctrl+O`, which opens a file. Everything in those tables is
+still in **Ctrl+P**, so the palette is the reliable path. Mellow shows
+the keys your terminal can send in `F1`.
+
+## In dialogs
+
+Lists (the palette, Open file, Go to symbol, references and Git lists) take
+clicks and the mouse wheel. Confirmations and text prompts have buttons, such as
+`[Enter] Commit` and `[Esc] Cancel`, and `Esc` closes any dialog.
+
+In the commit box, `Ctrl+G` drafts a commit message from your staged changes
+with AI. The draft goes into the box for you to read; nothing is committed until
+you press `Enter`.
 
 ## In the terminal
 
@@ -92,6 +110,8 @@ The keymap file can start from a preset. Add one line, and your own
 preset = vscode   # Ctrl+P opens files; Ctrl+Shift+P or F1 opens commands
 ```
 
-`default` keeps Mellow's own keys, and `vscode` is the only other preset.
-Many terminals send Ctrl+Shift+P as plain Ctrl+P, so with `vscode` use F1
-for commands; Help is then in the command list.
+`default` keeps Mellow's own keys. `vscode` gives Ctrl+P for files and
+Ctrl+Shift+P or F1 for commands. `nano` keeps nano's habits: Ctrl+O saves,
+Ctrl+X quits, Ctrl+W searches, Ctrl+K cuts, Ctrl+U pastes and Ctrl+R opens a
+file. Close tab moves to Alt+W and Ask AI to Alt+K to make room. Many terminals
+send Ctrl+Shift+P as plain Ctrl+P, so with `vscode` use F1 for commands.
