@@ -8580,6 +8580,7 @@ impl App {
             AppMode::GitConflicts => &mut self.git_conflict_selected,
             AppMode::GitHistory => &mut self.git_history_selected,
             AppMode::GitBranches => &mut self.git_branch_selected,
+            AppMode::GitBlame => &mut self.git_blame_selected,
             AppMode::CodeActions => &mut self.code_action_selected,
             AppMode::AiSetup => {
                 self.ai_setup.field = index.min(crate::app::AI_SETUP_FIELDS - 1);
@@ -8596,7 +8597,7 @@ impl App {
         // Git changes previews the selected change, so the first click shows it.
         let two_step = matches!(
             self.mode,
-            AppMode::GitBranches | AppMode::CodeActions | AppMode::Changes
+            AppMode::GitBranches | AppMode::CodeActions | AppMode::Changes | AppMode::GitBlame
         );
         if two_step && !already {
             RowClick::Select
@@ -14273,6 +14274,79 @@ mod tests {
             "a click focuses; it does not save"
         );
         assert_eq!(app.ai_setup.field, 1);
+    }
+
+    #[test]
+    fn the_commit_box_has_clickable_commit_and_cancel() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitCommit);
+        assert_eq!(app.mode, AppMode::GitCommitInput);
+
+        draw_frame(&app, 80, 24);
+        // With no message, Commit explains itself and keeps the box open.
+        let commit = drawn_target(
+            &app,
+            ClickTarget::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        click(&mut app, commit.x + 2, commit.y, 80, 24);
+        assert_eq!(app.mode, AppMode::GitCommitInput);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("Commit message cannot be empty")
+        );
+
+        draw_frame(&app, 80, 24);
+        let cancel = drawn_target(
+            &app,
+            ClickTarget::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+        click(&mut app, cancel.x + 2, cancel.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn name_dialogs_close_on_click_of_cancel() {
+        let dir = git_workspace();
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.mode = AppMode::GitBranchCreate;
+        draw_frame(&app, 80, 24);
+        let cancel = drawn_target(
+            &app,
+            ClickTarget::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+        click(&mut app, cancel.x + 2, cancel.y, 80, 24);
+        assert_eq!(
+            app.mode,
+            AppMode::GitBranches,
+            "Cancel goes back to the branch list"
+        );
+    }
+
+    #[test]
+    fn clicking_a_blame_row_selects_it_first() {
+        let dir = git_workspace();
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.git_blame = (0..3)
+            .map(|index| crate::git::GitBlameLine {
+                row: index,
+                short_oid: "abc1234".to_owned(),
+                author: "Ritru".to_owned(),
+                date: "2026-10-10".to_owned(),
+                text: format!("line {index}"),
+            })
+            .collect();
+        app.mode = AppMode::GitBlame;
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(2));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::GitBlame, "the first click only selects");
+        assert_eq!(app.git_blame_selected, 2);
     }
 
     #[test]
