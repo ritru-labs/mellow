@@ -4864,6 +4864,15 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.faint),
         ));
     }
+    // The five field rows start on the fourth line of the form. A click on a
+    // row only moves the focus to that field, so nothing is saved by mistake.
+    for field in 0..5u16 {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + 3 + field, inner.width, 1),
+            crate::app::ClickTarget::Row(usize::from(field)),
+        );
+    }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
     let input = match form.field {

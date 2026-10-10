@@ -8581,6 +8581,10 @@ impl App {
             AppMode::GitHistory => &mut self.git_history_selected,
             AppMode::GitBranches => &mut self.git_branch_selected,
             AppMode::CodeActions => &mut self.code_action_selected,
+            AppMode::AiSetup => {
+                self.ai_setup.field = index.min(crate::app::AI_SETUP_FIELDS - 1);
+                return RowClick::Select;
+            }
             AppMode::Problems => &mut self.problem_selected,
             AppMode::Completion => &mut self.completion_selected,
             AppMode::ProjectSearch => &mut self.project_search_selected,
@@ -14254,6 +14258,21 @@ mod tests {
             message.contains("too large for the terminal clipboard"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn clicking_an_ai_setup_field_focuses_it_without_saving() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::AiSetup;
+        draw_frame(&app, 80, 24);
+        let model_row = drawn_target(&app, ClickTarget::Row(1));
+        click(&mut app, model_row.x + 3, model_row.y, 80, 24);
+        assert_eq!(
+            app.mode,
+            AppMode::AiSetup,
+            "a click focuses; it does not save"
+        );
+        assert_eq!(app.ai_setup.field, 1);
     }
 
     #[test]
