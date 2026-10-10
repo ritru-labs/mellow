@@ -14276,6 +14276,120 @@ mod tests {
         assert_eq!(app.ai_setup.field, 1);
     }
 
+    /// A local stand-in for a chat provider: answers every request with
+    /// `content`, the way the real API would.
+    fn fake_ai(content: &str) -> (crate::ai::AiProviderConfig, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let envelope =
+            serde_json::json!({"choices": [{"message": {"content": content}}]}).to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = vec![0u8; 256 * 1024];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                envelope.len(),
+                envelope
+            )
+            .unwrap();
+        });
+        let config = crate::ai::AiProviderConfig {
+            provider: crate::ai::AiProvider::Custom,
+            endpoint: format!("http://{address}/v1/chat/completions"),
+            model: "test-model".to_owned(),
+            api_key: None,
+            inline_suggestions: false,
+        };
+        (config, server)
+    }
+
+    /// Runs the background pollers until `done` holds, or fails after 10 s.
+    fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(app) {
+            app.poll_ai_request();
+            app.poll_commit_message();
+            app.poll_shell_command();
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn live_fix_problem_returns_a_reviewable_diff_that_applies_on_accept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        std::fs::write(&path, "fn main( {\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        let (config, server) =
+            fake_ai(r#"{"summary":"Close the parameter list.","replacement":"fn main() {"}"#);
+        app.ai_config = Some(config);
+        app.execute(Command::FixProblemWithAi);
+        wait_until(&mut app, "the fix", |app| app.mode == AppMode::AiReview);
+        assert_eq!(
+            app.ai_proposal.as_ref().map(|p| p.summary.as_str()),
+            Some("Close the parameter list.")
+        );
+        // Accepting applies the change: Enter in the review.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.buffer.line_text(0), "fn main() {");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn live_shell_command_is_suggested_and_never_run() {
+        let mut app = App::new(Buffer::empty(None));
+        let (config, server) = fake_ai("```bash\n$ du -sh *\n```");
+        app.ai_config = Some(config);
+        app.execute(Command::AskAiShell);
+        assert_eq!(app.mode, AppMode::AiPrompt);
+        app.ai_query.set("show folder sizes");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        wait_until(&mut app, "the command", |app| {
+            app.mode != AppMode::AiWaiting
+        });
+        let status = app.status.clone().unwrap_or_default();
+        assert!(status.starts_with("Suggested: du -sh *"), "{status}");
+        assert!(
+            app.terminal_sessions.is_empty(),
+            "nothing was typed or started"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn live_commit_message_is_drafted_into_the_box_for_review() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        let (config, server) = fake_ai("Update the demo text\n\nThe demo now says changed.");
+        app.ai_config = Some(config);
+        app.execute(Command::GitCommit);
+        app.handle_git_commit_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        wait_until(&mut app, "the draft", |app| {
+            app.commit_message_receiver.is_none() && !app.git_commit_query.is_empty()
+        });
+        assert_eq!(
+            app.git_commit_query.as_str(),
+            "Update the demo text\n\nThe demo now says changed."
+        );
+        assert_eq!(
+            app.mode,
+            AppMode::GitCommitInput,
+            "nothing is committed until Enter"
+        );
+        assert_eq!(
+            git_in(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
+            "1"
+        );
+        server.join().unwrap();
+    }
+
     #[test]
     fn the_commit_box_has_clickable_commit_and_cancel() {
         let dir = git_workspace();
