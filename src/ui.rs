@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -237,6 +238,8 @@ pub fn gutter_width(line_count: usize) -> u16 {
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    app.overlay_area.set(None);
+    app.overlay_targets.borrow_mut().clear();
     let theme = app.theme;
     frame.render_widget(
         Block::default().style(Style::default().bg(theme.canvas)),
@@ -2410,7 +2413,7 @@ fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
     let popup_height = 15.min(area.height.saturating_sub(2)).max(8);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -2450,6 +2453,16 @@ fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
             0
         };
         for (index, symbol) in symbols.iter().enumerate().skip(first).take(rows) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + 1 + (index - first) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -2575,6 +2588,39 @@ fn plain_border(unicode: bool) -> ratatui::symbols::border::Set<'static> {
     }
 }
 
+/// Clears an overlay's box and records it, so the mouse handler can tell a
+/// click inside the overlay from one outside it.
+fn clear_overlay(frame: &mut Frame<'_>, app: &App, popup: Rect) {
+    frame.render_widget(Clear, popup);
+    app.overlay_area.set(Some(popup));
+}
+
+/// Draws a row of buttons left to right, three columns apart, and records
+/// each one so clicking it acts like its key.
+fn draw_buttons(frame: &mut Frame<'_>, app: &App, row: Rect, buttons: &[(&str, Style, KeyEvent)]) {
+    let mut x = row.x;
+    for (label, style, key) in buttons {
+        let width = (UnicodeWidthStr::width(*label) as u16).min(row.right().saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        frame
+            .buffer_mut()
+            .set_stringn(x, row.y, label, width as usize, *style);
+        click_target(
+            app,
+            Rect::new(x, row.y, width, 1),
+            crate::app::ClickTarget::Key(*key),
+        );
+        x = x.saturating_add(width + 3);
+    }
+}
+
+/// Records a clickable row or button of the overlay being drawn.
+fn click_target(app: &App, rect: Rect, target: crate::app::ClickTarget) {
+    app.overlay_targets.borrow_mut().push((rect, target));
+}
+
 /// A horizontal rule character that respects the ASCII fallback.
 fn rule_glyph(app: &App) -> &'static str {
     if app.theme.unicode_symbols {
@@ -2598,7 +2644,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
     let popup_height = 15.min(area.height.saturating_sub(2)).max(8);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -2664,6 +2710,16 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
         for (item_idx, &entry_index) in matches[window_start..window_end].iter().enumerate() {
             let visible_index = window_start + item_idx;
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + (header_rows + item_idx) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(visible_index),
+            );
             let entry = COMMAND_SPECS[entry_index];
             let is_selected = visible_index == selected;
             let background = if is_selected {
@@ -2750,7 +2806,7 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 72.min(area.width.saturating_sub(4)).max(28);
     let popup_height = 17.min(area.height.saturating_sub(2)).max(9);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -2811,6 +2867,11 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
         for (visible_index, &candidate_index) in matches[start..end].iter().enumerate() {
             let list_index = start + visible_index;
             let path = &app.quick_open_candidates[candidate_index];
+            click_target(
+                app,
+                Rect::new(inner.x, inner.y + 2 + visible_index as u16, inner.width, 1),
+                crate::app::ClickTarget::Row(list_index),
+            );
             let is_selected = list_index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -2974,7 +3035,7 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let popup = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(rounded_border(theme.unicode_symbols))
@@ -3054,7 +3115,7 @@ fn render_explorer_path_action(
     footer: &str,
 ) {
     let popup = centered_rect(area, 72, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -3083,7 +3144,7 @@ fn render_explorer_path_action(
 
 fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 68, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Delete? ")
         .borders(Borders::ALL)
@@ -3113,7 +3174,7 @@ fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &
 
 fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 86, 18);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let theme = app.theme;
     let block = Block::default()
         .title(overlay_title(app, "References"))
@@ -3156,7 +3217,7 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_rename_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 64, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Rename ")
         .borders(Borders::ALL)
@@ -3179,7 +3240,7 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let height = area.height.saturating_sub(4).clamp(8, 30);
     let popup = centered_rect(area, 96, height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let files = app
         .pending_lsp_preview
         .iter()
@@ -3247,7 +3308,7 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 82, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(overlay_title(app, "Quick fixes"))
         .borders(Borders::ALL)
@@ -3290,7 +3351,7 @@ fn render_language_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let health = app.language_health();
     let popup = centered_rect(area, 78, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(format!(" Language server · {} ", health.language))
         .borders(Borders::ALL)
@@ -3379,7 +3440,7 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 92.min(area.width.saturating_sub(4)).max(36);
     let popup_height = 19.min(area.height.saturating_sub(2)).max(9);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -3490,7 +3551,7 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 78, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Commit ")
         .borders(Borders::ALL)
@@ -3520,7 +3581,7 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 76, 18);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(overlay_title(app, "Branches"))
         .borders(Borders::ALL)
@@ -3566,7 +3627,7 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 70, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" New branch ")
         .borders(Borders::ALL)
@@ -3590,7 +3651,7 @@ fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 72, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Rename branch ")
         .borders(Borders::ALL)
@@ -3616,7 +3677,7 @@ fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 70, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Delete branch? ")
         .borders(Borders::ALL)
@@ -3643,7 +3704,7 @@ fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app:
 
 fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 110, 24);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Who changed each line ")
         .borders(Borders::ALL)
@@ -3684,7 +3745,7 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 88, 20);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Conflicts ")
         .borders(Borders::ALL)
@@ -3734,7 +3795,7 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 100, 22);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(overlay_title(app, "History"))
         .borders(Borders::ALL)
@@ -3795,7 +3856,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 104.min(area.width.saturating_sub(4)).max(42);
     let popup_height = (list_rows + 16).min(area.height.saturating_sub(2)).max(10);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
 
     let branch = if app.git_snapshot.branch.is_empty() {
         "repository"
@@ -3995,7 +4056,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_revert_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 72, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -4034,28 +4095,39 @@ fn render_revert_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "This discards only the selected unstaged Git hunk from the working tree.",
             Style::default().fg(theme.warning),
         )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
+    ];
+    // A long path or the warning can wrap; the buttons keep the last row.
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(2),
+        ),
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &[
+            (
                 " [R / Enter] Revert hunk ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.error)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Enter),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [Esc] Cancel ",
                 Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
             ),
-        ]),
-    ];
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        ],
     );
 }
 
@@ -4123,7 +4195,7 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     let popup = ai_prompt_rect(area, app);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = ai_box(app, format!(" {spark} Ask AI about {} ", app.ai_subject()));
     let inner = inset(block.inner(popup), 1, 0);
     frame.render_widget(block, popup);
@@ -4221,7 +4293,7 @@ fn render_ai_waiting(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     // Four content rows (status, query, gap, note) plus the border.
     let popup = anchored_rect(area, app, 84, 6);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = ai_box(
         app,
         format!(" {spark} {} is working ", app.ai_provider_name()),
@@ -4278,7 +4350,7 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         width,
         height.clamp(8, 28).min(area.height.saturating_sub(2)),
     );
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let title = if proposal.replacement.is_some() {
         format!(" {spark} Suggested change ")
     } else {
@@ -4382,6 +4454,26 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
             footer_rows,
         ),
     );
+    let actions_row = inner.bottom().saturating_sub(footer_rows) + 1;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    if proposal.replacement.is_some() {
+        click_target(
+            app,
+            Rect::new(inner.x, actions_row, 15, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Enter)),
+        );
+        click_target(
+            app,
+            Rect::new(inner.x + 18, actions_row, 13, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Esc)),
+        );
+    } else {
+        click_target(
+            app,
+            Rect::new(inner.x, actions_row, 14, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Enter)),
+        );
+    }
 }
 
 pub fn ai_setup_rect(area: Rect) -> Rect {
@@ -4397,7 +4489,7 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     let form = &app.ai_setup;
     let popup = ai_setup_rect(area);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = ai_box(app, format!(" {spark} Set up AI "));
     let inner = inset(block.inner(popup), 2, 1);
     frame.render_widget(block, popup);
@@ -4612,7 +4704,7 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 72, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Settings ")
         .borders(Borders::ALL)
@@ -4783,7 +4875,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let essentials = key_lines(app, ESSENTIALS);
     let height = (essentials.len() as u16 + 9).min(area.height.saturating_sub(2));
     let popup = centered_rect(area, 56.min(area.width.saturating_sub(4)), height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(Span::styled(
             format!(
@@ -4834,7 +4926,7 @@ pub fn help_rect(area: Rect) -> Rect {
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = help_rect(area);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -4923,7 +5015,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 60, 6);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -4957,7 +5049,7 @@ fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &A
 fn render_close_tab_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 60, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5030,7 +5122,7 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .as_deref()
         .is_some_and(|s| s.starts_with("Save failed"));
     let popup = quit_dialog_rect(area, save_failed);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5127,7 +5219,7 @@ fn render_find(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_x = area.right().saturating_sub(popup_width + 2);
     let popup_y = area.top() + HEADER_ROWS + 1;
     let popup = Rect::new(popup_x, popup_y, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5211,7 +5303,7 @@ fn render_replace(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 88.min(area.width.saturating_sub(4)).max(36);
     let popup_height = 20.min(area.height.saturating_sub(2)).max(11);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5477,7 +5569,7 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 104.min(area.width.saturating_sub(4)).max(42);
     let popup_height = 22.min(area.height.saturating_sub(2)).max(11);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5707,7 +5799,7 @@ fn render_goto(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 38.min(area.width.saturating_sub(4)).max(20);
     let popup_height = 5;
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5766,7 +5858,7 @@ fn render_goto(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 72, 10);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5802,48 +5894,62 @@ fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )),
         Line::raw(""),
         Line::from(Span::styled(reason, Style::default().fg(theme.warning))),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
+    ];
+    // The reason can wrap, so it gets its own area and the buttons stay on a
+    // fixed row where clicks are tested.
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(3),
+        ),
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+        &[
+            (
                 " [S] Save As ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.mint)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('s')),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [O] Overwrite ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.error)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('o')),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [Esc] Cancel ",
                 Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
             ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "No file is changed until you choose an action.",
-            Style::default().fg(theme.faint),
-        )),
-    ];
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        ],
+    );
+    frame.buffer_mut().set_stringn(
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        "No file is changed until you choose an action.",
+        inner.width as usize,
+        Style::default().fg(theme.faint),
     );
 }
 
 fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 68, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -5983,7 +6089,7 @@ fn render_save_as(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 68.min(area.width.saturating_sub(4)).max(28);
     let popup_height = 7;
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)

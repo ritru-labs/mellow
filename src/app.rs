@@ -264,6 +264,15 @@ pub struct ProblemItem {
     pub cursor: Cursor,
 }
 
+/// What a click on part of an overlay does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Choose the list row with this index and open it, like Enter.
+    Row(usize),
+    /// Act like this key, for a button that shows its key.
+    Key(KeyEvent),
+}
+
 /// One accepted AI edit: what it was, and the buffer revision it produced.
 #[derive(Debug, Clone)]
 struct AiEditRecord {
@@ -449,6 +458,12 @@ pub struct App {
     typed_since_suggestion: bool,
     /// Where the editor cursor was last drawn, for anchoring inline popups.
     pub last_cursor_screen: std::cell::Cell<Option<(u16, u16)>>,
+    /// The box of the overlay drawn last, recorded while rendering so a
+    /// click can tell inside from outside.
+    pub overlay_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
+    /// Clickable rows and buttons of that overlay, also recorded while
+    /// rendering, so a click always matches what is on screen.
+    pub overlay_targets: std::cell::RefCell<Vec<(ratatui::layout::Rect, ClickTarget)>>,
     pub palette_query: TextInput,
     pub palette_selected: usize,
     pub preferred_col: Option<usize>,
@@ -774,6 +789,8 @@ impl App {
             last_edit_at: Instant::now(),
             typed_since_suggestion: false,
             last_cursor_screen: std::cell::Cell::new(None),
+            overlay_area: std::cell::Cell::new(None),
+            overlay_targets: std::cell::RefCell::new(Vec::new()),
             palette_query: TextInput::default(),
             palette_selected: 0,
             preferred_col: None,
@@ -8462,6 +8479,96 @@ impl App {
         }
     }
 
+    /// Mouse in any overlay. Rows and buttons recorded while rendering act on
+    /// a click; the wheel moves through lists; a click outside closes overlays
+    /// where closing loses nothing. Inside, other clicks do nothing, so a stray
+    /// click never throws away what the user was doing.
+    fn handle_overlay_mouse(&mut self, mouse: MouseEvent) {
+        // The welcome says "just start typing"; a click is just as good.
+        if self.mode == AppMode::Onboarding {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                self.dismiss_onboarding();
+            }
+            return;
+        }
+        let key = |code: KeyCode| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        let is_list = self.mode_is_list_overlay();
+        match mouse.kind {
+            MouseEventKind::ScrollUp if is_list => self.handle_key(key(KeyCode::Up)),
+            MouseEventKind::ScrollDown if is_list => self.handle_key(key(KeyCode::Down)),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let inside = |rect: ratatui::layout::Rect| {
+                    mouse.column >= rect.x
+                        && mouse.column < rect.x.saturating_add(rect.width)
+                        && mouse.row >= rect.y
+                        && mouse.row < rect.y.saturating_add(rect.height)
+                };
+                let target = self
+                    .overlay_targets
+                    .borrow()
+                    .iter()
+                    .find(|(rect, _)| inside(*rect))
+                    .map(|(_, target)| *target);
+                match target {
+                    Some(ClickTarget::Row(index)) => {
+                        if self.select_overlay_row(index) {
+                            self.handle_key(key(KeyCode::Enter));
+                        }
+                    }
+                    Some(ClickTarget::Key(event)) => self.handle_key(event),
+                    None => {
+                        let clicked_inside = self.overlay_area.get().is_some_and(inside);
+                        if !clicked_inside && self.mode_closes_on_outside_click() {
+                            self.handle_key(key(KeyCode::Esc));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Overlays that are lists the wheel can move through.
+    fn mode_is_list_overlay(&self) -> bool {
+        matches!(
+            self.mode,
+            AppMode::Palette
+                | AppMode::QuickOpen
+                | AppMode::Symbols
+                | AppMode::Problems
+                | AppMode::References
+                | AppMode::CodeActions
+                | AppMode::Completion
+                | AppMode::GitBranches
+                | AppMode::GitHistory
+                | AppMode::GitConflicts
+                | AppMode::Changes
+                | AppMode::ProjectSearch
+        )
+    }
+
+    /// Overlays where Esc only closes the view, so an outside click may too.
+    /// Text being typed, confirmations and AI results never close this way.
+    fn mode_closes_on_outside_click(&self) -> bool {
+        self.mode_is_list_overlay()
+            || matches!(
+                self.mode,
+                AppMode::Help | AppMode::LanguageStatus | AppMode::GitBlame | AppMode::Find
+            )
+    }
+
+    /// Moves the selection of the current list overlay to `index`. Returns
+    /// false for overlays without clickable rows.
+    fn select_overlay_row(&mut self, index: usize) -> bool {
+        match self.mode {
+            AppMode::Palette => self.palette_selected = index,
+            AppMode::QuickOpen => self.quick_open_selected = index,
+            AppMode::Symbols => self.symbol_selected = index,
+            _ => return false,
+        }
+        true
+    }
+
     fn discard_current_and_continue_quit(&mut self) {
         if self.tabs.len() == 1 {
             let _ = self.journal.clear_now(&self.buffer.recovery_key());
@@ -8648,30 +8755,8 @@ impl App {
             return;
         }
 
-        if self.mode == AppMode::SaveConflict || self.mode == AppMode::ConfirmRevertHunk {
-            return;
-        }
-
-        if self.mode == AppMode::Help
-            || self.mode == AppMode::Find
-            || self.mode == AppMode::Replace
-            || self.mode == AppMode::ProjectSearch
-            || self.mode == AppMode::GoToLine
-            || self.mode == AppMode::SaveAs
-            || self.mode == AppMode::QuickOpen
-            || self.mode == AppMode::Completion
-            || self.mode == AppMode::Problems
-            || self.mode == AppMode::LanguageStatus
-            || self.mode == AppMode::Changes
-        {
-            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                self.mode = AppMode::Editing;
-                self.status = None;
-            }
-            return;
-        }
-
         if self.mode != AppMode::Editing {
+            self.handle_overlay_mouse(mouse);
             return;
         }
 
@@ -13875,6 +13960,150 @@ mod tests {
             "{:?}",
             app.status
         );
+    }
+
+    fn draw_frame(app: &App, width: u16, height: u16) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+    }
+
+    fn drawn_target(app: &App, wanted: ClickTarget) -> ratatui::layout::Rect {
+        app.overlay_targets
+            .borrow()
+            .iter()
+            .find(|(_, target)| *target == wanted)
+            .map(|(rect, _)| *rect)
+            .unwrap_or_else(|| panic!("{wanted:?} was not drawn"))
+    }
+
+    fn plain_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn clicking_a_palette_row_runs_that_command() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        app.palette_query.set("help");
+        app.palette_selected = 0;
+        draw_frame(&app, 80, 24);
+        let entries = app.filtered_palette_entries();
+        let wanted = entries
+            .iter()
+            .position(|&index| crate::command::COMMAND_SPECS[index].command == Command::ShowHelp)
+            .expect("Help is listed");
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 3, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn palette_closes_on_an_outside_click_but_not_a_stray_inside_click() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        draw_frame(&app, 80, 24);
+        let area = app.overlay_area.get().expect("palette box recorded");
+        // The query line is inside the box but not a row or button.
+        click(&mut app, area.x + 4, area.y + 1, 80, 24);
+        assert_eq!(app.mode, AppMode::Palette);
+
+        draw_frame(&app, 80, 24);
+        click(&mut app, 0, 23, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn the_mouse_wheel_moves_through_a_list_overlay() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        draw_frame(&app, 80, 24);
+        let scroll = |kind| crossterm::event::MouseEvent {
+            kind,
+            column: 30,
+            row: 10,
+            modifiers: KeyModifiers::empty(),
+        };
+        app.handle_mouse(scroll(MouseEventKind::ScrollDown), 80, 24);
+        app.handle_mouse(scroll(MouseEventKind::ScrollDown), 80, 24);
+        assert_eq!(app.palette_selected, 2);
+        app.handle_mouse(scroll(MouseEventKind::ScrollUp), 80, 24);
+        assert_eq!(app.palette_selected, 1);
+    }
+
+    #[test]
+    fn clicking_a_quick_open_row_opens_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["alpha.txt", "beta.txt"] {
+            std::fs::write(dir.path().join(name), format!("{name}\n")).unwrap();
+        }
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        assert_eq!(app.mode, AppMode::QuickOpen);
+        draw_frame(&app, 80, 24);
+        let wanted = app
+            .filtered_quick_open_entries()
+            .iter()
+            .position(|&index| app.quick_open_candidates[index].ends_with("beta.txt"))
+            .expect("beta.txt is listed");
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(
+            app.buffer
+                .path()
+                .is_some_and(|path| path.ends_with("beta.txt"))
+        );
+    }
+
+    #[test]
+    fn save_conflict_cancel_works_by_click_and_outside_clicks_are_ignored() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::SaveConflict;
+        draw_frame(&app, 80, 24);
+        // A click outside a safety prompt must not choose for the user.
+        click(&mut app, 0, 0, 80, 24);
+        assert_eq!(app.mode, AppMode::SaveConflict);
+
+        draw_frame(&app, 80, 24);
+        let cancel = drawn_target(&app, ClickTarget::Key(plain_key(KeyCode::Esc)));
+        click(&mut app, cancel.x + 1, cancel.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn clicking_accept_applies_the_ai_suggestion() {
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        app.ai_context = Some(super::AiContextSnapshot {
+            revision: app.buffer.revision(),
+            range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
+            before: "let".to_owned(),
+            request_context: String::new(),
+            label: String::new(),
+            path: app.buffer.display_path(),
+            language: "Plain Text".to_owned(),
+        });
+        app.ai_proposal = Some(crate::ai::AiProposal {
+            summary: "Rename to var".to_owned(),
+            replacement: Some("var".to_owned()),
+        });
+        app.mode = AppMode::AiReview;
+        draw_frame(&app, 80, 24);
+        let accept = drawn_target(&app, ClickTarget::Key(plain_key(KeyCode::Enter)));
+        click(&mut app, accept.x + 2, accept.y, 80, 24);
+        assert_eq!(app.buffer.contents(), "var a = 1;");
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn a_click_dismisses_the_welcome_screen() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        draw_frame(&app, 80, 24);
+        click(&mut app, 40, 12, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
     }
 
     #[test]
