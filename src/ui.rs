@@ -2599,6 +2599,33 @@ fn clear_overlay(frame: &mut Frame<'_>, app: &App, popup: Rect) {
     app.overlay_area.set(Some(popup));
 }
 
+/// The bottom row of a text-entry dialog: a primary action and Cancel. Both
+/// act like their keys when clicked.
+fn form_buttons(frame: &mut Frame<'_>, app: &App, row: Rect, primary: &str, primary_key: KeyCode) {
+    let theme = app.theme;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        row,
+        &[
+            (
+                primary,
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.mint)
+                    .add_modifier(Modifier::BOLD),
+                key(primary_key),
+            ),
+            (
+                " [Esc] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
+    );
+}
+
 /// Draws a row of buttons left to right, three columns apart, and records
 /// each one so clicking it acts like its key.
 fn draw_buttons(
@@ -3211,7 +3238,24 @@ fn render_explorer_path_action(
             Line::raw(""),
             Line::from(Span::styled(footer, Style::default().fg(app.theme.faint))),
         ]),
-        inner,
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+    let verb = footer
+        .split(" · ")
+        .next()
+        .unwrap_or("Enter")
+        .trim_start_matches("Enter ");
+    form_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &format!(" [Enter] {} ", verb[..1].to_uppercase() + &verb[1..]),
+        KeyCode::Enter,
     );
 }
 
@@ -3712,7 +3756,19 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(app.theme.faint),
             )),
         ]),
-        inner,
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+    form_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        " [Enter] Commit ",
+        KeyCode::Enter,
     );
 }
 
@@ -3787,7 +3843,19 @@ fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(app.theme.faint),
             )),
         ]),
-        inner,
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+    form_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        " [Enter] Create ",
+        KeyCode::Enter,
     );
 }
 
@@ -3813,7 +3881,19 @@ fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(app.theme.faint),
             )),
         ]),
-        inner,
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+    form_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        " [Enter] Rename ",
+        KeyCode::Enter,
     );
 }
 
@@ -3880,6 +3960,11 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for (index, item) in app.git_blame.iter().enumerate().skip(start).take(visible) {
         let selected = index == app.git_blame_selected;
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let marker = if selected { select_marker(app) } else { "  " };
         let text = format!(
             "{marker}{:>5}  {:<10}  {:<18}  {}",
