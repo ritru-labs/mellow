@@ -2814,6 +2814,7 @@ impl App {
         match key.code {
             KeyCode::Char('r' | 'R') | KeyCode::Enter => self.restore_recovery(),
             KeyCode::Char('d' | 'D') => self.discard_recovery(),
+            KeyCode::Esc => self.defer_recovery(),
             KeyCode::Char('a' | 'A') if self.pending_draft_count() > 1 => self.discard_all_drafts(),
             _ => {}
         }
@@ -2909,6 +2910,28 @@ impl App {
             "Discarded {discarded} unsaved draft{}",
             if discarded == 1 { "" } else { "s" }
         ));
+    }
+
+    /// Esc: decide later. An unnamed draft keeps its own journal, so it is
+    /// simply offered again on the next start. A named file's draft shares
+    /// the journal with the open file, where the next edit would replace it,
+    /// so the dialog stays open and says why.
+    fn defer_recovery(&mut self) {
+        let is_draft = self
+            .recovery_candidate
+            .as_ref()
+            .is_some_and(|record| record.orphan_journal.is_some());
+        if is_draft {
+            self.recovery_candidate = None;
+            self.mode = AppMode::Editing;
+            self.status =
+                Some("Draft kept for later · it will be offered again next time".to_owned());
+        } else {
+            self.status = Some(
+                "Choose Restore or Discard: editing this file would replace the saved draft"
+                    .to_owned(),
+            );
+        }
     }
 
     fn discard_recovery(&mut self) {
@@ -13815,6 +13838,43 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn escape_defers_an_unnamed_draft_and_keeps_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["keep me"]);
+        let journal = drafts[0].orphan_journal.clone().unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(app.recovery_candidate.is_none());
+        assert!(journal.exists(), "the draft stays on disk for next time");
+    }
+
+    #[test]
+    fn escape_on_a_named_files_draft_keeps_the_dialog_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Recovery);
+        assert!(app.recovery_candidate.is_some());
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Choose Restore or Discard"),
+            "{:?}",
+            app.status
+        );
     }
 
     #[test]
