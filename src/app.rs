@@ -10767,6 +10767,7 @@ const MAX_SYSTEM_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
 /// Base64, often over SSH. Larger copies stay in Mellow instead of
 /// streaming megabytes through a slow link.
 const MAX_TERMINAL_CLIPBOARD_BYTES: usize = 256 * 1024;
+const _: () = assert!(MAX_TERMINAL_CLIPBOARD_BYTES < MAX_SYSTEM_CLIPBOARD_BYTES);
 
 fn read_clipboard_command(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
@@ -14234,7 +14235,6 @@ mod tests {
 
     #[test]
     fn large_copies_say_they_stayed_in_mellow() {
-        assert!(super::MAX_TERMINAL_CLIPBOARD_BYTES < super::MAX_SYSTEM_CLIPBOARD_BYTES);
         let message = super::ClipboardDelivery::TooLargeForTerminal.message("Copied", 300_000);
         assert!(message.starts_with("Mellow only"), "{message}");
         assert!(
