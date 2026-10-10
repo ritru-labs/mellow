@@ -1,9 +1,10 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -237,6 +238,8 @@ pub fn gutter_width(line_count: usize) -> u16 {
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    app.overlay_area.set(None);
+    app.overlay_targets.borrow_mut().clear();
     let theme = app.theme;
     frame.render_widget(
         Block::default().style(Style::default().bg(theme.canvas)),
@@ -320,6 +323,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         AppMode::GitHistory => render_git_history(frame, area, app),
         AppMode::GitBlame => render_git_blame(frame, area, app),
         AppMode::GitConflicts => render_git_conflicts(frame, area, app),
+        AppMode::Symbols => render_symbols(frame, area, app),
+    }
+    if !app.theme.unicode_symbols {
+        asciify_symbols(frame.buffer_mut());
     }
 }
 
@@ -548,7 +555,14 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ));
         }
     }
-    spans.push(Span::styled(" │", Style::default().fg(theme.elevated2)));
+    spans.push(Span::styled(
+        if app.theme.unicode_symbols {
+            " │"
+        } else {
+            " |"
+        },
+        Style::default().fg(theme.elevated2),
+    ));
     buffer.set_line(area.x, area.y, &Line::from(spans), layout.brand_width);
 
     for tab in &layout.tabs {
@@ -627,7 +641,11 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         buffer.set_string(
             area.x + explorer - 1,
             area.y,
-            "│",
+            if app.theme.unicode_symbols {
+                "│"
+            } else {
+                "|"
+            },
             Style::default()
                 .fg(if app.explorer_focused {
                     theme.mint
@@ -674,7 +692,7 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         " / "
     };
-    let mut segments = app.breadcrumb_segments();
+    let mut segments = app.breadcrumb_with_symbol();
     let mut truncated = false;
     while segments.len() > 1
         && UnicodeWidthStr::width(segments.join(separator).as_str()) > available.saturating_sub(4)
@@ -724,8 +742,12 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn terminal_color(color: crate::pty::TerminalColor, default: Color) -> Color {
     match color {
         crate::pty::TerminalColor::Default => default,
-        crate::pty::TerminalColor::Indexed(index) => Color::Indexed(index),
-        crate::pty::TerminalColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        crate::pty::TerminalColor::Indexed(index) => {
+            crate::theme::fit_to_tier(Color::Indexed(index), crate::theme::cached_color_tier())
+        }
+        crate::pty::TerminalColor::Rgb(r, g, b) => {
+            crate::theme::fit_to_tier(Color::Rgb(r, g, b), crate::theme::cached_color_tier())
+        }
     }
 }
 
@@ -768,11 +790,7 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(accent))
         .title(Span::styled(
             title,
@@ -912,7 +930,7 @@ fn render_workspace(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     render_editor_pane(frame, top, app, view);
                 }
                 frame.render_widget(
-                    Paragraph::new("─".repeat(divider.width as usize)).style(
+                    Paragraph::new(rule_glyph(app).repeat(divider.width as usize)).style(
                         Style::default()
                             .fg(app.theme.elevated2)
                             .bg(app.theme.canvas),
@@ -959,6 +977,7 @@ fn render_explorer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let block = Block::default()
         .borders(Borders::RIGHT)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(if app.explorer_focused {
             theme.mint
         } else {
@@ -1831,7 +1850,11 @@ fn render_highlighted_slice(
             let (display, width) = if grapheme == "\t" {
                 let w = TAB_WIDTH - (absolute_col % TAB_WIDTH);
                 let display = if show_whitespace {
-                    format!("→{}", " ".repeat(w.saturating_sub(1)))
+                    format!(
+                        "{}{}",
+                        if theme.unicode_symbols { "→" } else { ">" },
+                        " ".repeat(w.saturating_sub(1))
+                    )
                 } else if show_indent_guides && leading_whitespace {
                     is_guide = true;
                     format!("│{}", " ".repeat(w.saturating_sub(1)))
@@ -1841,13 +1864,13 @@ fn render_highlighted_slice(
                 (display, w)
             } else if grapheme == " " {
                 let display = if show_whitespace {
-                    "·".to_owned()
+                    if theme.unicode_symbols { "·" } else { "." }.to_owned()
                 } else if show_indent_guides
                     && leading_whitespace
                     && absolute_col.is_multiple_of(TAB_WIDTH)
                 {
                     is_guide = true;
-                    "│".to_owned()
+                    if theme.unicode_symbols { "│" } else { "|" }.to_owned()
                 } else {
                     " ".to_owned()
                 };
@@ -2032,7 +2055,7 @@ fn status_message(app: &App) -> Option<StatusItem> {
             )
         } else if status == "Undo" || status == "Redo" {
             (status.to_owned(), Style::default().fg(theme.mint))
-        } else if status.contains("failed") || status.contains("Failed") {
+        } else if is_error_status(status) {
             (
                 status.to_owned(),
                 Style::default()
@@ -2389,23 +2412,314 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = app.theme;
+    let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
+    let popup_height = 15.min(area.height.saturating_sub(2)).max(8);
+    let popup = centered_rect(area, popup_width, popup_height);
+    clear_overlay(frame, app, popup);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(rounded_border(theme.unicode_symbols))
+            .border_style(Style::default().fg(theme.mint))
+            .title(Span::styled(
+                overlay_title(app, "Go to symbol"),
+                Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(theme.elevated)),
+        popup,
+    );
+    let inner = inset(popup, 2, 1);
+    let width = inner.width as usize;
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "> ",
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            app.symbol_query.as_str().to_owned(),
+            Style::default().fg(theme.text),
+        ),
+    ])];
+    let symbols = app.filtered_symbols();
+    let rows = (inner.height as usize).saturating_sub(3).max(1);
+    if symbols.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching symbols",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        let selected = app.symbol_selected.min(symbols.len() - 1);
+        let first = if selected >= rows {
+            selected + 1 - rows
+        } else {
+            0
+        };
+        for (index, symbol) in symbols.iter().enumerate().skip(first).take(rows) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + 1 + (index - first) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
+            let is_selected = index == selected;
+            let background = if is_selected {
+                theme.elevated2
+            } else {
+                theme.elevated
+            };
+            let marker = if is_selected { ">" } else { " " };
+            let label = format!("{marker} {:<8} {}", symbol.kind, symbol.name);
+            let label = display_slice(&label, 0, width.saturating_sub(8), TAB_WIDTH);
+            let line_no = format!("line {}", symbol.start_row + 1);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{label:<w$}", w = width.saturating_sub(line_no.len() + 1)),
+                    Style::default()
+                        .fg(if is_selected { theme.text } else { theme.muted })
+                        .bg(background),
+                ),
+                Span::styled(
+                    format!(" {line_no}"),
+                    Style::default().fg(theme.faint).bg(background),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        "↑↓ choose · Enter jump · Esc close",
+        Style::default().fg(theme.faint),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.elevated)),
+        inner,
+    );
+}
+
+/// Single-cell ASCII lookalikes for the interface symbols Mellow draws, used
+/// when the terminal cannot show Unicode (for example `LANG=C`). One cell
+/// maps to one cell, so layout never shifts.
+const ASCII_LOOKALIKES: &[(&str, &str)] = &[
+    ("·", "-"),
+    ("…", "."),
+    ("→", ">"),
+    ("←", "<"),
+    ("↑", "^"),
+    ("↓", "v"),
+    ("›", ">"),
+    ("‹", "<"),
+    ("▸", ">"),
+    ("▶", ">"),
+    ("⎿", ">"),
+    ("●", "*"),
+    ("•", "*"),
+    ("◐", "~"),
+    ("✦", "*"),
+    ("✓", "+"),
+    ("✔", "+"),
+    ("✚", "+"),
+    ("×", "x"),
+    ("—", "-"),
+    ("–", "-"),
+    ("─", "-"),
+    ("│", "|"),
+    ("┌", "+"),
+    ("┐", "+"),
+    ("└", "+"),
+    ("┘", "+"),
+    ("╭", "+"),
+    ("╮", "+"),
+    ("╰", "+"),
+    ("╯", "+"),
+    ("├", "+"),
+    ("┤", "+"),
+    ("┬", "+"),
+    ("┴", "+"),
+    ("┼", "+"),
+    ("“", "\""),
+    ("”", "\""),
+    ("‘", "'"),
+    ("’", "'"),
+];
+
+/// Replaces interface symbols with ASCII lookalikes across the whole frame.
+fn asciify_symbols(buffer: &mut ratatui::buffer::Buffer) {
+    let area = buffer.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if let Some((_, ascii)) = ASCII_LOOKALIKES
+                .iter()
+                .find(|(symbol, _)| *symbol == cell.symbol())
+            {
+                cell.set_symbol(ascii);
+            }
+        }
+    }
+}
+
+const ASCII_BORDER: ratatui::symbols::border::Set<'static> = ratatui::symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
+/// Rounded corners, or plain ASCII where the terminal cannot show Unicode.
+fn rounded_border(unicode: bool) -> ratatui::symbols::border::Set<'static> {
+    if unicode {
+        ratatui::symbols::border::ROUNDED
+    } else {
+        ASCII_BORDER
+    }
+}
+
+/// Square corners, or plain ASCII where the terminal cannot show Unicode.
+fn plain_border(unicode: bool) -> ratatui::symbols::border::Set<'static> {
+    if unicode {
+        ratatui::symbols::border::PLAIN
+    } else {
+        ASCII_BORDER
+    }
+}
+
+/// Clears an overlay's box and records it, so the mouse handler can tell a
+/// click inside the overlay from one outside it.
+fn clear_overlay(frame: &mut Frame<'_>, app: &App, popup: Rect) {
+    frame.render_widget(Clear, popup);
+    app.overlay_area.set(Some(popup));
+}
+
+/// Draws a row of buttons left to right, three columns apart, and records
+/// each one so clicking it acts like its key.
+fn draw_buttons(
+    frame: &mut Frame<'_>,
+    app: &App,
+    row: Rect,
+    buttons: &[(&str, Style, KeyEvent)],
+) -> u16 {
+    let mut x = row.x;
+    for (label, style, key) in buttons {
+        let width = (UnicodeWidthStr::width(*label) as u16).min(row.right().saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        frame
+            .buffer_mut()
+            .set_stringn(x, row.y, label, width as usize, *style);
+        click_target(
+            app,
+            Rect::new(x, row.y, width, 1),
+            crate::app::ClickTarget::Key(*key),
+        );
+        x = x.saturating_add(width + 3);
+    }
+    x
+}
+
+/// Records a clickable row or button of the overlay being drawn.
+fn click_target(app: &App, rect: Rect, target: crate::app::ClickTarget) {
+    app.overlay_targets.borrow_mut().push((rect, target));
+}
+
+/// Whether a status message reports a failure or a refusal. Messages are
+/// plain text, so this matches the phrases Mellow uses for those outcomes.
+fn is_error_status(status: &str) -> bool {
+    const ERROR_PHRASES: &[&str] = &[
+        "failed",
+        "Failed",
+        "Could not",
+        "could not",
+        "Cannot ",
+        "cannot ",
+        "refused",
+        "refusing",
+        "expired",
+        "is too large",
+        "not UTF-8",
+        "not valid",
+        "No Git repository found",
+        "Nothing is staged",
+        "not set up",
+    ];
+    ERROR_PHRASES.iter().any(|phrase| status.contains(phrase))
+}
+
+/// Fits text into `max_width` cells by replacing its middle with "…", so
+/// both the start of a path and its file name stay visible.
+fn shorten_middle(text: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+    if max_width <= 1 {
+        return "…".repeat(max_width);
+    }
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let budget = max_width - 1;
+    let mut tail_width = 0;
+    let mut tail_start = graphemes.len();
+    // Give the end (the file name) a little more room than the start.
+    while tail_start > 0 {
+        let width = UnicodeWidthStr::width(graphemes[tail_start - 1]);
+        if tail_width + width > budget.div_ceil(2) {
+            break;
+        }
+        tail_width += width;
+        tail_start -= 1;
+    }
+    let mut head = String::new();
+    let mut head_width = 0;
+    for grapheme in &graphemes[..tail_start] {
+        let width = UnicodeWidthStr::width(*grapheme);
+        if head_width + width > budget - tail_width {
+            break;
+        }
+        head.push_str(grapheme);
+        head_width += width;
+    }
+    format!("{head}…{}", graphemes[tail_start..].concat())
+}
+
+/// A horizontal rule character that respects the ASCII fallback.
+fn rule_glyph(app: &App) -> &'static str {
+    if app.theme.unicode_symbols {
+        "─"
+    } else {
+        "-"
+    }
+}
+
+/// The marker in front of the selected row of a list.
+fn select_marker(app: &App) -> &'static str {
+    if app.theme.unicode_symbols {
+        "› "
+    } else {
+        "> "
+    }
+}
+
 fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
     let popup_height = 15.min(area.height.saturating_sub(2)).max(8);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Commands ",
+                overlay_title(app, "Commands"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -2435,7 +2749,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -2464,6 +2778,16 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
         for (item_idx, &entry_index) in matches[window_start..window_end].iter().enumerate() {
             let visible_index = window_start + item_idx;
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + (header_rows + item_idx) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(visible_index),
+            );
             let entry = COMMAND_SPECS[entry_index];
             let is_selected = visible_index == selected;
             let background = if is_selected {
@@ -2518,10 +2842,19 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.faint),
         ))
     } else {
-        Line::from(Span::styled(
-            display_slice(description, 0, inner.width as usize, TAB_WIDTH),
-            Style::default().fg(theme.muted),
-        ))
+        let connector = if theme.unicode_symbols { "⎿ " } else { "> " };
+        Line::from(vec![
+            Span::styled(connector, Style::default().fg(theme.faint)),
+            Span::styled(
+                display_slice(
+                    description,
+                    0,
+                    inner.width.saturating_sub(2) as usize,
+                    TAB_WIDTH,
+                ),
+                Style::default().fg(theme.muted),
+            ),
+        ])
     });
 
     frame.render_widget(
@@ -2541,18 +2874,14 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 72.min(area.width.saturating_sub(4)).max(28);
     let popup_height = 17.min(area.height.saturating_sub(2)).max(9);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Open file ",
+                overlay_title(app, "Open file"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -2582,7 +2911,7 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -2606,6 +2935,11 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
         for (visible_index, &candidate_index) in matches[start..end].iter().enumerate() {
             let list_index = start + visible_index;
             let path = &app.quick_open_candidates[candidate_index];
+            click_target(
+                app,
+                Rect::new(inner.x, inner.y + 2 + visible_index as u16, inner.width, 1),
+                crate::app::ClickTarget::Row(list_index),
+            );
             let is_selected = list_index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -2769,14 +3103,10 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let popup = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .title(Span::styled(
             " Suggestions ",
@@ -2800,6 +3130,11 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(available)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let is_selected = index == selected;
         let marker = if is_selected {
             if theme.unicode_symbols { "▸" } else { ">" }
@@ -2853,10 +3188,11 @@ fn render_explorer_path_action(
     footer: &str,
 ) {
     let popup = centered_rect(area, 72, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -2881,10 +3217,11 @@ fn render_explorer_path_action(
 
 fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 68, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Delete? ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -2898,23 +3235,41 @@ fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &
             Line::from("Permanently delete this workspace file or empty directory?"),
             Line::raw(""),
             Line::from(Span::styled(target, Style::default().fg(app.theme.text))),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "Y / Enter delete · N / Esc cancel",
-                Style::default().fg(app.theme.faint),
-            )),
         ]),
         inner,
+    );
+    let theme = app.theme;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        &[
+            (
+                " [Y] Delete ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
     );
 }
 
 fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 86, 18);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let theme = app.theme;
     let block = Block::default()
-        .title(" References ")
+        .title(overlay_title(app, "References"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = block.inner(popup);
@@ -2931,8 +3286,13 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let marker = if index == app.reference_selected {
-            "› "
+            select_marker(app)
         } else {
             "  "
         };
@@ -2952,10 +3312,11 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_rename_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 64, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Rename ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -2974,7 +3335,7 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let height = area.height.saturating_sub(4).clamp(8, 30);
     let popup = centered_rect(area, 96, height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let files = app
         .pending_lsp_preview
         .iter()
@@ -2988,6 +3349,7 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
             files
         ))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = block.inner(popup);
@@ -3029,22 +3391,49 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
     let more = app.pending_lsp_preview.len() > app.pending_lsp_scroll + body_rows;
-    lines.push(Line::styled(
-        format!(
-            "Y / Enter apply all · N / Esc cancel · ↑↓ PgUp/PgDn scroll{}",
-            if more { " · more below" } else { "" }
-        ),
-        Style::default().fg(theme.faint),
-    ));
     frame.render_widget(Paragraph::new(lines), inner);
+    let row = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    let end = draw_buttons(
+        frame,
+        app,
+        row,
+        &[
+            (
+                " [Y] Apply all ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.mint)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
+    );
+    let hint = format!(
+        "↑↓ PgUp/PgDn scroll{}",
+        if more { " · more below" } else { "" }
+    );
+    frame.buffer_mut().set_stringn(
+        end,
+        row.y,
+        hint,
+        row.right().saturating_sub(end) as usize,
+        Style::default().fg(theme.faint),
+    );
 }
 
 fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 82, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
-        .title(" Quick fixes ")
+        .title(overlay_title(app, "Quick fixes"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3056,8 +3445,13 @@ fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .enumerate()
         .take(inner.height.saturating_sub(2) as usize)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(i),
+        );
         let marker = if i == app.code_action_selected {
-            "› "
+            select_marker(app)
         } else {
             "  "
         };
@@ -3083,10 +3477,11 @@ fn render_language_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let health = app.language_health();
     let popup = centered_rect(area, 78, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(format!(" Language server · {} ", health.language))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = inset(block.inner(popup), 1, 0);
@@ -3171,22 +3566,22 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 92.min(area.width.saturating_sub(4)).max(36);
     let popup_height = 19.min(area.height.saturating_sub(2)).max(9);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(if problems.is_empty() {
                 theme.muted
             } else {
                 theme.warning
             }))
             .title(Span::styled(
-                format!(" Problems · {} ", problems.len()),
+                format!(
+                    " {} Problems · {} ",
+                    overlay_marker(theme.unicode_symbols),
+                    problems.len()
+                ),
                 Style::default()
                     .fg(if problems.is_empty() {
                         theme.muted
@@ -3215,7 +3610,18 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )));
     } else {
+        let list_top = lines.len() as u16;
         for (index, problem) in problems.iter().enumerate().skip(start).take(available) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + list_top + (index - start) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let (symbol, severity_color) = match problem.severity {
                 ProblemSeverity::Error => {
@@ -3282,10 +3688,11 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 78, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Commit ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3301,7 +3708,7 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )),
             Line::raw(""),
             Line::from(Span::styled(
-                "Enter commit staged changes · Esc cancel",
+                "Enter commit · Ctrl+G draft message · Esc cancel",
                 Style::default().fg(app.theme.faint),
             )),
         ]),
@@ -3311,10 +3718,11 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 76, 18);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
-        .title(" Branches ")
+        .title(overlay_title(app, "Branches"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3332,8 +3740,13 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_branch_selected;
-        let cursor = if selected { "› " } else { "  " };
+        let cursor = if selected { select_marker(app) } else { "  " };
         let current = if branch.current { "* " } else { "  " };
         let style = if selected {
             Style::default().fg(app.theme.text).bg(app.theme.elevated2)
@@ -3356,10 +3769,11 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 70, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" New branch ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3379,10 +3793,11 @@ fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 72, 8);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Rename branch ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3404,10 +3819,11 @@ fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 70, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Delete branch? ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3418,22 +3834,40 @@ fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app:
             Line::from("Delete this local branch using Git's safe -d check?"),
             Line::raw(""),
             Line::from(Span::styled(branch, Style::default().fg(app.theme.text))),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "Y / Enter delete if merged · N / Esc cancel",
-                Style::default().fg(app.theme.faint),
-            )),
         ]),
         inner,
+    );
+    let theme = app.theme;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        &[
+            (
+                " [Y] Delete if merged ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
     );
 }
 
 fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 110, 24);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Who changed each line ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3446,7 +3880,7 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for (index, item) in app.git_blame.iter().enumerate().skip(start).take(visible) {
         let selected = index == app.git_blame_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let text = format!(
             "{marker}{:>5}  {:<10}  {:<18}  {}",
             item.row + 1,
@@ -3470,10 +3904,11 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 88, 20);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Conflicts ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3495,8 +3930,18 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(
+                inner.x,
+                inner.y + 1 + (index - start) as u16,
+                inner.width,
+                1,
+            ),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_conflict_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let style = if selected {
             Style::default().fg(app.theme.text).bg(app.theme.elevated2)
         } else {
@@ -3519,10 +3964,11 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 100, 22);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
-        .title(" History ")
+        .title(overlay_title(app, "History"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3534,8 +3980,13 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .saturating_sub(visible.saturating_sub(1));
     let mut lines = Vec::new();
     for (index, commit) in app.git_history.iter().enumerate().skip(start).take(visible) {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_history_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let line = format!(
             "{marker}{}  {}  {}  {}",
             commit.short_oid, commit.date, commit.author, commit.subject
@@ -3579,7 +4030,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 104.min(area.width.saturating_sub(4)).max(42);
     let popup_height = (list_rows + 16).min(area.height.saturating_sub(2)).max(10);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
 
     let branch = if app.git_snapshot.branch.is_empty() {
         "repository"
@@ -3591,14 +4042,13 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                format!(" Changes · {branch} · {unstaged} not staged · {staged} staged "),
+                format!(
+                    " {} Changes · {branch} · {unstaged} not staged · {staged} staged ",
+                    overlay_marker(theme.unicode_symbols)
+                ),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -3638,6 +4088,16 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .skip(start)
             .take(list_rows as usize)
         {
+            click_target(
+                app,
+                Rect::new(
+                    list_area.x,
+                    list_area.y + (index - start) as u16,
+                    list_area.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -3743,7 +4203,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             }
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    "─".repeat(inner.width as usize),
+                    rule_glyph(app).repeat(inner.width as usize),
                     Style::default().fg(theme.elevated2),
                 )),
                 Rect::new(inner.x, inner.y + list_rows, inner.width, 1),
@@ -3780,15 +4240,11 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_revert_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 72, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.error))
             .title(Span::styled(
                 " Discard this change? ",
@@ -3823,28 +4279,39 @@ fn render_revert_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "This discards only the selected unstaged Git hunk from the working tree.",
             Style::default().fg(theme.warning),
         )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
+    ];
+    // A long path or the warning can wrap; the buttons keep the last row.
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(2),
+        ),
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &[
+            (
                 " [R / Enter] Revert hunk ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.error)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Enter),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [Esc] Cancel ",
                 Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
             ),
-        ]),
-    ];
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        ],
     );
 }
 
@@ -3903,11 +4370,7 @@ fn ai_box(app: &App, title: String) -> Block<'static> {
             Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated))
 }
@@ -3916,7 +4379,7 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     let popup = ai_prompt_rect(area, app);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = ai_box(app, format!(" {spark} Ask AI about {} ", app.ai_subject()));
     let inner = inset(block.inner(popup), 1, 0);
     frame.render_widget(block, popup);
@@ -3983,23 +4446,60 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ));
 }
 
+/// Marker that opens every list overlay title, matching the agent-style AI panels.
+fn overlay_marker(unicode: bool) -> &'static str {
+    if unicode { "●" } else { "*" }
+}
+
+/// Title for a list overlay: " ● Name " (or " * Name " without Unicode).
+fn overlay_title(app: &App, name: &str) -> String {
+    format!(" {} {name} ", overlay_marker(app.theme.unicode_symbols))
+}
+
+/// One frame of the "working" spinner. It is derived from the clock rather
+/// than stored state: the event loop redraws at least every 100 ms, so the
+/// frame advances on its own while an AI request is in flight.
+fn working_frame(unicode: bool) -> &'static str {
+    const BRAILLE: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const ASCII: [&str; 4] = ["|", "/", "-", "\\"];
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() / 100);
+    if unicode {
+        BRAILLE[(tick % BRAILLE.len() as u128) as usize]
+    } else {
+        ASCII[(tick % ASCII.len() as u128) as usize]
+    }
+}
+
 fn render_ai_waiting(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
-    let popup = anchored_rect(area, app, 84, 5);
-    frame.render_widget(Clear, popup);
+    // Four content rows (status, query, gap, note) plus the border.
+    let popup = anchored_rect(area, app, 84, 6);
+    clear_overlay(frame, app, popup);
     let block = ai_box(
         app,
-        format!(" {spark} {} is thinking… ", app.ai_provider_name()),
+        format!(" {spark} {} is working ", app.ai_provider_name()),
     );
     let inner = inset(block.inner(popup), 1, 0);
     frame.render_widget(block, popup);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(
-                format!("> {}", app.ai_query.as_str()),
-                Style::default().fg(theme.text),
-            ),
+            Line::from(vec![
+                Span::styled(
+                    format!("{} ", working_frame(theme.unicode_symbols)),
+                    Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Working on it", Style::default().fg(theme.text)),
+            ]),
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(theme.faint)),
+                Span::styled(
+                    app.ai_query.as_str().to_owned(),
+                    Style::default().fg(theme.muted),
+                ),
+            ]),
             Line::raw(""),
             Line::styled(
                 "Nothing changes until you accept. Esc stops waiting.",
@@ -4024,8 +4524,9 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .lines()
         .map(|line| UnicodeWidthStr::width(line).div_ceil(text_width).max(1))
         .sum();
+    // Blank line, change-count connector, then one row per removed and added line.
     let diff_rows = proposal.replacement.as_deref().map_or(0, |replacement| {
-        1 + app.ai_before_text().lines().count() + replacement.lines().count()
+        2 + app.ai_before_text().lines().count() + replacement.lines().count()
     });
     let height = (summary_rows + diff_rows + 5) as u16;
     let popup = centered_rect(
@@ -4033,7 +4534,7 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         width,
         height.clamp(8, 28).min(area.height.saturating_sub(2)),
     );
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let title = if proposal.replacement.is_some() {
         format!(" {spark} Suggested change ")
     } else {
@@ -4050,12 +4551,28 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
         inner.width,
         inner.height.saturating_sub(footer_rows),
     );
-    let mut lines = vec![Line::styled(
-        proposal.summary.clone(),
-        Style::default().fg(theme.text),
-    )];
+    // Agent-style result: a bullet headline, then a connector that says how
+    // many lines change, then the diff itself.
+    let bullet = if theme.unicode_symbols { "● " } else { "* " };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            bullet,
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(proposal.summary.clone(), Style::default().fg(theme.text)),
+    ])];
     if let Some(replacement) = proposal.replacement.as_deref() {
+        let removed = app.ai_before_text().lines().count();
+        let added = replacement.lines().count();
+        let connector = if theme.unicode_symbols { "⎿ " } else { "> " };
         lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {connector} "), Style::default().fg(theme.faint)),
+            Span::styled(
+                format!("+{added} added  −{removed} removed"),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
         let width = inner.width as usize;
         let add_bg = theme.diff_add_bg;
         let del_bg = theme.diff_del_bg;
@@ -4121,6 +4638,26 @@ fn render_ai_review(frame: &mut Frame<'_>, area: Rect, app: &App) {
             footer_rows,
         ),
     );
+    let actions_row = inner.bottom().saturating_sub(footer_rows) + 1;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    if proposal.replacement.is_some() {
+        click_target(
+            app,
+            Rect::new(inner.x, actions_row, 15, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Enter)),
+        );
+        click_target(
+            app,
+            Rect::new(inner.x + 18, actions_row, 13, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Esc)),
+        );
+    } else {
+        click_target(
+            app,
+            Rect::new(inner.x, actions_row, 14, 1),
+            crate::app::ClickTarget::Key(key(KeyCode::Enter)),
+        );
+    }
 }
 
 pub fn ai_setup_rect(area: Rect) -> Rect {
@@ -4136,7 +4673,7 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     let form = &app.ai_setup;
     let popup = ai_setup_rect(area);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = ai_box(app, format!(" {spark} Set up AI "));
     let inner = inset(block.inner(popup), 2, 1);
     frame.render_widget(block, popup);
@@ -4148,7 +4685,7 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let selected = form.field == index;
         let mut spans = vec![
             Span::styled(
-                if selected { "› " } else { "  " },
+                if selected { select_marker(app) } else { "  " },
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -4327,6 +4864,15 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.faint),
         ));
     }
+    // The five field rows start on the fourth line of the form. A click on a
+    // row only moves the focus to that field, so nothing is saved by mistake.
+    for field in 0..5u16 {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + 3 + field, inner.width, 1),
+            crate::app::ClickTarget::Row(usize::from(field)),
+        );
+    }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
     let input = match form.field {
@@ -4351,10 +4897,11 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup = centered_rect(area, 72, 16);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(" Settings ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -4434,7 +4981,15 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(
             format!(
                 "{} {:<24} {}",
-                if selected { "›" } else { " " },
+                if selected {
+                    if app.theme.unicode_symbols {
+                        "›"
+                    } else {
+                        ">"
+                    }
+                } else {
+                    " "
+                },
                 label,
                 value
             ),
@@ -4513,7 +5068,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let essentials = key_lines(app, ESSENTIALS);
     let height = (essentials.len() as u16 + 9).min(area.height.saturating_sub(2));
     let popup = centered_rect(area, 56.min(area.width.saturating_sub(4)), height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(Span::styled(
             format!(
@@ -4525,11 +5080,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = inset(block.inner(popup), 2, 1);
@@ -4550,7 +5101,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
         Line::from(Span::styled(
-            "Press Enter to start",
+            "Start typing, or press Enter",
             Style::default().fg(theme.mint),
         )),
     ]);
@@ -4568,15 +5119,11 @@ pub fn help_rect(area: Rect) -> Rect {
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = help_rect(area);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 if theme.unicode_symbols {
@@ -4661,10 +5208,11 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 60, 6);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
+            .border_set(plain_border(app.theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " A job is still running ",
@@ -4675,34 +5223,45 @@ fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &A
             .style(Style::default().bg(theme.elevated)),
         popup,
     );
+    let inner = inset(popup, 2, 1);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "Closing this terminal stops the program running in it.",
-                Style::default().fg(theme.text),
+        Paragraph::new(vec![Line::styled(
+            "Closing this terminal stops the program running in it.",
+            Style::default().fg(theme.text),
+        )]),
+        inner,
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        &[
+            (
+                " [Y] Close anyway ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
             ),
-            Line::raw(""),
-            Line::styled(
-                "Y close anyway · N / Esc keep it",
-                Style::default().fg(theme.faint),
+            (
+                " [N] Keep it ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Char('n')),
             ),
-        ]),
-        inset(popup, 2, 1),
+        ],
     );
 }
 
 fn render_close_tab_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 60, 7);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Save changes before closing? ",
@@ -4741,7 +5300,14 @@ fn render_close_tab_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let lines = vec![
         Line::from(Span::styled(
-            format!("{} has unsaved changes.", app.active_display_path()),
+            {
+                let suffix = " has unsaved changes.";
+                let room = (inner.width as usize).saturating_sub(suffix.len());
+                format!(
+                    "{}{suffix}",
+                    shorten_middle(&app.active_display_path(), room)
+                )
+            },
             Style::default().fg(theme.text),
         )),
         Line::raw(""),
@@ -4771,15 +5337,11 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .as_deref()
         .is_some_and(|s| s.starts_with("Save failed"));
     let popup = quit_dialog_rect(area, save_failed);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Save changes before quitting? ",
@@ -4872,15 +5434,11 @@ fn render_find(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_x = area.right().saturating_sub(popup_width + 2);
     let popup_y = area.top() + HEADER_ROWS + 1;
     let popup = Rect::new(popup_x, popup_y, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Find ",
@@ -4960,15 +5518,11 @@ fn render_replace(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 88.min(area.width.saturating_sub(4)).max(36);
     let popup_height = 20.min(area.height.saturating_sub(2)).max(11);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Replace ",
@@ -5097,7 +5651,7 @@ fn render_replace(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -5230,18 +5784,14 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 104.min(area.width.saturating_sub(4)).max(42);
     let popup_height = 22.min(area.height.saturating_sub(2)).max(11);
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
-                " Search all files ",
+                overlay_title(app, "Search all files"),
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(theme.elevated)),
@@ -5318,7 +5868,7 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -5348,7 +5898,18 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )));
     } else {
+        let list_top = lines.len() as u16;
         for (index, result) in results.iter().enumerate().skip(start).take(available) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + list_top + (index - start) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -5464,15 +6025,11 @@ fn render_goto(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 38.min(area.width.saturating_sub(4)).max(20);
     let popup_height = 5;
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Go to line ",
@@ -5527,15 +6084,11 @@ fn render_goto(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 72, 10);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 if app.conflict_read_only {
@@ -5567,56 +6120,66 @@ fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )),
         Line::raw(""),
         Line::from(Span::styled(reason, Style::default().fg(theme.warning))),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
+    ];
+    // The reason can wrap, so it gets its own area and the buttons stay on a
+    // fixed row where clicks are tested.
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(3),
+        ),
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+        &[
+            (
                 " [S] Save As ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.mint)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('s')),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [O] Overwrite ",
                 Style::default()
                     .fg(theme.canvas)
                     .bg(theme.error)
                     .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('o')),
             ),
-            Span::raw("   "),
-            Span::styled(
+            (
                 " [Esc] Cancel ",
                 Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
             ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "No file is changed until you choose an action.",
-            Style::default().fg(theme.faint),
-        )),
-    ];
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        ],
+    );
+    frame.buffer_mut().set_stringn(
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        "No file is changed until you choose an action.",
+        inner.width as usize,
+        Style::default().fg(theme.faint),
     );
 }
 
 fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup = centered_rect(area, 68, 9);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Unsaved work found ",
@@ -5636,43 +6199,115 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|path| app.short_path(path))
         .unwrap_or_else(|| "Untitled buffer".to_owned());
 
-    let lines = vec![
-        Line::from(Span::styled(
-            "Mellow found unsaved edits from an earlier interrupted session.",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(source, Style::default().fg(theme.muted))),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled(
-                " [R] Restore ",
-                Style::default()
-                    .fg(theme.canvas)
-                    .bg(theme.mint)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(
-                " [D] Discard journal ",
-                Style::default()
-                    .fg(theme.canvas)
-                    .bg(theme.error)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Restore keeps the buffer dirty until you save it.",
-            Style::default().fg(theme.faint),
-        )),
-    ];
-
+    // The message may wrap on narrow terminals; it gets the rows above the
+    // buttons so the buttons stay where clicks are tested.
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .style(Style::default().fg(theme.text).bg(theme.elevated)),
-        inner,
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Mellow found unsaved edits from an earlier interrupted session.",
+                Style::default().fg(theme.text),
+            )),
+            Line::from(Span::styled(source, Style::default().fg(theme.muted))),
+        ])
+        .wrap(ratatui::widgets::Wrap { trim: true })
+        .style(Style::default().fg(theme.text).bg(theme.elevated)),
+        Rect::new(inner.x, inner.y, inner.width, 3),
     );
+    let (restore, discard, discard_all) = recovery_button_rects(area);
+    let show_all = app.pending_draft_count() > 1;
+    let buffer = frame.buffer_mut();
+    if show_all {
+        buffer.set_stringn(
+            discard_all.x,
+            discard_all.y,
+            RECOVERY_DISCARD_ALL_LABEL,
+            discard_all.width as usize,
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.elevated2)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    buffer.set_stringn(
+        restore.x,
+        restore.y,
+        RECOVERY_RESTORE_LABEL,
+        restore.width as usize,
+        Style::default()
+            .fg(theme.canvas)
+            .bg(theme.mint)
+            .add_modifier(Modifier::BOLD),
+    );
+    buffer.set_stringn(
+        discard.x,
+        discard.y,
+        RECOVERY_DISCARD_LABEL,
+        discard.width as usize,
+        Style::default()
+            .fg(theme.canvas)
+            .bg(theme.error)
+            .add_modifier(Modifier::BOLD),
+    );
+    buffer.set_stringn(
+        inner.x,
+        inner.y + 5,
+        "Restore keeps the buffer dirty until you save it.",
+        inner.width as usize,
+        Style::default().fg(theme.faint),
+    );
+}
+
+const RECOVERY_RESTORE_LABEL: &str = " [R] Restore ";
+const RECOVERY_DISCARD_LABEL: &str = " [D] Discard journal ";
+const RECOVERY_DISCARD_ALL_LABEL: &str = " [A] Discard all ";
+
+/// A button in the "Unsaved work found" dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryButton {
+    Restore,
+    Discard,
+    DiscardAll,
+}
+
+/// Where the recovery dialog draws its two buttons. Drawing and mouse
+/// hit-testing both use this, so a click always lands on what is shown.
+pub fn recovery_button_rects(area: Rect) -> (Rect, Rect, Rect) {
+    let popup = centered_rect(area, 68, 9);
+    let inner = inset(popup, 2, 1);
+    let row = inner.y + 3;
+    let restore_width = (RECOVERY_RESTORE_LABEL.len() as u16).min(inner.width);
+    let discard_x = inner.x + restore_width + 3;
+    let discard_width =
+        (RECOVERY_DISCARD_LABEL.len() as u16).min(inner.right().saturating_sub(discard_x));
+    let all_x = discard_x + discard_width + 3;
+    let all_width =
+        (RECOVERY_DISCARD_ALL_LABEL.len() as u16).min(inner.right().saturating_sub(all_x));
+    (
+        Rect::new(inner.x, row, restore_width, 1),
+        Rect::new(discard_x, row, discard_width, 1),
+        Rect::new(all_x, row, all_width, 1),
+    )
+}
+
+pub fn recovery_button_hit(
+    area: Rect,
+    column: u16,
+    row: u16,
+    show_all: bool,
+) -> Option<RecoveryButton> {
+    let (restore, discard, discard_all) = recovery_button_rects(area);
+    let inside = |rect: Rect| {
+        rect.width > 0 && row == rect.y && column >= rect.x && column < rect.x + rect.width
+    };
+    if inside(restore) {
+        Some(RecoveryButton::Restore)
+    } else if inside(discard) {
+        Some(RecoveryButton::Discard)
+    } else if show_all && inside(discard_all) {
+        Some(RecoveryButton::DiscardAll)
+    } else {
+        None
+    }
 }
 
 fn render_save_as(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -5680,15 +6315,11 @@ fn render_save_as(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let popup_width = 68.min(area.width.saturating_sub(4)).max(28);
     let popup_height = 7;
     let popup = centered_rect(area, popup_width, popup_height);
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, app, popup);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Save as ",
@@ -5859,6 +6490,184 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    #[test]
+    fn ai_review_reads_as_an_agent_result_with_a_change_count() {
+        use crate::{ai::AiProposal, app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::AiReview;
+        app.ai_proposal = Some(AiProposal {
+            summary: "Rename the variable".to_owned(),
+            replacement: Some("let total = 1;\nlet sum = total;".to_owned()),
+        });
+        let rows = render_rows(&app, 100, 30);
+        let text = rows.join("\n");
+        assert!(text.contains("● Rename the variable"), "{text}");
+        assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
+        assert!(text.contains("+ let total = 1;"), "{text}");
+        assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn ascii_mode_draws_no_unicode_in_the_interface() {
+        use crate::app::{App, AppMode};
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut crate::cursor::Cursor::default(),
+            "fn main() {\n    x\n}\n",
+        );
+        app.theme.unicode_symbols = false;
+        app.show_indent_guides = true;
+        for mode in [
+            AppMode::Editing,
+            AppMode::Palette,
+            AppMode::QuickOpen,
+            AppMode::Help,
+            AppMode::Settings,
+            AppMode::ConfirmQuit,
+            AppMode::Find,
+            AppMode::GoToLine,
+            AppMode::AiPrompt,
+        ] {
+            app.mode = mode;
+            for (row_index, row) in render_rows(&app, 80, 24).iter().enumerate() {
+                let odd: String = row.chars().filter(|ch| !ch.is_ascii()).collect();
+                assert!(
+                    odd.is_empty(),
+                    "{mode:?} row {row_index} has non-ASCII {odd:?}: {row}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failures_and_refusals_are_styled_as_errors_and_plain_news_is_not() {
+        for message in [
+            "Save failed: disk full",
+            "Could not read staged changes: git missing",
+            "AI proposal expired because the target buffer changed",
+            "destination already exists; refusing to replace it",
+        ] {
+            assert!(super::is_error_status(message), "{message}");
+        }
+        for message in [
+            "Saved",
+            "Copied 12 chars · system clipboard",
+            "Undo",
+            "Find: 3 matches",
+        ] {
+            assert!(!super::is_error_status(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn shorten_middle_keeps_both_ends_within_the_width() {
+        assert_eq!(super::shorten_middle("short.txt", 20), "short.txt");
+        let long = "src/very/deeply/nested/folder/structure/main.rs";
+        let short = super::shorten_middle(long, 20);
+        assert_eq!(unicode_width::UnicodeWidthStr::width(short.as_str()), 20);
+        assert!(short.starts_with("src/"), "{short}");
+        assert!(short.ends_with("main.rs"), "{short}");
+        assert!(short.contains('…'), "{short}");
+    }
+
+    #[test]
+    fn close_tab_prompt_keeps_its_sentence_for_long_file_names() {
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(Some(
+            std::path::PathBuf::from(
+                "a/really/long/path/that/goes/on/and/on/and/on/for/ever/notes-for-today.md",
+            ),
+        )));
+        app.mode = crate::app::AppMode::ConfirmCloseTab;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("has unsaved changes."), "{text}");
+        assert!(text.contains("notes-for-today.md"), "{text}");
+    }
+
+    #[test]
+    fn recovery_buttons_are_drawn_where_clicks_are_tested() {
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(None));
+        app.mode = crate::app::AppMode::Recovery;
+        for (width, height) in [(80u16, 24u16), (120, 34)] {
+            let rows = render_rows(&app, width, height);
+            let (restore, discard, _) =
+                super::recovery_button_rects(ratatui::layout::Rect::new(0, 0, width, height));
+            let text_at = |rect: ratatui::layout::Rect| -> String {
+                rows[rect.y as usize]
+                    .chars()
+                    .skip(rect.x as usize)
+                    .take(rect.width as usize)
+                    .collect()
+            };
+            assert_eq!(text_at(restore), " [R] Restore ", "{width}x{height}");
+            assert_eq!(
+                text_at(discard),
+                " [D] Discard journal ",
+                "{width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn go_to_symbol_overlay_fits_at_80_by_24() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut app = crate::app::App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.mode = crate::app::AppMode::Symbols;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Go to symbol"), "{text}");
+        assert!(text.contains("fn       main"), "{text}");
+        assert!(text.contains("line 1"), "{text}");
+        assert!(text.contains("Enter jump"), "{text}");
+    }
+
+    #[test]
+    fn list_overlay_titles_open_with_the_agent_marker() {
+        use crate::{app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Palette;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Commands"), "{text}");
+        app.mode = AppMode::QuickOpen;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Open file"), "{text}");
+    }
+
+    #[test]
+    fn ai_surfaces_keep_their_actions_at_80_by_24() {
+        use crate::{ai::AiProposal, app::App, app::AppMode, buffer::Buffer};
+        let mut app = App::new(Buffer::empty(None));
+
+        app.mode = AppMode::AiPrompt;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("Enter send"), "{text}");
+        assert!(text.contains("Esc cancel"), "{text}");
+
+        app.mode = AppMode::AiWaiting;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("Working on it"), "{text}");
+        assert!(text.contains("Esc stops waiting"), "{text}");
+
+        app.mode = AppMode::AiReview;
+        app.ai_proposal = Some(AiProposal {
+            summary: "Tidy the loop".to_owned(),
+            replacement: Some("for x in xs {}".to_owned()),
+        });
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("● Tidy the loop"), "{text}");
+        assert!(text.contains("Accept"), "{text}");
+        assert!(text.contains("Reject"), "{text}");
+    }
+
+    #[test]
+    fn working_spinner_has_an_ascii_fallback() {
+        for _ in 0..20 {
+            let frame = super::working_frame(false);
+            assert!(["|", "/", "-", "\\"].contains(&frame), "{frame}");
+        }
+        assert!(super::working_frame(true).chars().count() == 1);
     }
 
     #[test]

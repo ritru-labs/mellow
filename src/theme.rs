@@ -363,13 +363,15 @@ impl Theme {
             text: Color::Black,
             muted: Color::DarkGray,
             faint: Color::DarkGray,
-            mint: Color::Green,
-            warning: Color::Yellow,
+            // Green, yellow and cyan text is hard to read on white in the
+            // standard 16-colour palette, so this theme uses darker ones.
+            mint: Color::Blue,
+            warning: Color::Magenta,
             error: Color::Red,
             keyword: Color::Blue,
-            string: Color::Yellow,
+            string: Color::Red,
             number: Color::Magenta,
-            function: Color::Cyan,
+            function: Color::Blue,
             constant: Color::Magenta,
             comment: Color::DarkGray,
             punctuation: Color::Black,
@@ -540,6 +542,83 @@ impl Theme {
 
 /// Nearest xterm-256 entry (6×6×6 cube or 24-step grey ramp) for an RGB
 /// colour; other colours pass through unchanged.
+/// The colour tier of the terminal Mellow runs in, read once: it does not
+/// change while Mellow runs, and the terminal pane asks for it per cell.
+pub fn cached_color_tier() -> ColorTier {
+    static TIER: std::sync::OnceLock<ColorTier> = std::sync::OnceLock::new();
+    *TIER.get_or_init(detect_color_tier)
+}
+
+/// A colour the given tier can show: unchanged for TrueColor, the nearest
+/// 256-colour entry for Ansi256, and the nearest of the 16 basic colours for
+/// Basic terminals.
+pub fn fit_to_tier(color: Color, tier: ColorTier) -> Color {
+    match (tier, color) {
+        (ColorTier::TrueColor, _) => color,
+        (ColorTier::Ansi256, Color::Rgb(..)) => nearest_ansi256(color),
+        (ColorTier::Ansi256, _) => color,
+        (ColorTier::Basic, Color::Rgb(r, g, b)) => nearest_basic(r, g, b),
+        (ColorTier::Basic, Color::Indexed(index)) if index >= 16 => {
+            let (r, g, b) = indexed_rgb(index);
+            nearest_basic(r, g, b)
+        }
+        (ColorTier::Basic, _) => color,
+    }
+}
+
+/// The standard xterm values of the 16 basic colours.
+const BASIC_RGB: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (205, 0, 0),
+    (0, 205, 0),
+    (205, 205, 0),
+    (0, 0, 238),
+    (205, 0, 205),
+    (0, 205, 205),
+    (229, 229, 229),
+    (127, 127, 127),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (92, 92, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
+
+fn nearest_basic(r: u8, g: u8, b: u8) -> Color {
+    let distance = |(x, y, z): (u8, u8, u8)| {
+        [(x, r), (y, g), (z, b)]
+            .iter()
+            .map(|&(a, b)| (i32::from(a) - i32::from(b)).pow(2))
+            .sum::<i32>()
+    };
+    let index = (0..16)
+        .min_by_key(|&index| distance(BASIC_RGB[index]))
+        .unwrap_or(7);
+    Color::Indexed(index as u8)
+}
+
+/// The RGB value of an entry in the xterm 256-colour palette.
+fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match index {
+        0..=15 => BASIC_RGB[index as usize],
+        16..=231 => {
+            let cube = index - 16;
+            (
+                LEVELS[(cube / 36) as usize],
+                LEVELS[((cube / 6) % 6) as usize],
+                LEVELS[(cube % 6) as usize],
+            )
+        }
+        _ => {
+            let level = 8 + 10 * (index - 232);
+            (level, level, level)
+        }
+    }
+}
+
 fn nearest_ansi256(color: Color) -> Color {
     const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
     let Color::Rgb(r, g, b) = color else {
@@ -645,6 +724,53 @@ mod tests {
         };
         let (x, y) = (luminance(a), luminance(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Audit: the 16-colour Light theme drew warnings and strings in yellow on
+    /// white. With the standard xterm palette, every text colour must reach
+    /// 3:1 against the background.
+    #[test]
+    fn basic_light_text_is_readable_with_the_standard_palette() {
+        let standard = |color: Color| -> Color {
+            let index = match color {
+                Color::Black => 0,
+                Color::Red => 1,
+                Color::Green => 2,
+                Color::Yellow => 3,
+                Color::Blue => 4,
+                Color::Magenta => 5,
+                Color::Cyan => 6,
+                Color::Gray => 7,
+                Color::DarkGray => 8,
+                Color::LightRed => 9,
+                Color::LightGreen => 10,
+                Color::LightYellow => 11,
+                Color::LightBlue => 12,
+                Color::LightMagenta => 13,
+                Color::LightCyan => 14,
+                Color::White => 15,
+                other => panic!("{other:?} is not a basic colour"),
+            };
+            let (r, g, b) = BASIC_RGB[index];
+            Color::Rgb(r, g, b)
+        };
+        let theme = Theme::basic_light();
+        for (role, color) in [
+            ("text", theme.text),
+            ("muted", theme.muted),
+            ("mint", theme.mint),
+            ("warning", theme.warning),
+            ("error", theme.error),
+            ("keyword", theme.keyword),
+            ("string", theme.string),
+            ("number", theme.number),
+            ("function", theme.function),
+            ("constant", theme.constant),
+            ("comment", theme.comment),
+        ] {
+            let ratio = contrast(standard(color), standard(theme.canvas));
+            assert!(ratio >= 3.0, "{role} is {ratio:.2}:1 on the background");
+        }
     }
 
     /// Audit: diffs used fixed dark backgrounds, leaving Light-theme text at
@@ -772,6 +898,30 @@ mod tests {
             ("LC_CTYPE", ""),
             ("LANG", "POSIX")
         ])));
+    }
+
+    #[test]
+    fn fit_to_tier_keeps_every_colour_within_what_the_terminal_shows() {
+        let basic = |color| match fit_to_tier(color, ColorTier::Basic) {
+            Color::Indexed(index) => index,
+            other => panic!("{other:?} is not a basic colour"),
+        };
+        assert!(basic(Color::Rgb(250, 10, 10)) < 16);
+        assert_eq!(basic(Color::Rgb(250, 10, 10)), 9, "bright red");
+        assert!(basic(Color::Indexed(200)) < 16);
+        assert_eq!(
+            basic(Color::Indexed(4)),
+            4,
+            "basic colours stay as they are"
+        );
+        assert!(matches!(
+            fit_to_tier(Color::Rgb(1, 2, 3), ColorTier::Ansi256),
+            Color::Indexed(_)
+        ));
+        assert_eq!(
+            fit_to_tier(Color::Rgb(1, 2, 3), ColorTier::TrueColor),
+            Color::Rgb(1, 2, 3)
+        );
     }
 
     #[test]

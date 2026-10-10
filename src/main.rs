@@ -4,6 +4,7 @@ mod brand;
 mod buffer;
 mod claude;
 mod command;
+mod conflict;
 mod cursor;
 mod format;
 mod git;

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+An agent-style look for the AI panels and list overlays.
+
+### Changed
+
+- The AI review panel opens with a bullet headline and a change count (`+2 added −0 removed`) above the diff.
+- The "working" state shows a spinner (an ASCII fallback is used without Unicode symbols) and fits at 80×24.
+- The command palette, quick open, references, quick fixes, problems, branches, history, changes and project search open with a `●` marker in their titles (`*` without Unicode).
+
 ## 0.2.1 (beta)
 
 Format on save for every language, smart Enter, and a faster crash journal.

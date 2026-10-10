@@ -12,7 +12,7 @@ use crossterm::event::{
 
 use crate::{
     ai::{self, AiProposal, AiRequest},
-    buffer::Buffer,
+    buffer::{Buffer, SaveMode},
     command::{COMMAND_SPECS, Command},
     cursor::Cursor,
     git::{
@@ -87,6 +87,7 @@ pub enum AppMode {
     GitHistory,
     GitBlame,
     GitConflicts,
+    Symbols,
 }
 
 #[derive(Debug)]
@@ -263,6 +264,31 @@ pub struct ProblemItem {
     pub cursor: Cursor,
 }
 
+/// What a click on a list row leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowClick {
+    Ignore,
+    Select,
+    Activate,
+}
+
+/// What a click on part of an overlay does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Choose the list row with this index and open it, like Enter.
+    Row(usize),
+    /// Act like this key, for a button that shows its key.
+    Key(KeyEvent),
+}
+
+/// One accepted AI edit: what it was, and the buffer revision it produced.
+#[derive(Debug, Clone)]
+struct AiEditRecord {
+    summary: String,
+    path: String,
+    revision_after: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum PostSaveAction {
     #[default]
@@ -415,6 +441,10 @@ pub struct App {
     ai_context: Option<AiContextSnapshot>,
     pub ai_proposal: Option<AiProposal>,
     ai_receiver: Option<Receiver<Result<AiProposal, String>>>,
+    commit_message_receiver: Option<Receiver<Result<String, String>>>,
+    shell_receiver: Option<Receiver<Result<String, String>>>,
+    ai_shell_request: bool,
+    ai_edit_history: Vec<AiEditRecord>,
     /// Periodic Git refresh running off the input thread, so a slow `git`
     /// never delays typing or Escape.
     git_refresh_receiver: Option<Receiver<BackgroundGitRefresh>>,
@@ -436,6 +466,12 @@ pub struct App {
     typed_since_suggestion: bool,
     /// Where the editor cursor was last drawn, for anchoring inline popups.
     pub last_cursor_screen: std::cell::Cell<Option<(u16, u16)>>,
+    /// The box of the overlay drawn last, recorded while rendering so a
+    /// click can tell inside from outside.
+    pub overlay_area: std::cell::Cell<Option<ratatui::layout::Rect>>,
+    /// Clickable rows and buttons of that overlay, also recorded while
+    /// rendering, so a click always matches what is on screen.
+    pub overlay_targets: std::cell::RefCell<Vec<(ratatui::layout::Rect, ClickTarget)>>,
     pub palette_query: TextInput,
     pub palette_selected: usize,
     pub preferred_col: Option<usize>,
@@ -463,6 +499,9 @@ pub struct App {
     pub quick_open_query: TextInput,
     pub quick_open_candidates: Vec<PathBuf>,
     pub quick_open_selected: usize,
+    pub symbol_query: TextInput,
+    pub symbol_selected: usize,
+    recent_files: Vec<PathBuf>,
     pub explorer_visible: bool,
     pub explorer_focused: bool,
     pub explorer_files: Vec<workspace::ExplorerEntry>,
@@ -573,6 +612,18 @@ impl App {
     /// Give every unnamed draft left by a crashed session its own tab with a
     /// recover/discard prompt, so no draft hides another.
     fn offer_orphan_drafts(&mut self, drafts: Vec<RecoveryRecord>) {
+        if drafts.is_empty() {
+            return;
+        }
+        // A draft with nothing but blank space is not worth a prompt.
+        let (drafts, blank): (Vec<_>, Vec<_>) = drafts
+            .into_iter()
+            .partition(|record| !record.content.trim().is_empty());
+        for record in blank {
+            if let Some(journal) = record.orphan_journal.as_ref() {
+                let _ = recovery::remove_journal(journal);
+            }
+        }
         if drafts.is_empty() {
             return;
         }
@@ -725,6 +776,10 @@ impl App {
             ai_context: None,
             ai_proposal: None,
             ai_receiver: None,
+            commit_message_receiver: None,
+            shell_receiver: None,
+            ai_shell_request: false,
+            ai_edit_history: Vec::new(),
             git_refresh_receiver: None,
             git_operation: None,
             ai_config: if cfg!(test) {
@@ -742,6 +797,8 @@ impl App {
             last_edit_at: Instant::now(),
             typed_since_suggestion: false,
             last_cursor_screen: std::cell::Cell::new(None),
+            overlay_area: std::cell::Cell::new(None),
+            overlay_targets: std::cell::RefCell::new(Vec::new()),
             palette_query: TextInput::default(),
             palette_selected: 0,
             preferred_col: None,
@@ -768,6 +825,9 @@ impl App {
             quick_open_query: TextInput::default(),
             quick_open_candidates: Vec::new(),
             quick_open_selected: 0,
+            recent_files: Vec::new(),
+            symbol_query: TextInput::default(),
+            symbol_selected: 0,
             explorer_visible: editor_settings.explorer_visible,
             explorer_focused: false,
             explorer_files: Vec::new(),
@@ -870,6 +930,8 @@ impl App {
             self.poll_auto_completion();
             self.poll_language_service();
             self.poll_ai_request();
+            self.poll_commit_message();
+            self.poll_shell_command();
             self.poll_inline_suggestion();
             self.poll_git_operation();
             self.refresh_git_state(false);
@@ -974,11 +1036,10 @@ impl App {
 
         if self.mode == AppMode::Editing && self.terminal_focused {
             let command = self.keymap_config.resolve(key);
-            // Without enhanced keyboard reporting Ctrl+` arrives as Ctrl+Space,
-            // so honor it here: leaving the terminal must always be possible.
-            let legacy_backtick = !crate::terminal::keyboard_enhanced()
-                && command == Some(Command::TriggerCompletion);
-            if command == Some(Command::ToggleTerminal) || legacy_backtick {
+            // Ctrl+Space belongs to the shell (it is NUL there: set-mark,
+            // autosuggest accept). Leaving the terminal always works with
+            // Ctrl+T, which every terminal can send.
+            if command == Some(Command::ToggleTerminal) {
                 self.execute(Command::ToggleTerminal);
             } else {
                 self.handle_terminal_key(key);
@@ -1051,6 +1112,7 @@ impl App {
             AppMode::GitHistory => self.handle_git_history_key(key),
             AppMode::GitBlame => self.handle_git_blame_key(key),
             AppMode::GitConflicts => self.handle_git_conflicts_key(key),
+            AppMode::Symbols => self.handle_symbols_key(key),
             AppMode::Editing => {
                 if self.ghost_is_visible() {
                     match key.code {
@@ -1162,12 +1224,20 @@ impl App {
         }
     }
 
+    /// The welcome says "just start typing", so any key dismisses it. Enter,
+    /// Esc and F1 only close it; every other key also goes to the editor, so
+    /// the first keystroke is never lost.
     fn handle_onboarding_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(1)) {
-            let _ = settings::mark_onboarding_seen();
-            self.mode = AppMode::Editing;
-            self.status = Some("Tip: F1 shows the everyday keys again".to_owned());
+        self.dismiss_onboarding();
+        if !matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(1)) {
+            self.handle_key(key);
         }
+    }
+
+    fn dismiss_onboarding(&mut self) {
+        let _ = settings::mark_onboarding_seen();
+        self.mode = AppMode::Editing;
+        self.status = Some("Tip: F1 shows the everyday keys again".to_owned());
     }
 
     fn build_ai_context(&self) -> AiContextSnapshot {
@@ -1537,6 +1607,7 @@ impl App {
     }
 
     fn begin_ai_intent(&mut self) {
+        self.ai_shell_request = false;
         if self.ai_config.is_none() {
             self.open_ai_setup(true);
             return;
@@ -1576,6 +1647,10 @@ impl App {
         let instruction = self.ai_query.as_str().trim().to_owned();
         if instruction.is_empty() {
             self.status = Some("Type a question, or press Tab for a suggestion".to_owned());
+            return;
+        }
+        if self.ai_shell_request {
+            self.start_shell_command(instruction);
             return;
         }
 
@@ -1789,6 +1864,7 @@ impl App {
             self.cursor,
             self.selection_anchor,
         );
+        self.record_ai_edit(&proposal.summary);
         self.ai_proposal = None;
         self.ai_context = None;
         self.mode = AppMode::Editing;
@@ -2404,6 +2480,9 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        if self.mode == AppMode::Onboarding {
+            self.dismiss_onboarding();
+        }
         if self.mode == AppMode::Editing && self.terminal_focused {
             if let Some(session) = self.terminal_sessions.get_mut(self.active_terminal)
                 && let Err(error) = session.write_paste(text)
@@ -2503,7 +2582,8 @@ impl App {
             | AppMode::ConfirmGitBranchDelete
             | AppMode::GitHistory
             | AppMode::GitBlame
-            | AppMode::GitConflicts => {}
+            | AppMode::GitConflicts
+            | AppMode::Symbols => {}
         }
 
         if self.buffer.revision() != revision_before {
@@ -2610,9 +2690,12 @@ impl App {
                     Ok(()) => {
                         let _ = self.journal.clear_now(&self.buffer.recovery_key());
                         self.last_journal_revision = None;
-                        self.status = Some(match note {
-                            Some(note) => format!("Saved · {note}"),
-                            None => "Saved".to_owned(),
+                        self.status = Some(match (note, self.buffer.last_save_mode()) {
+                            (_, SaveMode::InPlace) => {
+                                "Saved in place: this file cannot be replaced, so a crash during save could damage it".to_owned()
+                            }
+                            (Some(note), SaveMode::Atomic) => format!("Saved · {note}"),
+                            (None, SaveMode::Atomic) => "Saved".to_owned(),
                         });
                         self.finish_post_save(post_action);
                     }
@@ -2756,42 +2839,140 @@ impl App {
 
     fn handle_recovery_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('r' | 'R') | KeyCode::Enter => {
-                if let Some(record) = self.recovery_candidate.take() {
-                    self.buffer.restore_recovery_text(&record.content);
-                    self.cursor = Cursor::new(0, 0);
-                    self.selection_anchor = None;
-                    self.mode = AppMode::Editing;
-                    self.status = Some("Recovered unsaved edits; save to persist them".to_owned());
-                    self.last_journal_revision = None;
-                    self.sync_code_intelligence_after_edit();
-                    // Journal the draft under this buffer before letting go of the
-                    // earlier session's copy, so a crash here loses nothing.
-                    self.sync_recovery_journal();
-                    let journaled = self.flush_journal();
-                    if let Some(journal) = record.orphan_journal
-                        && journaled
-                        && let Err(error) = recovery::remove_journal(&journal)
-                    {
-                        self.status = Some(format!("Recovery cleanup failed: {error}"));
-                    }
-                }
-            }
-            KeyCode::Char('d' | 'D') => {
-                let _ = self.journal.clear_now(&self.buffer.recovery_key());
-                if let Some(journal) = self
-                    .recovery_candidate
-                    .as_ref()
-                    .and_then(|record| record.orphan_journal.as_ref())
-                {
-                    let _ = recovery::remove_journal(journal);
-                }
-                self.recovery_candidate = None;
-                self.mode = AppMode::Editing;
-                self.status = Some("Recovery journal discarded".to_owned());
-            }
+            KeyCode::Char('r' | 'R') | KeyCode::Enter => self.restore_recovery(),
+            KeyCode::Char('d' | 'D') => self.discard_recovery(),
+            KeyCode::Esc => self.defer_recovery(),
+            KeyCode::Char('a' | 'A') if self.pending_draft_count() > 1 => self.discard_all_drafts(),
             _ => {}
         }
+    }
+
+    fn restore_recovery(&mut self) {
+        if let Some(record) = self.recovery_candidate.take() {
+            self.buffer.restore_recovery_text(&record.content);
+            self.cursor = Cursor::new(0, 0);
+            self.selection_anchor = None;
+            self.mode = AppMode::Editing;
+            self.status = Some("Recovered unsaved edits; save to persist them".to_owned());
+            self.last_journal_revision = None;
+            self.sync_code_intelligence_after_edit();
+            // Journal the draft under this buffer before letting go of the
+            // earlier session's copy, so a crash here loses nothing.
+            self.sync_recovery_journal();
+            let journaled = self.flush_journal();
+            if let Some(journal) = record.orphan_journal
+                && journaled
+                && let Err(error) = recovery::remove_journal(&journal)
+            {
+                self.status = Some(format!("Recovery cleanup failed: {error}"));
+            }
+        }
+    }
+
+    /// Unnamed drafts from earlier sessions still waiting for a decision,
+    /// in this tab and in the others.
+    pub fn pending_draft_count(&self) -> usize {
+        let is_draft = |record: &RecoveryRecord| record.orphan_journal.is_some();
+        let here = usize::from(self.recovery_candidate.as_ref().is_some_and(is_draft));
+        let elsewhere = self
+            .tabs
+            .iter()
+            .filter_map(|slot| slot.state.as_ref())
+            .filter(|state| state.recovery_candidate.as_ref().is_some_and(is_draft))
+            .count();
+        here + elsewhere
+    }
+
+    /// Discards every waiting unnamed draft and closes the blank tabs that
+    /// were opened only to show them. Drafts of named files are left alone.
+    fn discard_all_drafts(&mut self) {
+        let is_draft = |record: &RecoveryRecord| record.orphan_journal.is_some();
+        let mut discarded = 0;
+        loop {
+            // Closing one draft's tab can bring the next one to the front, so
+            // the front tab is checked on every pass, not just the first.
+            if self.recovery_candidate.as_ref().is_some_and(is_draft) {
+                if let Some(journal) = self
+                    .recovery_candidate
+                    .take()
+                    .and_then(|record| record.orphan_journal)
+                {
+                    let _ = recovery::remove_journal(&journal);
+                }
+                discarded += 1;
+                if self.tabs.len() > 1 && self.active_tab_is_pristine() {
+                    self.close_active_tab_now(false);
+                }
+                continue;
+            }
+            let Some(index) = self.tabs.iter().position(|slot| {
+                slot.state
+                    .as_ref()
+                    .is_some_and(|state| state.recovery_candidate.as_ref().is_some_and(is_draft))
+            }) else {
+                break;
+            };
+            // Take the draft first, so switching to the tab does not reopen
+            // the dialog for it.
+            if let Some(journal) = self.tabs[index]
+                .state
+                .as_mut()
+                .and_then(|state| state.recovery_candidate.take())
+                .and_then(|record| record.orphan_journal)
+            {
+                let _ = recovery::remove_journal(&journal);
+            }
+            discarded += 1;
+            self.switch_tab(index);
+            if self.tabs.len() > 1 && self.active_tab_is_pristine() {
+                self.close_active_tab_now(false);
+            }
+        }
+        self.mode = if self.recovery_candidate.is_some() {
+            AppMode::Recovery
+        } else {
+            AppMode::Editing
+        };
+        self.status = Some(format!(
+            "Discarded {discarded} unsaved draft{}",
+            if discarded == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Esc: decide later. An unnamed draft keeps its own journal, so it is
+    /// simply offered again on the next start. A named file's draft shares
+    /// the journal with the open file, where the next edit would replace it,
+    /// so the dialog stays open and says why.
+    fn defer_recovery(&mut self) {
+        let is_draft = self
+            .recovery_candidate
+            .as_ref()
+            .is_some_and(|record| record.orphan_journal.is_some());
+        if is_draft {
+            self.recovery_candidate = None;
+            self.mode = AppMode::Editing;
+            self.status =
+                Some("Draft kept for later · it will be offered again next time".to_owned());
+        } else {
+            self.status = Some(
+                "Choose Restore or Discard: editing this file would replace the saved draft"
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn discard_recovery(&mut self) {
+        let _ = self.journal.clear_now(&self.buffer.recovery_key());
+        if let Some(journal) = self
+            .recovery_candidate
+            .as_ref()
+            .and_then(|record| record.orphan_journal.as_ref())
+        {
+            let _ = recovery::remove_journal(journal);
+        }
+        self.recovery_candidate = None;
+        self.mode = AppMode::Editing;
+        self.status = Some("Recovery journal discarded".to_owned());
     }
 
     /// Queues the active buffer's journal: its content while dirty, removal
@@ -5111,7 +5292,9 @@ impl App {
         }
         // Not cleared: a message from a failed commit stays for the retry.
         self.mode = AppMode::GitCommitInput;
-        self.status = Some("Commit staged changes · Enter commit · Esc cancel".to_owned());
+        self.status = Some(
+            "Commit staged changes · Enter commit · Ctrl+G draft a message · Esc cancel".to_owned(),
+        );
     }
 
     fn handle_git_commit_key(&mut self, key: KeyEvent) {
@@ -5145,6 +5328,13 @@ impl App {
                         .map_err(|error| error.to_string())
                 });
             }
+            KeyCode::Char('g')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.generate_commit_message();
+            }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
                     crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
@@ -5153,6 +5343,72 @@ impl App {
                 self.git_commit_query.insert_char(ch)
             }
             _ => {}
+        }
+    }
+
+    fn generate_commit_message(&mut self) {
+        if self.commit_message_receiver.is_some() {
+            self.status = Some("Already writing a commit message".to_owned());
+            return;
+        }
+        let Some(config) = self.ai_config.clone() else {
+            self.status =
+                Some("AI is not set up yet · open Set up AI from the command palette".to_owned());
+            return;
+        };
+        let Some(repository) = self.git_repository.clone() else {
+            self.status = Some("No Git repository found".to_owned());
+            return;
+        };
+        let diff = match repository.staged_diff() {
+            Ok(diff) => diff,
+            Err(error) => {
+                self.status = Some(format!("Could not read staged changes: {error}"));
+                return;
+            }
+        };
+        if diff.trim().is_empty() {
+            self.status = Some("Nothing is staged to write a message for".to_owned());
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = ai::commit_message(&config, &diff).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        self.commit_message_receiver = Some(receiver);
+        self.status = Some("Writing a commit message…".to_owned());
+    }
+
+    fn poll_commit_message(&mut self) {
+        let result =
+            self.commit_message_receiver
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("commit message worker disconnected".to_owned()))
+                    }
+                });
+        let Some(result) = result else {
+            return;
+        };
+        self.commit_message_receiver = None;
+        // The user may have left the commit box while the draft was written;
+        // then the draft is dropped rather than typed into another screen.
+        if self.mode != AppMode::GitCommitInput {
+            return;
+        }
+        match result {
+            Ok(message) if message.is_empty() => {
+                self.status = Some("AI returned an empty commit message".to_owned());
+            }
+            Ok(message) => {
+                self.git_commit_query.set(message);
+                self.status = Some("Message drafted · review it, then Enter to commit".to_owned());
+            }
+            Err(error) => self.status = Some(format!("AI: {error}")),
         }
     }
 
@@ -5469,6 +5725,295 @@ impl App {
                     self.mode = AppMode::Editing;
                     self.status = Some(format!("Blame · {} · {}", line.short_oid, line.author));
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps one side of the merge-conflict block under the cursor. This is
+    /// one undoable edit, and the cursor moves to the start of the result.
+    fn resolve_conflict_at_cursor(&mut self, choice: crate::conflict::ConflictChoice) {
+        let lines: Vec<String> = (0..self.buffer.line_count())
+            .map(|row| self.buffer.line_text(row))
+            .collect();
+        let Some(block) = crate::conflict::block_at(&lines, self.cursor.row) else {
+            self.status = Some("The cursor is not inside a merge conflict".to_owned());
+            return;
+        };
+        let resolved = crate::conflict::resolved_lines(&lines, block, choice);
+        let (start, end, replacement) = if resolved.is_empty() {
+            // Nothing to keep: remove the marker lines, including one newline.
+            if block.end + 1 < lines.len() {
+                (
+                    Cursor::new(block.start, 0),
+                    Cursor::new(block.end + 1, 0),
+                    String::new(),
+                )
+            } else if block.start > 0 {
+                let above = block.start - 1;
+                (
+                    Cursor::new(above, self.buffer.grapheme_count(above)),
+                    Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                    String::new(),
+                )
+            } else {
+                (
+                    Cursor::new(block.start, 0),
+                    Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                    String::new(),
+                )
+            }
+        } else {
+            (
+                Cursor::new(block.start, 0),
+                Cursor::new(block.end, self.buffer.grapheme_count(block.end)),
+                resolved.join("\n"),
+            )
+        };
+        let mut cursor = self.cursor;
+        self.buffer
+            .replace_range(start, end, &replacement, &mut cursor);
+        self.cursor = Cursor::new(
+            block.start.min(self.buffer.line_count().saturating_sub(1)),
+            0,
+        );
+        self.selection_anchor = None;
+        self.should_scroll_to_cursor = true;
+        self.status = Some("Kept the chosen side · Ctrl+Z undoes it".to_owned());
+    }
+
+    /// Asks AI to fix the problem on the cursor line. The line is selected as
+    /// the context, so the answer comes back as a reviewable replacement.
+    fn fix_problem_with_ai(&mut self) {
+        let row = self.cursor.row;
+        let Some(problem) = self
+            .problem_items()
+            .into_iter()
+            .find(|problem| problem.cursor.row == row)
+        else {
+            self.status = Some("No problem on this line".to_owned());
+            return;
+        };
+        if self.ai_config.is_none() {
+            self.open_ai_setup(true);
+            return;
+        }
+        self.selection_anchor = Some(Cursor::new(row, 0));
+        self.cursor = Cursor::new(row, self.buffer.grapheme_count(row));
+        self.ai_context = Some(self.build_ai_context());
+        self.ai_query
+            .set(format!("Fix this problem: {}", problem.message));
+        self.ai_proposal = None;
+        self.ai_receiver = None;
+        self.start_ai_request();
+    }
+
+    /// Asks AI for one shell command. The answer is typed into the terminal
+    /// without Enter, so the user reads it before anything runs.
+    /// Remembers an accepted AI edit, with the buffer revision it left behind.
+    fn record_ai_edit(&mut self, summary: &str) {
+        const LIMIT: usize = 20;
+        self.ai_edit_history.push(AiEditRecord {
+            summary: summary.to_owned(),
+            path: self.buffer.display_path(),
+            revision_after: self.buffer.revision(),
+        });
+        let excess = self.ai_edit_history.len().saturating_sub(LIMIT);
+        self.ai_edit_history.drain(..excess);
+    }
+
+    /// Undoes the latest AI edit, but only while it is still the latest change.
+    fn undo_last_ai_edit(&mut self) {
+        let Some(last) = self.ai_edit_history.last() else {
+            self.status = Some("No AI edit to undo in this session".to_owned());
+            return;
+        };
+        if last.revision_after != self.buffer.revision() || last.path != self.buffer.display_path()
+        {
+            self.status =
+                Some("Other edits came after the last AI edit · Ctrl+Z steps back".to_owned());
+            return;
+        }
+        let summary = last.summary.clone();
+        if self
+            .buffer
+            .undo_with_selection(&mut self.cursor, &mut self.selection_anchor)
+        {
+            self.secondary_cursors.clear();
+            self.rectangular_selection = None;
+            self.clamp_cursor();
+            self.workspace_edit_history = None;
+            self.should_scroll_to_cursor = true;
+            self.ai_edit_history.pop();
+            self.status = Some(format!("Undid AI edit: {summary}"));
+            self.sync_code_intelligence_after_edit();
+        } else {
+            self.status = Some("Nothing to undo".to_owned());
+        }
+    }
+
+    fn show_ai_edit_history(&mut self) {
+        if self.ai_edit_history.is_empty() {
+            self.status = Some("No AI edits accepted in this session yet".to_owned());
+            return;
+        }
+        let summaries: Vec<&str> = self
+            .ai_edit_history
+            .iter()
+            .rev()
+            .take(5)
+            .map(|record| record.summary.as_str())
+            .collect();
+        self.status = Some(format!(
+            "AI edits, latest first ({}): {}",
+            self.ai_edit_history.len(),
+            summaries.join(" · ")
+        ));
+    }
+
+    fn begin_ai_shell(&mut self) {
+        if self.ai_config.is_none() {
+            self.open_ai_setup(true);
+            return;
+        }
+        self.ai_query.clear();
+        self.ai_proposal = None;
+        self.ai_receiver = None;
+        self.ai_shell_request = true;
+        self.mode = AppMode::AiPrompt;
+        self.status = Some("Describe the command you need · Enter asks AI".to_owned());
+    }
+
+    fn start_shell_command(&mut self, request: String) {
+        let Some(config) = self.ai_config.clone() else {
+            self.ai_shell_request = false;
+            self.status = Some("AI is not set up yet".to_owned());
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = ai::shell_command(&config, &request).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        self.shell_receiver = Some(receiver);
+        self.mode = AppMode::AiWaiting;
+        self.status = None;
+    }
+
+    fn poll_shell_command(&mut self) {
+        if !self.ai_shell_request {
+            self.shell_receiver = None;
+            return;
+        }
+        let result = self
+            .shell_receiver
+            .as_ref()
+            .and_then(|receiver| match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("AI request worker disconnected".to_owned()))
+                }
+            });
+        let Some(result) = result else {
+            return;
+        };
+        self.shell_receiver = None;
+        self.ai_shell_request = false;
+        // The user may have stopped waiting; then the answer is dropped.
+        if self.mode != AppMode::AiWaiting {
+            return;
+        }
+        self.mode = AppMode::Editing;
+        match result {
+            Ok(command) => {
+                let typed = if self.terminal_visible {
+                    self.active_terminal_mut()
+                        .map(|terminal| terminal.write_paste(&command))
+                } else {
+                    None
+                };
+                match typed {
+                    Some(Ok(())) => {
+                        self.terminal_focused = true;
+                        self.status = Some(format!(
+                            "Typed in the terminal, not run yet: {command} · Enter there to run"
+                        ));
+                    }
+                    _ => {
+                        self.status = Some(format!(
+                            "Suggested: {command} · open the terminal (Ctrl+T) to type it"
+                        ));
+                    }
+                }
+            }
+            Err(error) => self.status = Some(format!("AI: {error}")),
+        }
+    }
+
+    fn begin_go_to_symbol(&mut self) {
+        let has_symbols = self
+            .syntax_document
+            .as_ref()
+            .is_some_and(|document| !document.symbols().is_empty());
+        if !has_symbols {
+            self.status = Some("This file has no symbols to jump to".to_owned());
+            return;
+        }
+        self.symbol_query.clear();
+        self.symbol_selected = 0;
+        self.mode = AppMode::Symbols;
+        self.status = None;
+    }
+
+    /// Definitions whose names contain the query, in document order.
+    pub fn filtered_symbols(&self) -> Vec<crate::syntax_tree::SyntaxSymbol> {
+        let query = self.symbol_query.as_str().trim().to_lowercase();
+        self.syntax_document
+            .as_ref()
+            .map(|document| document.symbols())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|symbol| query.is_empty() || symbol.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn handle_symbols_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Editing;
+                self.status = None;
+            }
+            KeyCode::Up => self.symbol_selected = self.symbol_selected.saturating_sub(1),
+            KeyCode::Down => {
+                let len = self.filtered_symbols().len();
+                if len > 0 {
+                    self.symbol_selected = (self.symbol_selected + 1).min(len - 1);
+                }
+            }
+            KeyCode::Enter => {
+                let symbols = self.filtered_symbols();
+                if let Some(symbol) =
+                    symbols.get(self.symbol_selected.min(symbols.len().saturating_sub(1)))
+                {
+                    self.cursor = Cursor::new(symbol.start_row, 0);
+                    self.selection_anchor = None;
+                    self.should_scroll_to_cursor = true;
+                    self.mode = AppMode::Editing;
+                    self.status = None;
+                }
+            }
+            KeyCode::Backspace => {
+                self.symbol_query.backspace();
+                self.symbol_selected = 0;
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+                ) =>
+            {
+                self.symbol_query.insert_char(ch);
+                self.symbol_selected = 0;
             }
             _ => {}
         }
@@ -6410,6 +6955,7 @@ impl App {
     }
 
     pub(crate) fn open_path_in_tab(&mut self, path: PathBuf) -> Result<()> {
+        self.note_recent_file(&path);
         if let Some(index) = self.find_open_tab(&path) {
             self.switch_tab(index);
             return Ok(());
@@ -6455,8 +7001,17 @@ impl App {
 
     pub fn filtered_quick_open_entries(&self) -> Vec<usize> {
         let query = self.quick_open_query.as_str();
-        if is_explicit_path_query(query) || query.trim().is_empty() {
+        if is_explicit_path_query(query) {
             return (0..self.quick_open_candidates.len()).collect();
+        }
+        if query.trim().is_empty() {
+            // Recently opened files first, most recent first; the rest keep their order.
+            let mut all: Vec<usize> = (0..self.quick_open_candidates.len()).collect();
+            all.sort_by_key(|&index| {
+                self.recency_rank(&self.quick_open_candidates[index])
+                    .unwrap_or(usize::MAX)
+            });
+            return all;
         }
         let mut ranked: Vec<(i64, usize)> = self
             .quick_open_candidates
@@ -6466,8 +7021,33 @@ impl App {
                 workspace::fuzzy_score(path, query).map(|score| (score, index))
             })
             .collect();
-        ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+        // Better matches first; among equal scores, recently opened files win.
+        ranked.sort_by_key(|&(score, index)| {
+            (
+                std::cmp::Reverse(score),
+                self.recency_rank(&self.quick_open_candidates[index])
+                    .unwrap_or(usize::MAX),
+                index,
+            )
+        });
         ranked.into_iter().map(|(_, index)| index).collect()
+    }
+
+    /// Where a candidate sits in the recently-opened list, if it is there.
+    fn recency_rank(&self, candidate: &std::path::Path) -> Option<usize> {
+        let absolute = self.workspace_root.join(candidate);
+        self.recent_files
+            .iter()
+            .position(|recent| *recent == absolute)
+    }
+
+    /// Moves a file to the front of the recently-opened list.
+    fn note_recent_file(&mut self, path: &std::path::Path) {
+        const RECENT_FILE_LIMIT: usize = 20;
+        let absolute = self.workspace_root.join(path);
+        self.recent_files.retain(|recent| *recent != absolute);
+        self.recent_files.insert(0, absolute);
+        self.recent_files.truncate(RECENT_FILE_LIMIT);
     }
 
     fn handle_quick_open_key(&mut self, key: KeyEvent) {
@@ -7446,6 +8026,26 @@ impl App {
         segments
     }
 
+    /// The file path plus the definition the cursor is in, for the breadcrumb bar.
+    pub fn breadcrumb_with_symbol(&self) -> Vec<String> {
+        let mut segments = self.breadcrumb_segments();
+        if let Some(symbol) = self.enclosing_symbol() {
+            segments.push(symbol.name);
+        }
+        segments
+    }
+
+    /// The innermost definition that contains the cursor row, for the breadcrumb.
+    pub fn enclosing_symbol(&self) -> Option<crate::syntax_tree::SyntaxSymbol> {
+        let row = self.cursor.row;
+        self.syntax_document
+            .as_ref()?
+            .symbols()
+            .into_iter()
+            .filter(|symbol| symbol.start_row <= row && row <= symbol.end_row)
+            .max_by_key(|symbol| symbol.start_row)
+    }
+
     pub fn explorer_entry_expanded(&self, path: &std::path::Path) -> bool {
         self.explorer_expanded.contains(path)
     }
@@ -7889,6 +8489,122 @@ impl App {
         }
     }
 
+    /// Mouse in any overlay. Rows and buttons recorded while rendering act on
+    /// a click; the wheel moves through lists; a click outside closes overlays
+    /// where closing loses nothing. Inside, other clicks do nothing, so a stray
+    /// click never throws away what the user was doing.
+    fn handle_overlay_mouse(&mut self, mouse: MouseEvent) {
+        // The welcome says "just start typing"; a click is just as good.
+        if self.mode == AppMode::Onboarding {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                self.dismiss_onboarding();
+            }
+            return;
+        }
+        let key = |code: KeyCode| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        let is_list = self.mode_is_list_overlay();
+        match mouse.kind {
+            MouseEventKind::ScrollUp if is_list => self.handle_key(key(KeyCode::Up)),
+            MouseEventKind::ScrollDown if is_list => self.handle_key(key(KeyCode::Down)),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let inside = |rect: ratatui::layout::Rect| {
+                    mouse.column >= rect.x
+                        && mouse.column < rect.x.saturating_add(rect.width)
+                        && mouse.row >= rect.y
+                        && mouse.row < rect.y.saturating_add(rect.height)
+                };
+                let target = self
+                    .overlay_targets
+                    .borrow()
+                    .iter()
+                    .find(|(rect, _)| inside(*rect))
+                    .map(|(_, target)| *target);
+                match target {
+                    Some(ClickTarget::Row(index)) => {
+                        if self.select_overlay_row(index) == RowClick::Activate {
+                            self.handle_key(key(KeyCode::Enter));
+                        }
+                    }
+                    Some(ClickTarget::Key(event)) => self.handle_key(event),
+                    None => {
+                        let clicked_inside = self.overlay_area.get().is_some_and(inside);
+                        if !clicked_inside && self.mode_closes_on_outside_click() {
+                            self.handle_key(key(KeyCode::Esc));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Overlays that are lists the wheel can move through.
+    fn mode_is_list_overlay(&self) -> bool {
+        matches!(
+            self.mode,
+            AppMode::Palette
+                | AppMode::QuickOpen
+                | AppMode::Symbols
+                | AppMode::Problems
+                | AppMode::References
+                | AppMode::CodeActions
+                | AppMode::Completion
+                | AppMode::GitBranches
+                | AppMode::GitHistory
+                | AppMode::GitConflicts
+                | AppMode::Changes
+                | AppMode::ProjectSearch
+        )
+    }
+
+    /// Overlays where Esc only closes the view, so an outside click may too.
+    /// Text being typed, confirmations and AI results never close this way.
+    fn mode_closes_on_outside_click(&self) -> bool {
+        self.mode_is_list_overlay()
+            || matches!(
+                self.mode,
+                AppMode::Help | AppMode::LanguageStatus | AppMode::GitBlame | AppMode::Find
+            )
+    }
+
+    /// Moves the selection of the current list overlay to `index` and says
+    /// whether the click should also open the row. Rows whose action changes
+    /// things (switching branch, applying a quick fix) open on the second
+    /// click, once the user has seen which row is selected.
+    fn select_overlay_row(&mut self, index: usize) -> RowClick {
+        let selected = match self.mode {
+            AppMode::Palette => &mut self.palette_selected,
+            AppMode::QuickOpen => &mut self.quick_open_selected,
+            AppMode::Symbols => &mut self.symbol_selected,
+            AppMode::References => &mut self.reference_selected,
+            AppMode::GitConflicts => &mut self.git_conflict_selected,
+            AppMode::GitHistory => &mut self.git_history_selected,
+            AppMode::GitBranches => &mut self.git_branch_selected,
+            AppMode::CodeActions => &mut self.code_action_selected,
+            AppMode::AiSetup => {
+                self.ai_setup.field = index.min(crate::app::AI_SETUP_FIELDS - 1);
+                return RowClick::Select;
+            }
+            AppMode::Problems => &mut self.problem_selected,
+            AppMode::Completion => &mut self.completion_selected,
+            AppMode::ProjectSearch => &mut self.project_search_selected,
+            AppMode::Changes => &mut self.changes_selected,
+            _ => return RowClick::Ignore,
+        };
+        let already = *selected == index;
+        *selected = index;
+        // Git changes previews the selected change, so the first click shows it.
+        let two_step = matches!(
+            self.mode,
+            AppMode::GitBranches | AppMode::CodeActions | AppMode::Changes
+        );
+        if two_step && !already {
+            RowClick::Select
+        } else {
+            RowClick::Activate
+        }
+    }
+
     fn discard_current_and_continue_quit(&mut self) {
         if self.tabs.len() == 1 {
             let _ = self.journal.clear_now(&self.buffer.recovery_key());
@@ -8061,33 +8777,22 @@ impl App {
             return;
         }
 
-        if self.mode == AppMode::SaveConflict
-            || self.mode == AppMode::Recovery
-            || self.mode == AppMode::ConfirmRevertHunk
-        {
-            return;
-        }
-
-        if self.mode == AppMode::Help
-            || self.mode == AppMode::Find
-            || self.mode == AppMode::Replace
-            || self.mode == AppMode::ProjectSearch
-            || self.mode == AppMode::GoToLine
-            || self.mode == AppMode::SaveAs
-            || self.mode == AppMode::QuickOpen
-            || self.mode == AppMode::Completion
-            || self.mode == AppMode::Problems
-            || self.mode == AppMode::LanguageStatus
-            || self.mode == AppMode::Changes
-        {
+        if self.mode == AppMode::Recovery {
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                self.mode = AppMode::Editing;
-                self.status = None;
+                let area = ratatui::layout::Rect::new(0, 0, terminal_width, terminal_height);
+                let show_all = self.pending_draft_count() > 1;
+                match ui::recovery_button_hit(area, mouse.column, mouse.row, show_all) {
+                    Some(ui::RecoveryButton::Restore) => self.restore_recovery(),
+                    Some(ui::RecoveryButton::Discard) => self.discard_recovery(),
+                    Some(ui::RecoveryButton::DiscardAll) => self.discard_all_drafts(),
+                    None => {}
+                }
             }
             return;
         }
 
         if self.mode != AppMode::Editing {
+            self.handle_overlay_mouse(mouse);
             return;
         }
 
@@ -8097,7 +8802,10 @@ impl App {
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                 self.terminal_focused = true;
                 self.explorer_focused = false;
-                self.status = Some("Terminal focused · Ctrl+` returns to editor".to_owned());
+                let back = self
+                    .shortcut_label(Command::ToggleTerminal)
+                    .unwrap_or_else(|| "Ctrl+T".to_owned());
+                self.status = Some(format!("Terminal focused · {back} returns to editor"));
             }
 
             if let Some((cols, rows)) =
@@ -9389,6 +10097,20 @@ impl App {
             Command::GitBranches => self.begin_git_branches(),
             Command::GitHistory => self.begin_git_history(),
             Command::GitBlame => self.begin_git_blame(),
+            Command::GoToSymbol => self.begin_go_to_symbol(),
+            Command::FixProblemWithAi => self.fix_problem_with_ai(),
+            Command::AskAiShell => self.begin_ai_shell(),
+            Command::AiUndoLastEdit => self.undo_last_ai_edit(),
+            Command::AiEditHistory => self.show_ai_edit_history(),
+            Command::KeepOursConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Ours)
+            }
+            Command::KeepTheirsConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Theirs)
+            }
+            Command::KeepBothConflict => {
+                self.resolve_conflict_at_cursor(crate::conflict::ConflictChoice::Both)
+            }
             Command::GitFetch => self.git_fetch(),
             Command::GitPull => self.git_pull_fast_forward(),
             Command::GitPush => self.git_push(),
@@ -10048,6 +10770,11 @@ fn expand_user_path(input: &str) -> PathBuf {
 }
 
 const MAX_SYSTEM_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
+/// The terminal clipboard (OSC 52) sends text through the terminal as
+/// Base64, often over SSH. Larger copies stay in Mellow instead of
+/// streaming megabytes through a slow link.
+const MAX_TERMINAL_CLIPBOARD_BYTES: usize = 256 * 1024;
+const _: () = assert!(MAX_TERMINAL_CLIPBOARD_BYTES < MAX_SYSTEM_CLIPBOARD_BYTES);
 
 fn read_clipboard_command(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
@@ -10192,6 +10919,8 @@ enum ClipboardDelivery {
     Native,
     TerminalSent,
     InternalOnly,
+    /// No native clipboard, and too large to send through the terminal.
+    TooLargeForTerminal,
 }
 
 impl ClipboardDelivery {
@@ -10200,6 +10929,9 @@ impl ClipboardDelivery {
             Self::Native => format!("{verb} {count} chars · system clipboard"),
             Self::TerminalSent => format!("Unconfirmed copy · {verb} {count} chars"),
             Self::InternalOnly => format!("Mellow only · {verb} {count} chars"),
+            Self::TooLargeForTerminal => {
+                format!("Mellow only · {verb} {count} chars (too large for the terminal clipboard)")
+            }
         }
     }
 }
@@ -10212,6 +10944,9 @@ fn copy_to_system_clipboard(text: &str) -> ClipboardDelivery {
     }
     if write_native_system_clipboard(text) {
         return ClipboardDelivery::Native;
+    }
+    if text.len() > MAX_TERMINAL_CLIPBOARD_BYTES {
+        return ClipboardDelivery::TooLargeForTerminal;
     }
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = text.as_bytes();
@@ -10695,6 +11430,291 @@ mod tests {
             "slow hook"
         );
         assert!(app.git_commit_query.as_str().is_empty());
+    }
+
+    #[test]
+    fn go_to_symbol_filters_by_name_and_jumps_to_the_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {}\n\nfn helper() {}\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.execute(Command::GoToSymbol);
+        assert_eq!(app.mode, AppMode::Symbols);
+        for ch in "help".chars() {
+            app.handle_symbols_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(app.filtered_symbols().len(), 1);
+        app.handle_symbols_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.cursor.row, 2);
+    }
+
+    #[test]
+    fn breadcrumb_ends_with_the_definition_under_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.rs");
+        std::fs::write(&path, "fn main() {\n    let x = 1;\n}\n\nfn other() {}\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        app.cursor = Cursor::new(1, 4);
+        assert_eq!(
+            app.breadcrumb_with_symbol().last().map(String::as_str),
+            Some("main")
+        );
+        app.cursor = Cursor::new(4, 0);
+        assert_eq!(
+            app.breadcrumb_with_symbol().last().map(String::as_str),
+            Some("other")
+        );
+    }
+
+    fn accept_test_ai_edit(app: &mut App) {
+        app.ai_context = Some(super::AiContextSnapshot {
+            revision: app.buffer.revision(),
+            range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
+            before: "let".to_owned(),
+            request_context: String::new(),
+            label: String::new(),
+            path: app.buffer.display_path(),
+            language: "Plain Text".to_owned(),
+        });
+        app.ai_proposal = Some(crate::ai::AiProposal {
+            summary: "Rename to var".to_owned(),
+            replacement: Some("var".to_owned()),
+        });
+        app.mode = AppMode::AiReview;
+        app.apply_ai_proposal();
+    }
+
+    #[test]
+    fn a_normal_save_says_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.buffer.insert_text(&mut Cursor::default(), "hello");
+        app.execute(Command::Save);
+        assert_eq!(app.status.as_deref(), Some("Saved"));
+    }
+
+    #[test]
+    fn an_accepted_ai_edit_can_be_undone_while_it_is_the_latest_change() {
+        use crate::buffer::Buffer;
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        accept_test_ai_edit(&mut app);
+        assert_eq!(app.buffer.contents(), "var a = 1;");
+        assert_eq!(app.ai_edit_history.len(), 1);
+
+        app.execute(Command::AiUndoLastEdit);
+        assert_eq!(app.buffer.contents(), "let a = 1;");
+        assert!(app.ai_edit_history.is_empty());
+        assert_eq!(app.status.as_deref(), Some("Undid AI edit: Rename to var"));
+    }
+
+    #[test]
+    fn ai_undo_refuses_when_other_edits_came_after_it() {
+        use crate::buffer::Buffer;
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        accept_test_ai_edit(&mut app);
+        let mut typing = Cursor::new(0, 10);
+        app.buffer.insert_text(&mut typing, "!");
+
+        app.execute(Command::AiUndoLastEdit);
+        assert_eq!(app.buffer.contents(), "var a = 1;!");
+        assert_eq!(app.ai_edit_history.len(), 1);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("Other edits came after the last AI edit"),
+            "{:?}",
+            app.status
+        );
+
+        app.execute(Command::AiEditHistory);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("AI edits, latest first (1): Rename to var"),
+            "{:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn asking_for_a_shell_command_without_ai_opens_setup() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.execute(Command::AskAiShell);
+        assert_ne!(app.mode, AppMode::AiPrompt);
+        assert!(!app.ai_shell_request);
+    }
+
+    #[test]
+    fn fix_problem_says_when_the_line_has_no_problem() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.buffer
+            .insert_text(&mut Cursor::default(), "let fine = 1;");
+        app.execute(Command::FixProblemWithAi);
+        assert_eq!(app.status.as_deref(), Some("No problem on this line"));
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn fix_problem_without_ai_opens_setup_instead_of_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        std::fs::write(&path, "fn main( {\n").unwrap();
+        let mut app = App::new(crate::buffer::Buffer::open(Some(path)).unwrap());
+        assert!(
+            app.problem_items()
+                .iter()
+                .any(|problem| problem.cursor.row == 0),
+            "expected a parse problem on the first line"
+        );
+        app.cursor = Cursor::new(0, 0);
+        app.execute(Command::FixProblemWithAi);
+        assert_ne!(app.mode, AppMode::AiReview);
+        assert!(app.ai_proposal.is_none());
+    }
+
+    #[test]
+    fn go_to_symbol_explains_when_a_file_has_none() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.execute(Command::GoToSymbol);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("This file has no symbols to jump to")
+        );
+    }
+
+    #[test]
+    fn quick_open_lists_recently_opened_files_first() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = PathBuf::from("/work");
+        app.quick_open_candidates = vec![
+            PathBuf::from("a.txt"),
+            PathBuf::from("b.txt"),
+            PathBuf::from("c.txt"),
+        ];
+        app.recent_files = vec![PathBuf::from("/work/c.txt"), PathBuf::from("/work/a.txt")];
+        assert_eq!(app.filtered_quick_open_entries(), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn opening_a_file_moves_it_to_the_front_of_recents() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["one.txt", "two.txt"] {
+            std::fs::write(dir.path().join(name), "x\n").unwrap();
+        }
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.open_path_in_tab(dir.path().join("one.txt")).unwrap();
+        app.open_path_in_tab(dir.path().join("two.txt")).unwrap();
+        app.open_path_in_tab(dir.path().join("one.txt")).unwrap();
+        assert_eq!(
+            app.recent_files,
+            vec![dir.path().join("one.txt"), dir.path().join("two.txt")]
+        );
+    }
+
+    #[test]
+    fn recent_files_break_ties_in_fuzzy_matches() {
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.workspace_root = PathBuf::from("/work");
+        app.quick_open_candidates = vec![PathBuf::from("util_a.rs"), PathBuf::from("util_b.rs")];
+        app.quick_open_query.set("util");
+        app.recent_files = vec![PathBuf::from("/work/util_b.rs")];
+        assert_eq!(app.filtered_quick_open_entries(), vec![1, 0]);
+    }
+
+    #[test]
+    fn keeping_a_conflict_side_is_one_undoable_edit() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let text = "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\nend";
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), text);
+        app.cursor = Cursor::new(2, 0);
+        app.execute(Command::KeepTheirsConflict);
+        assert_eq!(app.buffer.contents(), "keep\ntheirs\nend");
+        assert!(app.buffer.can_undo());
+        let mut cursor = app.cursor;
+        assert!(app.buffer.undo(&mut cursor));
+        assert_eq!(app.buffer.contents(), text);
+    }
+
+    #[test]
+    fn keeping_an_empty_side_removes_the_marker_lines() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "a\n<<<<<<< HEAD\n=======\ntheirs\n>>>>>>> topic\nb",
+        );
+        app.cursor = Cursor::new(1, 0);
+        app.execute(Command::KeepOursConflict);
+        assert_eq!(app.buffer.contents(), "a\nb");
+    }
+
+    #[test]
+    fn keep_both_puts_ours_first_and_outside_a_conflict_says_so() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic",
+        );
+        app.cursor = Cursor::new(3, 0);
+        app.execute(Command::KeepBothConflict);
+        assert_eq!(app.buffer.contents(), "ours\ntheirs");
+
+        let mut plain = App::new(Buffer::empty(None));
+        plain
+            .buffer
+            .insert_text(&mut Cursor::default(), "no conflict here");
+        plain.execute(Command::KeepOursConflict);
+        assert_eq!(
+            plain.status.as_deref(),
+            Some("The cursor is not inside a merge conflict")
+        );
+    }
+
+    #[test]
+    fn ctrl_g_says_when_ai_is_not_set_up_and_keeps_the_message() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.begin_git_commit();
+        app.handle_git_commit_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, AppMode::GitCommitInput);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("AI is not set up"),
+            "{:?}",
+            app.status
+        );
+        assert!(app.git_commit_query.is_empty());
+    }
+
+    #[test]
+    fn staged_diff_is_read_only_and_shows_only_staged_changes() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join("demo.txt"), "changed\n").unwrap();
+        git_in(dir.path(), &["add", "demo.txt"]);
+        std::fs::write(dir.path().join("other.txt"), "not staged\n").unwrap();
+        let repository = crate::git::GitRepository::discover(dir.path())
+            .unwrap()
+            .unwrap();
+        let diff = repository.staged_diff().unwrap();
+        assert!(diff.contains("demo.txt"), "{diff}");
+        assert!(!diff.contains("other.txt"), "{diff}");
+        // The index is unchanged: the file is still staged, nothing committed.
+        assert!(git_in(dir.path(), &["diff", "--cached", "--name-only"]).contains("demo.txt"));
     }
 
     #[cfg(unix)]
@@ -12658,9 +13678,10 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
         assert!(app.terminal_focused);
 
-        // Legacy terminals deliver Ctrl+` as Ctrl+Space (NUL).
+        // Ctrl+Space belongs to the shell (it is NUL there); Ctrl+T is the
+        // way out that every terminal can send.
         app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        assert!(!app.terminal_focused);
+        assert!(app.terminal_focused);
 
         app.execute(Command::HideTerminal);
         assert!(!app.terminal_visible);
@@ -12949,6 +13970,430 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().readonly(),
             "the file keeps its read-only mode"
         );
+    }
+
+    fn orphan_drafts_in(dir: &std::path::Path, contents: &[&str]) -> Vec<RecoveryRecord> {
+        contents
+            .iter()
+            .enumerate()
+            .map(|(index, content)| {
+                let journal = dir.join(format!("untitled-test-{index}.journal"));
+                std::fs::write(&journal, content).unwrap();
+                RecoveryRecord {
+                    original_path: None,
+                    content: (*content).to_owned(),
+                    orphan_journal: Some(journal),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn escape_defers_an_unnamed_draft_and_keeps_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["keep me"]);
+        let journal = drafts[0].orphan_journal.clone().unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(app.recovery_candidate.is_none());
+        assert!(journal.exists(), "the draft stays on disk for next time");
+    }
+
+    #[test]
+    fn escape_on_a_named_files_draft_keeps_the_dialog_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Recovery);
+        assert!(app.recovery_candidate.is_some());
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Choose Restore or Discard"),
+            "{:?}",
+            app.status
+        );
+    }
+
+    fn draw_frame(app: &App, width: u16, height: u16) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+    }
+
+    fn drawn_target(app: &App, wanted: ClickTarget) -> ratatui::layout::Rect {
+        app.overlay_targets
+            .borrow()
+            .iter()
+            .find(|(_, target)| *target == wanted)
+            .map(|(rect, _)| *rect)
+            .unwrap_or_else(|| panic!("{wanted:?} was not drawn"))
+    }
+
+    fn plain_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn clicking_a_palette_row_runs_that_command() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        app.palette_query.set("help");
+        app.palette_selected = 0;
+        draw_frame(&app, 80, 24);
+        let entries = app.filtered_palette_entries();
+        let wanted = entries
+            .iter()
+            .position(|&index| crate::command::COMMAND_SPECS[index].command == Command::ShowHelp)
+            .expect("Help is listed");
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 3, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn palette_closes_on_an_outside_click_but_not_a_stray_inside_click() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        draw_frame(&app, 80, 24);
+        let area = app.overlay_area.get().expect("palette box recorded");
+        // The query line is inside the box but not a row or button.
+        click(&mut app, area.x + 4, area.y + 1, 80, 24);
+        assert_eq!(app.mode, AppMode::Palette);
+
+        draw_frame(&app, 80, 24);
+        click(&mut app, 0, 23, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn the_mouse_wheel_moves_through_a_list_overlay() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        draw_frame(&app, 80, 24);
+        let scroll = |kind| crossterm::event::MouseEvent {
+            kind,
+            column: 30,
+            row: 10,
+            modifiers: KeyModifiers::empty(),
+        };
+        app.handle_mouse(scroll(MouseEventKind::ScrollDown), 80, 24);
+        app.handle_mouse(scroll(MouseEventKind::ScrollDown), 80, 24);
+        assert_eq!(app.palette_selected, 2);
+        app.handle_mouse(scroll(MouseEventKind::ScrollUp), 80, 24);
+        assert_eq!(app.palette_selected, 1);
+    }
+
+    #[test]
+    fn clicking_a_quick_open_row_opens_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["alpha.txt", "beta.txt"] {
+            std::fs::write(dir.path().join(name), format!("{name}\n")).unwrap();
+        }
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        assert_eq!(app.mode, AppMode::QuickOpen);
+        draw_frame(&app, 80, 24);
+        let wanted = app
+            .filtered_quick_open_entries()
+            .iter()
+            .position(|&index| app.quick_open_candidates[index].ends_with("beta.txt"))
+            .expect("beta.txt is listed");
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(
+            app.buffer
+                .path()
+                .is_some_and(|path| path.ends_with("beta.txt"))
+        );
+    }
+
+    #[test]
+    fn save_conflict_cancel_works_by_click_and_outside_clicks_are_ignored() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::SaveConflict;
+        draw_frame(&app, 80, 24);
+        // A click outside a safety prompt must not choose for the user.
+        click(&mut app, 0, 0, 80, 24);
+        assert_eq!(app.mode, AppMode::SaveConflict);
+
+        draw_frame(&app, 80, 24);
+        let cancel = drawn_target(&app, ClickTarget::Key(plain_key(KeyCode::Esc)));
+        click(&mut app, cancel.x + 1, cancel.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn clicking_accept_applies_the_ai_suggestion() {
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
+        app.ai_context = Some(super::AiContextSnapshot {
+            revision: app.buffer.revision(),
+            range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
+            before: "let".to_owned(),
+            request_context: String::new(),
+            label: String::new(),
+            path: app.buffer.display_path(),
+            language: "Plain Text".to_owned(),
+        });
+        app.ai_proposal = Some(crate::ai::AiProposal {
+            summary: "Rename to var".to_owned(),
+            replacement: Some("var".to_owned()),
+        });
+        app.mode = AppMode::AiReview;
+        draw_frame(&app, 80, 24);
+        let accept = drawn_target(&app, ClickTarget::Key(plain_key(KeyCode::Enter)));
+        click(&mut app, accept.x + 2, accept.y, 80, 24);
+        assert_eq!(app.buffer.contents(), "var a = 1;");
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clicking_a_branch_selects_it_first_and_switches_on_the_second_click() {
+        let dir = git_workspace();
+        git_in(dir.path(), &["branch", "feature-x"]);
+        let current = git_in(dir.path(), &["branch", "--show-current"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitBranches);
+        assert_eq!(app.mode, AppMode::GitBranches);
+        let wanted = app
+            .git_branches
+            .iter()
+            .position(|branch| format!("{branch:?}").contains("feature-x"))
+            .expect("feature-x is listed");
+
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::GitBranches, "first click only selects");
+        assert_eq!(app.git_branch_selected, wanted);
+        assert_eq!(git_in(dir.path(), &["branch", "--show-current"]), current);
+
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(
+            git_in(dir.path(), &["branch", "--show-current"]).trim(),
+            "feature-x"
+        );
+    }
+
+    #[test]
+    fn confirmation_dialogs_have_clickable_safe_choices() {
+        for mode in [
+            AppMode::ConfirmCloseTerminal,
+            AppMode::ConfirmExplorerDelete,
+        ] {
+            let mut app = App::new(Buffer::empty(None));
+            app.mode = mode;
+            draw_frame(&app, 80, 24);
+            let keep = app
+                .overlay_targets
+                .borrow()
+                .iter()
+                .find(|(_, target)| {
+                    matches!(
+                        target,
+                        ClickTarget::Key(event)
+                            if event.code == KeyCode::Esc || event.code == KeyCode::Char('n')
+                    )
+                })
+                .map(|(rect, _)| *rect)
+                .unwrap_or_else(|| panic!("{mode:?} draws a cancel button"));
+            // An outside click never decides a confirmation.
+            click(&mut app, 0, 0, 80, 24);
+            assert_eq!(app.mode, mode);
+            draw_frame(&app, 80, 24);
+            click(&mut app, keep.x + 1, keep.y, 80, 24);
+            assert_eq!(app.mode, AppMode::Editing, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn clicking_a_problem_jumps_to_its_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        std::fs::write(&path, "fn ok() {}\n\nfn main( {\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.execute(Command::ShowProblems);
+        assert_eq!(app.mode, AppMode::Problems);
+        let problem_row = app.problem_items()[0].cursor.row;
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(0));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.cursor.row, problem_row);
+    }
+
+    #[test]
+    fn ctrl_space_goes_to_the_shell_and_ctrl_t_leaves_the_terminal() {
+        let mut app = App::new(Buffer::empty(None));
+        app.terminal_visible = true;
+        app.terminal_focused = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert!(app.terminal_focused, "Ctrl+Space stays with the shell");
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert!(!app.terminal_focused, "Ctrl+T returns to the editor");
+    }
+
+    #[test]
+    fn large_copies_say_they_stayed_in_mellow() {
+        let message = super::ClipboardDelivery::TooLargeForTerminal.message("Copied", 300_000);
+        assert!(message.starts_with("Mellow only"), "{message}");
+        assert!(
+            message.contains("too large for the terminal clipboard"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn clicking_an_ai_setup_field_focuses_it_without_saving() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::AiSetup;
+        draw_frame(&app, 80, 24);
+        let model_row = drawn_target(&app, ClickTarget::Row(1));
+        click(&mut app, model_row.x + 3, model_row.y, 80, 24);
+        assert_eq!(
+            app.mode,
+            AppMode::AiSetup,
+            "a click focuses; it does not save"
+        );
+        assert_eq!(app.ai_setup.field, 1);
+    }
+
+    #[test]
+    fn a_click_dismisses_the_welcome_screen() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        draw_frame(&app, 80, 24);
+        click(&mut app, 40, 12, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn the_first_key_typed_during_onboarding_is_kept() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "F");
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.buffer.contents(), "Fi");
+    }
+
+    #[test]
+    fn enter_only_closes_onboarding_and_paste_goes_into_the_file() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "");
+
+        let mut pasted = App::new(Buffer::empty(None));
+        pasted.mode = AppMode::Onboarding;
+        pasted.handle_paste("hello");
+        assert_eq!(pasted.mode, AppMode::Editing);
+        assert_eq!(pasted.buffer.contents(), "hello");
+    }
+
+    #[test]
+    fn discard_all_clears_every_waiting_draft_and_its_blank_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["one", "two", "three"]);
+        let journals: Vec<_> = drafts
+            .iter()
+            .filter_map(|record| record.orphan_journal.clone())
+            .collect();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_eq!(app.mode, AppMode::Recovery);
+        assert_eq!(app.pending_draft_count(), 3);
+        assert_eq!(app.tabs.len(), 3);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.pending_draft_count(), 0);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(journals.iter().all(|journal| !journal.exists()));
+        assert_eq!(app.status.as_deref(), Some("Discarded 3 unsaved drafts"));
+    }
+
+    #[test]
+    fn blank_drafts_are_removed_instead_of_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["  \n\t"]);
+        let journal = drafts[0].orphan_journal.clone().unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_ne!(app.mode, AppMode::Recovery);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn discard_all_is_offered_only_for_more_than_one_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut single = App::new(Buffer::empty(None));
+        single.offer_orphan_drafts(orphan_drafts_in(dir.path(), &["only"]));
+        // A does nothing with a single draft; the dialog stays open.
+        single.handle_recovery_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(single.mode, AppMode::Recovery);
+
+        let other = tempfile::tempdir().unwrap();
+        let mut several = App::new(Buffer::empty(None));
+        several.offer_orphan_drafts(orphan_drafts_in(other.path(), &["a", "b"]));
+        let (_, _, all) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
+        click(&mut several, all.x + 1, all.y, 80, 24);
+        assert_eq!(several.pending_draft_count(), 0);
+        assert_eq!(several.mode, AppMode::Editing);
+    }
+
+    #[test]
+    fn clicking_restore_in_the_recovery_dialog_restores_the_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        let (restore, _, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
+        click(&mut app, restore.x + 2, restore.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "draft from crash");
+    }
+
+    #[test]
+    fn clicking_discard_in_the_recovery_dialog_discards_and_misses_do_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.txt");
+        std::fs::write(&path, "disk").unwrap();
+        recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        let (_, discard, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 120, 34));
+
+        // A click beside the buttons keeps the dialog open.
+        click(&mut app, discard.x, discard.y + 1, 120, 34);
+        assert_eq!(app.mode, AppMode::Recovery);
+
+        click(&mut app, discard.x + 1, discard.y, 120, 34);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "disk");
+        assert_eq!(app.status.as_deref(), Some("Recovery journal discarded"));
     }
 
     #[test]

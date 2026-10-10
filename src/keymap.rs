@@ -31,6 +31,7 @@ impl KeymapConfig {
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
         let mut overrides = HashMap::new();
 
+        let mut preset: Option<(usize, String)> = None;
         for (index, raw) in text.lines().enumerate() {
             let line = raw.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
@@ -44,6 +45,10 @@ impl KeymapConfig {
                 ));
             };
             let id = id.trim();
+            if id == "preset" {
+                preset = Some((index, value.trim().to_owned()));
+                continue;
+            }
             if !COMMAND_SPECS.iter().any(|spec| spec.id == id) {
                 return Err(format!(
                     "{}:{} unknown command id '{id}'",
@@ -79,9 +84,16 @@ impl KeymapConfig {
             overrides.insert(id.to_owned(), bindings);
         }
 
-        validate_conflicts(&overrides)?;
+        let mut merged = match preset {
+            None => HashMap::new(),
+            Some((line, name)) => preset_bindings(&name)
+                .map_err(|error| format!("{}:{} {error}", path.display(), line + 1))?,
+        };
+        // The user's own lines win over the preset.
+        merged.extend(overrides);
+        validate_conflicts(&merged)?;
         Ok(Self {
-            overrides,
+            overrides: merged,
             source: Some(path.to_path_buf()),
         })
     }
@@ -123,6 +135,42 @@ fn keymap_path() -> PathBuf {
         return PathBuf::from(path);
     }
     crate::settings::config_root().join("keybindings.conf")
+}
+
+/// Default bindings for a named preset. `default` keeps Mellow's own keys.
+fn preset_bindings(name: &str) -> Result<HashMap<String, Vec<KeyBinding>>, String> {
+    let entries: &[(&str, &str)] = match name.to_ascii_lowercase().as_str() {
+        "default" => &[],
+        // VS Code: Ctrl+P opens files; Ctrl+Shift+P and F1 open commands.
+        // Many terminals send Ctrl+Shift+P as plain Ctrl+P, so F1 keeps the
+        // palette reachable everywhere. Help stays one search away in it.
+        "vscode" => &[
+            ("file.open", "ctrl+p"),
+            ("workbench.commands", "ctrl+shift+p, f1"),
+            ("help.shortcuts", "none"),
+        ],
+        other => {
+            return Err(format!(
+                "unknown keymap preset '{other}' (choose default or vscode)"
+            ));
+        }
+    };
+    entries
+        .iter()
+        .map(|(id, bindings)| {
+            if bindings.eq_ignore_ascii_case("none") {
+                return Ok(((*id).to_owned(), Vec::new()));
+            }
+            bindings
+                .split(',')
+                .map(|binding| {
+                    parse_binding(binding.trim())
+                        .ok_or_else(|| format!("preset binding '{binding}' is not supported"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|parsed| ((*id).to_owned(), parsed))
+        })
+        .collect()
 }
 
 fn parse_binding(input: &str) -> Option<KeyBinding> {
@@ -394,6 +442,56 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
+
+    #[test]
+    fn vscode_preset_moves_file_open_and_commands() {
+        let dir = std::env::temp_dir().join(format!("mellow-keymap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys");
+        std::fs::write(&path, "preset = vscode\n").unwrap();
+        let config = KeymapConfig::load_from_path(&path).unwrap();
+        let ctrl = |ch: char| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+        let ctrl_shift = |ch: char| {
+            KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )
+        };
+        assert_eq!(config.resolve(ctrl('p')), Some(Command::OpenFile));
+        assert_eq!(config.resolve(ctrl_shift('p')), Some(Command::ShowPalette));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vscode_preset_keeps_the_palette_on_a_key_every_terminal_can_send() {
+        let dir = std::env::temp_dir().join(format!("mellow-keymap-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys");
+        std::fs::write(&path, "preset = vscode\n").unwrap();
+        let config = KeymapConfig::load_from_path(&path).unwrap();
+        assert_eq!(
+            config.resolve(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(Command::ShowPalette)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn user_lines_override_a_preset_and_unknown_presets_are_rejected() {
+        let dir = std::env::temp_dir().join(format!("mellow-keymap-b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys");
+        std::fs::write(&path, "preset = vscode\nfile.open = ctrl+o\n").unwrap();
+        let config = KeymapConfig::load_from_path(&path).unwrap();
+        let ctrl = |ch: char| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+        assert_eq!(config.resolve(ctrl('o')), Some(Command::OpenFile));
+        assert_eq!(config.resolve(ctrl('p')), None);
+
+        std::fs::write(&path, "preset = emacs\n").unwrap();
+        let error = KeymapConfig::load_from_path(&path).unwrap_err();
+        assert!(error.contains("unknown keymap preset 'emacs'"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn punctuation_chords_survive_legacy_terminal_encoding() {

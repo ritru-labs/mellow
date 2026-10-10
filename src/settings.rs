@@ -153,6 +153,7 @@ pub fn mark_onboarding_seen() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 fn config_base() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -160,11 +161,30 @@ fn config_base() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(not(test))]
 fn state_base() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Unit tests never touch the developer's real `~/.config` or
+/// `~/.local/state`: each test process gets its own folder under the
+/// system temp directory.
+#[cfg(test)]
+fn test_base() -> PathBuf {
+    std::env::temp_dir().join(format!("mellow-unit-tests-{}", std::process::id()))
+}
+
+#[cfg(test)]
+fn config_base() -> PathBuf {
+    test_base().join("config")
+}
+
+#[cfg(test)]
+fn state_base() -> PathBuf {
+    test_base().join("state")
 }
 
 /// Settings, keybindings and the AI setup (`~/.config/mellow`).
@@ -188,6 +208,26 @@ fn parse_bool(path: &Path, index: usize, value: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_tests_keep_state_and_config_out_of_the_real_home_folder() {
+        let temp = std::env::temp_dir();
+        assert!(
+            state_root().starts_with(&temp),
+            "{}",
+            state_root().display()
+        );
+        assert!(
+            config_root().starts_with(&temp),
+            "{}",
+            config_root().display()
+        );
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            assert!(!state_root().starts_with(home.join(".local")));
+            assert!(!config_root().starts_with(home.join(".config")));
+        }
+    }
     use tempfile::tempdir;
 
     #[test]

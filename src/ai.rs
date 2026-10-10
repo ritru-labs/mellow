@@ -461,6 +461,126 @@ pub fn complete_inline(config: &AiProviderConfig, request: &InlineRequest) -> Re
     Ok(clean_inline(&text))
 }
 
+const COMMIT_SYSTEM: &str = concat!(
+    "You write Git commit messages from a staged diff. ",
+    "Reply with the commit message only: no code fences, quotes or commentary. ",
+    "Line 1 is an imperative summary under 72 characters. ",
+    "Optionally add a blank line and a short body of plain sentences about why. ",
+    "Describe only what the diff changes."
+);
+/// Longer diffs are cut so one request stays small; the model is told.
+const COMMIT_DIFF_CHARS: usize = 12_000;
+
+/// Drafts a commit message for staged changes. Nothing is committed here;
+/// the caller shows the draft for review.
+pub fn commit_message(config: &AiProviderConfig, diff: &str) -> Result<String> {
+    if let Some(problem) = endpoint_problem(&config.endpoint) {
+        bail!("AI address refused: {problem}");
+    }
+    let shown: String = diff.chars().take(COMMIT_DIFF_CHARS).collect();
+    let note = if diff.chars().count() > COMMIT_DIFF_CHARS {
+        "\n(diff truncated)"
+    } else {
+        ""
+    };
+    let user = format!("Staged diff:\n{shown}{note}");
+    let text = match config.provider {
+        AiProvider::Claude => claude::send(
+            config,
+            &claude::Exchange {
+                system: COMMIT_SYSTEM,
+                user: &user,
+                max_tokens: 1_024,
+                effort: "low",
+                timeout: ASK_TIMEOUT,
+            },
+        )?,
+        _ => chat_completion(config, COMMIT_SYSTEM, &user, ASK_TIMEOUT)?,
+    };
+    Ok(clean_commit_message(&text))
+}
+
+const SHELL_SYSTEM: &str = concat!(
+    "You turn a request into one shell command for a POSIX shell (bash or zsh). ",
+    "Reply with the command only: one line, no code fences, no explanation, no leading prompt. ",
+    "Never use sudo. Never delete or overwrite files unless the request clearly asks for it."
+);
+const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Turns a plain-language request into one shell command. It is only typed
+/// into the terminal for the user to review; nothing runs here.
+pub fn shell_command(config: &AiProviderConfig, request: &str) -> Result<String> {
+    if let Some(problem) = endpoint_problem(&config.endpoint) {
+        bail!("AI address refused: {problem}");
+    }
+    let text = match config.provider {
+        AiProvider::Claude => claude::send(
+            config,
+            &claude::Exchange {
+                system: SHELL_SYSTEM,
+                user: request,
+                max_tokens: 256,
+                effort: "low",
+                timeout: SHELL_TIMEOUT,
+            },
+        )?,
+        _ => chat_completion(config, SHELL_SYSTEM, request, SHELL_TIMEOUT)?,
+    };
+    clean_shell_command(&text)
+}
+
+/// The first non-empty line, without fences, quotes or a leading `$`.
+fn clean_shell_command(text: &str) -> Result<String> {
+    let line = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .map(|line| line.trim().trim_matches('`').trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let line = line.strip_prefix("$ ").unwrap_or(line).trim();
+    if line.is_empty() {
+        bail!("the AI did not suggest a command");
+    }
+    Ok(line.to_owned())
+}
+
+#[cfg(test)]
+mod shell_command_tests {
+    use super::clean_shell_command;
+
+    #[test]
+    fn keeps_one_command_and_drops_fences_and_prompts() {
+        assert_eq!(
+            clean_shell_command("```bash\n$ du -sh *\n```").unwrap(),
+            "du -sh *"
+        );
+        assert!(clean_shell_command("\n\n").is_err());
+    }
+}
+
+/// Removes code fences and wrapping quotes from a drafted message.
+fn clean_commit_message(text: &str) -> String {
+    let body: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .collect();
+    body.join("\n").trim().trim_matches('"').trim().to_owned()
+}
+
+#[cfg(test)]
+mod commit_message_tests {
+    use super::clean_commit_message;
+
+    #[test]
+    fn strips_fences_and_quotes_from_a_drafted_message() {
+        let raw = "```\n\"Add staged diff reader\n\nRead the index without locks.\"\n```\n";
+        assert_eq!(
+            clean_commit_message(raw),
+            "Add staged diff reader\n\nRead the index without locks."
+        );
+    }
+}
+
 /// Strips fences and limits a suggestion to a few lines.
 fn clean_inline(text: &str) -> String {
     let mut body = text.trim_end_matches(['\n', '\r', ' ']).to_owned();
