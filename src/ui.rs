@@ -2597,7 +2597,12 @@ fn clear_overlay(frame: &mut Frame<'_>, app: &App, popup: Rect) {
 
 /// Draws a row of buttons left to right, three columns apart, and records
 /// each one so clicking it acts like its key.
-fn draw_buttons(frame: &mut Frame<'_>, app: &App, row: Rect, buttons: &[(&str, Style, KeyEvent)]) {
+fn draw_buttons(
+    frame: &mut Frame<'_>,
+    app: &App,
+    row: Rect,
+    buttons: &[(&str, Style, KeyEvent)],
+) -> u16 {
     let mut x = row.x;
     for (label, style, key) in buttons {
         let width = (UnicodeWidthStr::width(*label) as u16).min(row.right().saturating_sub(x));
@@ -2614,6 +2619,7 @@ fn draw_buttons(frame: &mut Frame<'_>, app: &App, row: Rect, buttons: &[(&str, S
         );
         x = x.saturating_add(width + 3);
     }
+    x
 }
 
 /// Records a clickable row or button of the overlay being drawn.
@@ -3062,6 +3068,11 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(available)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let is_selected = index == selected;
         let marker = if is_selected {
             if theme.unicode_symbols { "▸" } else { ">" }
@@ -3162,13 +3173,30 @@ fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &
             Line::from("Permanently delete this workspace file or empty directory?"),
             Line::raw(""),
             Line::from(Span::styled(target, Style::default().fg(app.theme.text))),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "Y / Enter delete · N / Esc cancel",
-                Style::default().fg(app.theme.faint),
-            )),
         ]),
         inner,
+    );
+    let theme = app.theme;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        &[
+            (
+                " [Y] Delete ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
     );
 }
 
@@ -3301,14 +3329,40 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
     let more = app.pending_lsp_preview.len() > app.pending_lsp_scroll + body_rows;
-    lines.push(Line::styled(
-        format!(
-            "Y / Enter apply all · N / Esc cancel · ↑↓ PgUp/PgDn scroll{}",
-            if more { " · more below" } else { "" }
-        ),
-        Style::default().fg(theme.faint),
-    ));
     frame.render_widget(Paragraph::new(lines), inner);
+    let row = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    let end = draw_buttons(
+        frame,
+        app,
+        row,
+        &[
+            (
+                " [Y] Apply all ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.mint)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
+    );
+    let hint = format!(
+        "↑↓ PgUp/PgDn scroll{}",
+        if more { " · more below" } else { "" }
+    );
+    frame.buffer_mut().set_stringn(
+        end,
+        row.y,
+        hint,
+        row.right().saturating_sub(end) as usize,
+        Style::default().fg(theme.faint),
+    );
 }
 
 fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -3494,7 +3548,18 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )));
     } else {
+        let list_top = lines.len() as u16;
         for (index, problem) in problems.iter().enumerate().skip(start).take(available) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + list_top + (index - start) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let (symbol, severity_color) = match problem.severity {
                 ProblemSeverity::Error => {
@@ -3707,13 +3772,30 @@ fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app:
             Line::from("Delete this local branch using Git's safe -d check?"),
             Line::raw(""),
             Line::from(Span::styled(branch, Style::default().fg(app.theme.text))),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "Y / Enter delete if merged · N / Esc cancel",
-                Style::default().fg(app.theme.faint),
-            )),
         ]),
         inner,
+    );
+    let theme = app.theme;
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        &[
+            (
+                " [Y] Delete if merged ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
+            ),
+            (
+                " [N] Cancel ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Esc),
+            ),
+        ],
     );
 }
 
@@ -3944,6 +4026,16 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .skip(start)
             .take(list_rows as usize)
         {
+            click_target(
+                app,
+                Rect::new(
+                    list_area.x,
+                    list_area.y + (index - start) as u16,
+                    list_area.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let background = if is_selected {
                 theme.elevated2
@@ -5060,19 +5152,34 @@ fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &A
             .style(Style::default().bg(theme.elevated)),
         popup,
     );
+    let inner = inset(popup, 2, 1);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "Closing this terminal stops the program running in it.",
-                Style::default().fg(theme.text),
+        Paragraph::new(vec![Line::styled(
+            "Closing this terminal stops the program running in it.",
+            Style::default().fg(theme.text),
+        )]),
+        inner,
+    );
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    draw_buttons(
+        frame,
+        app,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        &[
+            (
+                " [Y] Close anyway ",
+                Style::default()
+                    .fg(theme.canvas)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                key(KeyCode::Char('y')),
             ),
-            Line::raw(""),
-            Line::styled(
-                "Y close anyway · N / Esc keep it",
-                Style::default().fg(theme.faint),
+            (
+                " [N] Keep it ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Char('n')),
             ),
-        ]),
-        inset(popup, 2, 1),
+        ],
     );
 }
 
@@ -5713,7 +5820,18 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )));
     } else {
+        let list_top = lines.len() as u16;
         for (index, result) in results.iter().enumerate().skip(start).take(available) {
+            click_target(
+                app,
+                Rect::new(
+                    inner.x,
+                    inner.y + list_top + (index - start) as u16,
+                    inner.width,
+                    1,
+                ),
+                crate::app::ClickTarget::Row(index),
+            );
             let is_selected = index == selected;
             let background = if is_selected {
                 theme.elevated2

@@ -8579,11 +8579,19 @@ impl App {
             AppMode::GitHistory => &mut self.git_history_selected,
             AppMode::GitBranches => &mut self.git_branch_selected,
             AppMode::CodeActions => &mut self.code_action_selected,
+            AppMode::Problems => &mut self.problem_selected,
+            AppMode::Completion => &mut self.completion_selected,
+            AppMode::ProjectSearch => &mut self.project_search_selected,
+            AppMode::Changes => &mut self.changes_selected,
             _ => return RowClick::Ignore,
         };
         let already = *selected == index;
         *selected = index;
-        let two_step = matches!(self.mode, AppMode::GitBranches | AppMode::CodeActions);
+        // Git changes previews the selected change, so the first click shows it.
+        let two_step = matches!(
+            self.mode,
+            AppMode::GitBranches | AppMode::CodeActions | AppMode::Changes
+        );
         if two_step && !already {
             RowClick::Select
         } else {
@@ -14149,6 +14157,53 @@ mod tests {
             git_in(dir.path(), &["branch", "--show-current"]).trim(),
             "feature-x"
         );
+    }
+
+    #[test]
+    fn confirmation_dialogs_have_clickable_safe_choices() {
+        for mode in [
+            AppMode::ConfirmCloseTerminal,
+            AppMode::ConfirmExplorerDelete,
+        ] {
+            let mut app = App::new(Buffer::empty(None));
+            app.mode = mode;
+            draw_frame(&app, 80, 24);
+            let keep = app
+                .overlay_targets
+                .borrow()
+                .iter()
+                .find(|(_, target)| {
+                    matches!(
+                        target,
+                        ClickTarget::Key(event)
+                            if event.code == KeyCode::Esc || event.code == KeyCode::Char('n')
+                    )
+                })
+                .map(|(rect, _)| *rect)
+                .unwrap_or_else(|| panic!("{mode:?} draws a cancel button"));
+            // An outside click never decides a confirmation.
+            click(&mut app, 0, 0, 80, 24);
+            assert_eq!(app.mode, mode);
+            draw_frame(&app, 80, 24);
+            click(&mut app, keep.x + 1, keep.y, 80, 24);
+            assert_eq!(app.mode, AppMode::Editing, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn clicking_a_problem_jumps_to_its_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        std::fs::write(&path, "fn ok() {}\n\nfn main( {\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.execute(Command::ShowProblems);
+        assert_eq!(app.mode, AppMode::Problems);
+        let problem_row = app.problem_items()[0].cursor.row;
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(0));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.cursor.row, problem_row);
     }
 
     #[test]
