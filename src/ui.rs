@@ -2631,6 +2631,41 @@ fn click_target(app: &App, rect: Rect, target: crate::app::ClickTarget) {
     app.overlay_targets.borrow_mut().push((rect, target));
 }
 
+/// Fits text into `max_width` cells by replacing its middle with "…", so
+/// both the start of a path and its file name stay visible.
+fn shorten_middle(text: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+    if max_width <= 1 {
+        return "…".repeat(max_width);
+    }
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let budget = max_width - 1;
+    let mut tail_width = 0;
+    let mut tail_start = graphemes.len();
+    // Give the end (the file name) a little more room than the start.
+    while tail_start > 0 {
+        let width = UnicodeWidthStr::width(graphemes[tail_start - 1]);
+        if tail_width + width > budget.div_ceil(2) {
+            break;
+        }
+        tail_width += width;
+        tail_start -= 1;
+    }
+    let mut head = String::new();
+    let mut head_width = 0;
+    for grapheme in &graphemes[..tail_start] {
+        let width = UnicodeWidthStr::width(*grapheme);
+        if head_width + width > budget - tail_width {
+            break;
+        }
+        head.push_str(grapheme);
+        head_width += width;
+    }
+    format!("{head}…{}", graphemes[tail_start..].concat())
+}
+
 /// A horizontal rule character that respects the ASCII fallback.
 fn rule_glyph(app: &App) -> &'static str {
     if app.theme.unicode_symbols {
@@ -5233,7 +5268,14 @@ fn render_close_tab_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let lines = vec![
         Line::from(Span::styled(
-            format!("{} has unsaved changes.", app.active_display_path()),
+            {
+                let suffix = " has unsaved changes.";
+                let room = (inner.width as usize).saturating_sub(suffix.len());
+                format!(
+                    "{}{suffix}",
+                    shorten_middle(&app.active_display_path(), room)
+                )
+            },
             Style::default().fg(theme.text),
         )),
         Line::raw(""),
@@ -6465,6 +6507,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shorten_middle_keeps_both_ends_within_the_width() {
+        assert_eq!(super::shorten_middle("short.txt", 20), "short.txt");
+        let long = "src/very/deeply/nested/folder/structure/main.rs";
+        let short = super::shorten_middle(long, 20);
+        assert_eq!(unicode_width::UnicodeWidthStr::width(short.as_str()), 20);
+        assert!(short.starts_with("src/"), "{short}");
+        assert!(short.ends_with("main.rs"), "{short}");
+        assert!(short.contains('…'), "{short}");
+    }
+
+    #[test]
+    fn close_tab_prompt_keeps_its_sentence_for_long_file_names() {
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(Some(
+            std::path::PathBuf::from(
+                "a/really/long/path/that/goes/on/and/on/and/on/for/ever/notes-for-today.md",
+            ),
+        )));
+        app.mode = crate::app::AppMode::ConfirmCloseTab;
+        let text = render_rows(&app, 80, 24).join("\n");
+        assert!(text.contains("has unsaved changes."), "{text}");
+        assert!(text.contains("notes-for-today.md"), "{text}");
     }
 
     #[test]
