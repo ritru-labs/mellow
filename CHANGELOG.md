@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 (beta)
+
+### Security
+
+- AI requests no longer follow redirects, so the API key header cannot be sent to a redirect target.
+- The AI configuration prints the key as `<redacted>` in debug output.
+
 ## 0.3.0 (beta)
 
 An agent-style look, mouse support across overlays, and a set of editing features.
