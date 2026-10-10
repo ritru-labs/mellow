@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -322,6 +322,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         AppMode::GitConflicts => render_git_conflicts(frame, area, app),
         AppMode::Symbols => render_symbols(frame, area, app),
     }
+    if !app.theme.unicode_symbols {
+        asciify_symbols(frame.buffer_mut());
+    }
 }
 
 fn render_too_small(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -549,7 +552,14 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ));
         }
     }
-    spans.push(Span::styled(" │", Style::default().fg(theme.elevated2)));
+    spans.push(Span::styled(
+        if app.theme.unicode_symbols {
+            " │"
+        } else {
+            " |"
+        },
+        Style::default().fg(theme.elevated2),
+    ));
     buffer.set_line(area.x, area.y, &Line::from(spans), layout.brand_width);
 
     for tab in &layout.tabs {
@@ -628,7 +638,11 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         buffer.set_string(
             area.x + explorer - 1,
             area.y,
-            "│",
+            if app.theme.unicode_symbols {
+                "│"
+            } else {
+                "|"
+            },
             Style::default()
                 .fg(if app.explorer_focused {
                     theme.mint
@@ -769,11 +783,7 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(accent))
         .title(Span::styled(
             title,
@@ -913,7 +923,7 @@ fn render_workspace(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     render_editor_pane(frame, top, app, view);
                 }
                 frame.render_widget(
-                    Paragraph::new("─".repeat(divider.width as usize)).style(
+                    Paragraph::new(rule_glyph(app).repeat(divider.width as usize)).style(
                         Style::default()
                             .fg(app.theme.elevated2)
                             .bg(app.theme.canvas),
@@ -960,6 +970,7 @@ fn render_explorer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let block = Block::default()
         .borders(Borders::RIGHT)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(if app.explorer_focused {
             theme.mint
         } else {
@@ -1832,7 +1843,11 @@ fn render_highlighted_slice(
             let (display, width) = if grapheme == "\t" {
                 let w = TAB_WIDTH - (absolute_col % TAB_WIDTH);
                 let display = if show_whitespace {
-                    format!("→{}", " ".repeat(w.saturating_sub(1)))
+                    format!(
+                        "{}{}",
+                        if theme.unicode_symbols { "→" } else { ">" },
+                        " ".repeat(w.saturating_sub(1))
+                    )
                 } else if show_indent_guides && leading_whitespace {
                     is_guide = true;
                     format!("│{}", " ".repeat(w.saturating_sub(1)))
@@ -1842,13 +1857,13 @@ fn render_highlighted_slice(
                 (display, w)
             } else if grapheme == " " {
                 let display = if show_whitespace {
-                    "·".to_owned()
+                    if theme.unicode_symbols { "·" } else { "." }.to_owned()
                 } else if show_indent_guides
                     && leading_whitespace
                     && absolute_col.is_multiple_of(TAB_WIDTH)
                 {
                     is_guide = true;
-                    "│".to_owned()
+                    if theme.unicode_symbols { "│" } else { "|" }.to_owned()
                 } else {
                     " ".to_owned()
                 };
@@ -2399,11 +2414,7 @@ fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 overlay_title(app, "Go to symbol"),
@@ -2473,6 +2484,115 @@ fn render_symbols(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+/// Single-cell ASCII lookalikes for the interface symbols Mellow draws, used
+/// when the terminal cannot show Unicode (for example `LANG=C`). One cell
+/// maps to one cell, so layout never shifts.
+const ASCII_LOOKALIKES: &[(&str, &str)] = &[
+    ("·", "-"),
+    ("…", "."),
+    ("→", ">"),
+    ("←", "<"),
+    ("↑", "^"),
+    ("↓", "v"),
+    ("›", ">"),
+    ("‹", "<"),
+    ("▸", ">"),
+    ("▶", ">"),
+    ("⎿", ">"),
+    ("●", "*"),
+    ("•", "*"),
+    ("◐", "~"),
+    ("✦", "*"),
+    ("✓", "+"),
+    ("✔", "+"),
+    ("✚", "+"),
+    ("×", "x"),
+    ("—", "-"),
+    ("–", "-"),
+    ("─", "-"),
+    ("│", "|"),
+    ("┌", "+"),
+    ("┐", "+"),
+    ("└", "+"),
+    ("┘", "+"),
+    ("╭", "+"),
+    ("╮", "+"),
+    ("╰", "+"),
+    ("╯", "+"),
+    ("├", "+"),
+    ("┤", "+"),
+    ("┬", "+"),
+    ("┴", "+"),
+    ("┼", "+"),
+    ("“", "\""),
+    ("”", "\""),
+    ("‘", "'"),
+    ("’", "'"),
+];
+
+/// Replaces interface symbols with ASCII lookalikes across the whole frame.
+fn asciify_symbols(buffer: &mut ratatui::buffer::Buffer) {
+    let area = buffer.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if let Some((_, ascii)) = ASCII_LOOKALIKES
+                .iter()
+                .find(|(symbol, _)| *symbol == cell.symbol())
+            {
+                cell.set_symbol(ascii);
+            }
+        }
+    }
+}
+
+const ASCII_BORDER: ratatui::symbols::border::Set<'static> = ratatui::symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
+/// Rounded corners, or plain ASCII where the terminal cannot show Unicode.
+fn rounded_border(unicode: bool) -> ratatui::symbols::border::Set<'static> {
+    if unicode {
+        ratatui::symbols::border::ROUNDED
+    } else {
+        ASCII_BORDER
+    }
+}
+
+/// Square corners, or plain ASCII where the terminal cannot show Unicode.
+fn plain_border(unicode: bool) -> ratatui::symbols::border::Set<'static> {
+    if unicode {
+        ratatui::symbols::border::PLAIN
+    } else {
+        ASCII_BORDER
+    }
+}
+
+/// A horizontal rule character that respects the ASCII fallback.
+fn rule_glyph(app: &App) -> &'static str {
+    if app.theme.unicode_symbols {
+        "─"
+    } else {
+        "-"
+    }
+}
+
+/// The marker in front of the selected row of a list.
+fn select_marker(app: &App) -> &'static str {
+    if app.theme.unicode_symbols {
+        "› "
+    } else {
+        "> "
+    }
+}
+
 fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let popup_width = 64.min(area.width.saturating_sub(4)).max(20);
@@ -2482,11 +2602,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 overlay_title(app, "Commands"),
@@ -2519,7 +2635,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -2638,11 +2754,7 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 overlay_title(app, "Open file"),
@@ -2675,7 +2787,7 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -2865,11 +2977,7 @@ fn render_completion(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .title(Span::styled(
             " Suggestions ",
@@ -2950,6 +3058,7 @@ fn render_explorer_path_action(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -2978,6 +3087,7 @@ fn render_explorer_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &
     let block = Block::default()
         .title(" Delete? ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3008,6 +3118,7 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(overlay_title(app, "References"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = block.inner(popup);
@@ -3025,7 +3136,7 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .take(visible)
     {
         let marker = if index == app.reference_selected {
-            "› "
+            select_marker(app)
         } else {
             "  "
         };
@@ -3049,6 +3160,7 @@ fn render_rename_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Rename ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3081,6 +3193,7 @@ fn render_lsp_edit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
             files
         ))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = block.inner(popup);
@@ -3138,6 +3251,7 @@ fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(overlay_title(app, "Quick fixes"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3150,7 +3264,7 @@ fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .take(inner.height.saturating_sub(2) as usize)
     {
         let marker = if i == app.code_action_selected {
-            "› "
+            select_marker(app)
         } else {
             "  "
         };
@@ -3180,6 +3294,7 @@ fn render_language_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(format!(" Language server · {} ", health.language))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = inset(block.inner(popup), 1, 0);
@@ -3268,11 +3383,7 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(if problems.is_empty() {
                 theme.muted
             } else {
@@ -3383,6 +3494,7 @@ fn render_git_commit_input(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Commit ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3412,6 +3524,7 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(overlay_title(app, "Branches"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3430,7 +3543,7 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .take(visible)
     {
         let selected = index == app.git_branch_selected;
-        let cursor = if selected { "› " } else { "  " };
+        let cursor = if selected { select_marker(app) } else { "  " };
         let current = if branch.current { "* " } else { "  " };
         let style = if selected {
             Style::default().fg(app.theme.text).bg(app.theme.elevated2)
@@ -3457,6 +3570,7 @@ fn render_git_branch_create(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" New branch ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3480,6 +3594,7 @@ fn render_git_branch_rename(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Rename branch ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3505,6 +3620,7 @@ fn render_git_branch_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app:
     let block = Block::default()
         .title(" Delete branch? ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3531,6 +3647,7 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Who changed each line ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3543,7 +3660,7 @@ fn render_git_blame(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for (index, item) in app.git_blame.iter().enumerate().skip(start).take(visible) {
         let selected = index == app.git_blame_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let text = format!(
             "{marker}{:>5}  {:<10}  {:<18}  {}",
             item.row + 1,
@@ -3571,6 +3688,7 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Conflicts ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.warning))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3593,7 +3711,7 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .take(visible)
     {
         let selected = index == app.git_conflict_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let style = if selected {
             Style::default().fg(app.theme.text).bg(app.theme.elevated2)
         } else {
@@ -3620,6 +3738,7 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(overlay_title(app, "History"))
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -3632,7 +3751,7 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for (index, commit) in app.git_history.iter().enumerate().skip(start).take(visible) {
         let selected = index == app.git_history_selected;
-        let marker = if selected { "› " } else { "  " };
+        let marker = if selected { select_marker(app) } else { "  " };
         let line = format!(
             "{marker}{}  {}  {}  {}",
             commit.short_oid, commit.date, commit.author, commit.subject
@@ -3688,11 +3807,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 format!(
@@ -3843,7 +3958,7 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             }
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    "─".repeat(inner.width as usize),
+                    rule_glyph(app).repeat(inner.width as usize),
                     Style::default().fg(theme.elevated2),
                 )),
                 Rect::new(inner.x, inner.y + list_rows, inner.width, 1),
@@ -3884,11 +3999,7 @@ fn render_revert_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.error))
             .title(Span::styled(
                 " Discard this change? ",
@@ -4003,11 +4114,7 @@ fn ai_box(app: &App, title: String) -> Block<'static> {
             Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated))
 }
@@ -4302,7 +4409,7 @@ fn render_ai_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let selected = form.field == index;
         let mut spans = vec![
             Span::styled(
-                if selected { "› " } else { "  " },
+                if selected { select_marker(app) } else { "  " },
                 Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -4509,6 +4616,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Settings ")
         .borders(Borders::ALL)
+        .border_set(plain_border(app.theme.unicode_symbols))
         .border_style(Style::default().fg(app.theme.mint))
         .style(Style::default().bg(app.theme.elevated));
     let inner = block.inner(popup);
@@ -4588,7 +4696,15 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(
             format!(
                 "{} {:<24} {}",
-                if selected { "›" } else { " " },
+                if selected {
+                    if app.theme.unicode_symbols {
+                        "›"
+                    } else {
+                        ">"
+                    }
+                } else {
+                    " "
+                },
                 label,
                 value
             ),
@@ -4679,11 +4795,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_type(if theme.unicode_symbols {
-            BorderType::Rounded
-        } else {
-            BorderType::Plain
-        })
+        .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(theme.mint))
         .style(Style::default().bg(theme.elevated));
     let inner = inset(block.inner(popup), 2, 1);
@@ -4726,11 +4838,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 if theme.unicode_symbols {
@@ -4819,6 +4927,7 @@ fn render_close_terminal_confirmation(frame: &mut Frame<'_>, area: Rect, app: &A
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
+            .border_set(plain_border(app.theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " A job is still running ",
@@ -4852,11 +4961,7 @@ fn render_close_tab_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Save changes before closing? ",
@@ -4929,11 +5034,7 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Save changes before quitting? ",
@@ -5030,11 +5131,7 @@ fn render_find(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Find ",
@@ -5118,11 +5215,7 @@ fn render_replace(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Replace ",
@@ -5251,7 +5344,7 @@ fn render_replace(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -5388,11 +5481,7 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 overlay_title(app, "Search all files"),
@@ -5472,7 +5561,7 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
         )),
     ];
@@ -5622,11 +5711,7 @@ fn render_goto(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Go to line ",
@@ -5685,11 +5770,7 @@ fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 if app.conflict_read_only {
@@ -5766,11 +5847,7 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.warning))
             .title(Span::styled(
                 " Unsaved work found ",
@@ -5910,11 +5987,7 @@ fn render_save_as(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(if theme.unicode_symbols {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            })
+            .border_set(rounded_border(theme.unicode_symbols))
             .border_style(Style::default().fg(theme.mint))
             .title(Span::styled(
                 " Save as ",
@@ -6102,6 +6175,38 @@ mod tests {
         assert!(text.contains("⎿  +2 added  −0 removed"), "{text}");
         assert!(text.contains("+ let total = 1;"), "{text}");
         assert!(text.contains("Accept"), "{text}");
+    }
+
+    #[test]
+    fn ascii_mode_draws_no_unicode_in_the_interface() {
+        use crate::app::{App, AppMode};
+        let mut app = App::new(crate::buffer::Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut crate::cursor::Cursor::default(),
+            "fn main() {\n    x\n}\n",
+        );
+        app.theme.unicode_symbols = false;
+        app.show_indent_guides = true;
+        for mode in [
+            AppMode::Editing,
+            AppMode::Palette,
+            AppMode::QuickOpen,
+            AppMode::Help,
+            AppMode::Settings,
+            AppMode::ConfirmQuit,
+            AppMode::Find,
+            AppMode::GoToLine,
+            AppMode::AiPrompt,
+        ] {
+            app.mode = mode;
+            for (row_index, row) in render_rows(&app, 80, 24).iter().enumerate() {
+                let odd: String = row.chars().filter(|ch| !ch.is_ascii()).collect();
+                assert!(
+                    odd.is_empty(),
+                    "{mode:?} row {row_index} has non-ASCII {odd:?}: {row}"
+                );
+            }
+        }
     }
 
     #[test]
