@@ -891,7 +891,7 @@ impl Buffer {
             .clone()
             .context("this buffer has no path yet; use Save As")?;
 
-        atomic_write(&path, self.has_bom, &self.text)?;
+        atomic_write(&path, self.has_bom, &self.text, Publish::Replace)?;
         self.saved_revision = self.revision;
         self.disk_snapshot = capture_file_snapshot(&path)?;
         self.persisted = true;
@@ -933,7 +933,7 @@ impl Buffer {
             }
         }
 
-        atomic_write(&path, self.has_bom, &self.text)?;
+        atomic_write(&path, self.has_bom, &self.text, Publish::NewFileOnly)?;
 
         self.path = Some(path.clone());
         self.save_path = Some(path.clone());
@@ -1519,7 +1519,16 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn atomic_write(path: &Path, has_bom: bool, text: &Rope) -> Result<()> {
+/// How the finished temporary file takes the destination's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Publish {
+    /// Save: replace the existing file atomically.
+    Replace,
+    /// Save As: create the file, and fail if one appeared meanwhile.
+    NewFileOnly,
+}
+
+fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -1567,6 +1576,14 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope) -> Result<()> {
             fs::set_permissions(&temp_path, metadata.permissions())?;
         }
 
+        if publish == Publish::NewFileOnly {
+            publish_new_file(&temp_path, path)?;
+            if let Ok(directory) = fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+            return Ok(());
+        }
+
         match fs::rename(&temp_path, path) {
             Ok(()) => {}
             // A file that is itself a mount point (Docker's single-file
@@ -1599,6 +1616,34 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope) -> Result<()> {
     result
 }
 
+/// Gives the finished temporary file its final name without ever replacing
+/// a file. A hard link fails atomically if the name already exists, which
+/// closes the gap between Save As's "does it exist?" check and the write.
+fn publish_new_file(temp_path: &Path, path: &Path) -> Result<()> {
+    match fs::hard_link(temp_path, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(temp_path);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+            "destination {} already exists; choose a different path",
+            path.display()
+        ),
+        // Some filesystems have no hard links. Fall back to a final check and
+        // a rename; the window is as small as it can be there.
+        Err(_) => {
+            if fs::symlink_metadata(path).is_ok() {
+                bail!(
+                    "destination {} already exists; choose a different path",
+                    path.display()
+                );
+            }
+            fs::rename(temp_path, path)
+                .with_context(|| format!("failed to create {}", path.display()))
+        }
+    }
+}
+
 /// Writes the text into the existing file (same inode, owner and mode).
 #[cfg(unix)]
 fn rewrite_in_place(path: &Path, has_bom: bool, text: &Rope) -> Result<()> {
@@ -1627,6 +1672,39 @@ mod tests {
             buffer.insert_char(&mut cursor, ch);
         }
         (buffer, cursor)
+    }
+
+    #[test]
+    fn publishing_a_new_file_never_replaces_one_that_appeared_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join(".new.txt.tmp");
+        let target = dir.path().join("new.txt");
+        std::fs::write(&temp, "mellow draft").unwrap();
+        // Another program creates the file after Save As checked for it.
+        std::fs::write(&target, "someone else's work").unwrap();
+
+        let error = publish_new_file(&temp, &target).unwrap_err().to_string();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "someone else's work"
+        );
+    }
+
+    #[test]
+    fn save_as_creates_the_file_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("fresh.txt");
+        let mut buffer = Buffer::empty(None);
+        buffer.insert_text(&mut crate::cursor::Cursor::default(), "hello");
+        buffer.save_as(target.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
