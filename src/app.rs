@@ -10763,6 +10763,10 @@ fn expand_user_path(input: &str) -> PathBuf {
 }
 
 const MAX_SYSTEM_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
+/// The terminal clipboard (OSC 52) sends text through the terminal as
+/// Base64, often over SSH. Larger copies stay in Mellow instead of
+/// streaming megabytes through a slow link.
+const MAX_TERMINAL_CLIPBOARD_BYTES: usize = 256 * 1024;
 
 fn read_clipboard_command(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
@@ -10907,6 +10911,8 @@ enum ClipboardDelivery {
     Native,
     TerminalSent,
     InternalOnly,
+    /// No native clipboard, and too large to send through the terminal.
+    TooLargeForTerminal,
 }
 
 impl ClipboardDelivery {
@@ -10915,6 +10921,9 @@ impl ClipboardDelivery {
             Self::Native => format!("{verb} {count} chars · system clipboard"),
             Self::TerminalSent => format!("Unconfirmed copy · {verb} {count} chars"),
             Self::InternalOnly => format!("Mellow only · {verb} {count} chars"),
+            Self::TooLargeForTerminal => {
+                format!("Mellow only · {verb} {count} chars (too large for the terminal clipboard)")
+            }
         }
     }
 }
@@ -10927,6 +10936,9 @@ fn copy_to_system_clipboard(text: &str) -> ClipboardDelivery {
     }
     if write_native_system_clipboard(text) {
         return ClipboardDelivery::Native;
+    }
+    if text.len() > MAX_TERMINAL_CLIPBOARD_BYTES {
+        return ClipboardDelivery::TooLargeForTerminal;
     }
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = text.as_bytes();
@@ -14218,6 +14230,17 @@ mod tests {
         assert!(app.terminal_focused, "Ctrl+Space stays with the shell");
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
         assert!(!app.terminal_focused, "Ctrl+T returns to the editor");
+    }
+
+    #[test]
+    fn large_copies_say_they_stayed_in_mellow() {
+        assert!(super::MAX_TERMINAL_CLIPBOARD_BYTES < super::MAX_SYSTEM_CLIPBOARD_BYTES);
+        let message = super::ClipboardDelivery::TooLargeForTerminal.message("Copied", 300_000);
+        assert!(message.starts_with("Mellow only"), "{message}");
+        assert!(
+            message.contains("too large for the terminal clipboard"),
+            "{message}"
+        );
     }
 
     #[test]
