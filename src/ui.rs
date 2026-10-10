@@ -4704,7 +4704,7 @@ fn render_onboarding(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
         Line::from(Span::styled(
-            "Press Enter to start",
+            "Start typing, or press Enter",
             Style::default().fg(theme.mint),
         )),
     ]);

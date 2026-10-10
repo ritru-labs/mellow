@@ -1200,12 +1200,20 @@ impl App {
         }
     }
 
+    /// The welcome says "just start typing", so any key dismisses it. Enter,
+    /// Esc and F1 only close it; every other key also goes to the editor, so
+    /// the first keystroke is never lost.
     fn handle_onboarding_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(1)) {
-            let _ = settings::mark_onboarding_seen();
-            self.mode = AppMode::Editing;
-            self.status = Some("Tip: F1 shows the everyday keys again".to_owned());
+        self.dismiss_onboarding();
+        if !matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(1)) {
+            self.handle_key(key);
         }
+    }
+
+    fn dismiss_onboarding(&mut self) {
+        let _ = settings::mark_onboarding_seen();
+        self.mode = AppMode::Editing;
+        self.status = Some("Tip: F1 shows the everyday keys again".to_owned());
     }
 
     fn build_ai_context(&self) -> AiContextSnapshot {
@@ -2448,6 +2456,9 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        if self.mode == AppMode::Onboarding {
+            self.dismiss_onboarding();
+        }
         if self.mode == AppMode::Editing && self.terminal_focused {
             if let Some(session) = self.terminal_sessions.get_mut(self.active_terminal)
                 && let Err(error) = session.write_paste(text)
@@ -13804,6 +13815,32 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn the_first_key_typed_during_onboarding_is_kept() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "F");
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.buffer.contents(), "Fi");
+    }
+
+    #[test]
+    fn enter_only_closes_onboarding_and_paste_goes_into_the_file() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Onboarding;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "");
+
+        let mut pasted = App::new(Buffer::empty(None));
+        pasted.mode = AppMode::Onboarding;
+        pasted.handle_paste("hello");
+        assert_eq!(pasted.mode, AppMode::Editing);
+        assert_eq!(pasted.buffer.contents(), "hello");
     }
 
     #[test]
