@@ -2055,7 +2055,7 @@ fn status_message(app: &App) -> Option<StatusItem> {
             )
         } else if status == "Undo" || status == "Redo" {
             (status.to_owned(), Style::default().fg(theme.mint))
-        } else if is_error_status(status) {
+        } else if app.status_is_error {
             (
                 status.to_owned(),
                 Style::default()
@@ -2069,6 +2069,13 @@ fn status_message(app: &App) -> Option<StatusItem> {
     }
     if !matches!(app.mode, AppMode::Editing | AppMode::Completion) {
         return None;
+    }
+    if app.mode == AppMode::Editing && app.cursor_in_conflict() {
+        return Some(StatusItem::new(
+            "Merge conflict here · palette: Keep ours, Keep theirs, Keep both",
+            Style::default().fg(theme.warning),
+            0,
+        ));
     }
     if let Some(banner) = app.launch_banner() {
         return Some(StatusItem::new(
@@ -2656,29 +2663,6 @@ fn draw_buttons(
 /// Records a clickable row or button of the overlay being drawn.
 fn click_target(app: &App, rect: Rect, target: crate::app::ClickTarget) {
     app.overlay_targets.borrow_mut().push((rect, target));
-}
-
-/// Whether a status message reports a failure or a refusal. Messages are
-/// plain text, so this matches the phrases Mellow uses for those outcomes.
-fn is_error_status(status: &str) -> bool {
-    const ERROR_PHRASES: &[&str] = &[
-        "failed",
-        "Failed",
-        "Could not",
-        "could not",
-        "Cannot ",
-        "cannot ",
-        "refused",
-        "refusing",
-        "expired",
-        "is too large",
-        "not UTF-8",
-        "not valid",
-        "No Git repository found",
-        "Nothing is staged",
-        "not set up",
-    ];
-    ERROR_PHRASES.iter().any(|phrase| status.contains(phrase))
 }
 
 /// Fits text into `max_width` cells by replacing its middle with "…", so
@@ -6627,23 +6611,44 @@ mod tests {
     }
 
     #[test]
-    fn failures_and_refusals_are_styled_as_errors_and_plain_news_is_not() {
-        for message in [
-            "Save failed: disk full",
-            "Could not read staged changes: git missing",
-            "AI proposal expired because the target buffer changed",
-            "destination already exists; refusing to replace it",
-        ] {
-            assert!(super::is_error_status(message), "{message}");
-        }
-        for message in [
-            "Saved",
-            "Copied 12 chars · system clipboard",
-            "Undo",
-            "Find: 3 matches",
-        ] {
-            assert!(!super::is_error_status(message), "{message}");
-        }
+    fn the_status_line_names_the_conflict_keys_inside_a_conflict() {
+        use crate::{buffer::Buffer, cursor::Cursor};
+        let mut app = crate::app::App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\nend",
+        );
+        app.cursor = Cursor::new(2, 0);
+        let text = super::status_message(&app)
+            .map(|item| item.text)
+            .unwrap_or_default();
+        assert!(text.contains("Keep ours"), "{text}");
+        app.cursor = Cursor::new(0, 0);
+        let text = super::status_message(&app)
+            .map(|item| item.text)
+            .unwrap_or_default();
+        assert!(!text.contains("Merge conflict"), "{text}");
+    }
+
+    #[test]
+    fn status_colour_follows_what_the_app_reports_not_the_words() {
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(None));
+        // "Saved" sounds like news; "Save" is plain text; only fail() is an error.
+        app.fail("Saved, but the mirror refused the copy");
+        assert_eq!(
+            super::status_message(&app).unwrap().style.fg,
+            Some(app.theme.error)
+        );
+        app.notify("Could not be more pleased with this result");
+        assert_eq!(
+            super::status_message(&app).unwrap().style.fg,
+            Some(app.theme.text)
+        );
+        app.clear_status();
+        assert_ne!(
+            super::status_message(&app).and_then(|item| item.style.fg),
+            Some(app.theme.error)
+        );
     }
 
     #[test]

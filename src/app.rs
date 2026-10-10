@@ -425,6 +425,8 @@ pub struct App {
     pub word_wrap: bool,
     pub mode: AppMode,
     pub status: Option<String>,
+    /// True when `status` reports a problem rather than news; set by `fail`.
+    pub status_is_error: bool,
     keymap_config: keymap::KeymapConfig,
     start_page_dismissed: bool,
     pub theme: Theme,
@@ -644,7 +646,7 @@ impl App {
             self.mode = AppMode::Recovery;
         }
         if count > 1 {
-            self.status = Some(format!(
+            self.notify(format!(
                 "Found {count} unsaved drafts from a crash; each has its own tab"
             ));
         }
@@ -665,7 +667,7 @@ impl App {
             Ok(None) => Self::new(Buffer::open(None)?),
             Err(error) => {
                 let mut app = Self::new(Buffer::open(None)?);
-                app.status = Some(format!("Session restore skipped: {error}"));
+                app.notify(format!("Session restore skipped: {error}"));
                 app
             }
         };
@@ -701,7 +703,7 @@ impl App {
         }
         if !cfg!(test) && self.mode == AppMode::Editing && !settings::onboarding_seen() {
             self.mode = AppMode::Onboarding;
-            self.status = None;
+            self.clear_status();
         }
     }
 
@@ -760,6 +762,7 @@ impl App {
             visual_scroll_row: 0,
             word_wrap: editor_settings.word_wrap,
             mode,
+            status_is_error: warning.is_some(),
             status: warning,
             keymap_config,
             start_page_dismissed: false,
@@ -1026,6 +1029,23 @@ impl App {
             .collect()
     }
 
+    /// Shows a problem in the status line, in the error colour.
+    pub fn fail(&mut self, text: impl Into<String>) {
+        self.status = Some(text.into());
+        self.status_is_error = true;
+    }
+
+    /// Shows news in the status line, in the normal colour.
+    pub fn notify(&mut self, text: impl Into<String>) {
+        self.status = Some(text.into());
+        self.status_is_error = false;
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status = None;
+        self.status_is_error = false;
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
@@ -1164,7 +1184,7 @@ impl App {
             return;
         }
         if let Err(error) = settings::write(self.current_editor_settings()) {
-            self.status = Some(format!("Settings save failed: {error}"));
+            self.fail(format!("Settings save failed: {error}"));
         }
     }
 
@@ -1173,7 +1193,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = Some("Settings closed".to_owned());
+                self.notify("Settings closed".to_owned());
             }
             KeyCode::Up => self.settings_selected = self.settings_selected.saturating_sub(1),
             KeyCode::Down => self.settings_selected = (self.settings_selected + 1).min(COUNT - 1),
@@ -1237,7 +1257,7 @@ impl App {
     fn dismiss_onboarding(&mut self) {
         let _ = settings::mark_onboarding_seen();
         self.mode = AppMode::Editing;
-        self.status = Some("Tip: F1 shows the everyday keys again".to_owned());
+        self.notify("Tip: F1 shows the everyday keys again".to_owned());
     }
 
     fn build_ai_context(&self) -> AiContextSnapshot {
@@ -1289,7 +1309,7 @@ impl App {
         self.ai_setup = AiSetupForm::for_config(self.ai_config.as_ref());
         self.ai_setup_then_ask = then_ask;
         self.mode = AppMode::AiSetup;
-        self.status = None;
+        self.clear_status();
     }
 
     pub fn ai_config_summary(&self) -> Option<String> {
@@ -1309,7 +1329,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = Some("AI setup closed · nothing changed".to_owned());
+                self.notify("AI setup closed · nothing changed".to_owned());
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.remove_ai_setup();
@@ -1401,7 +1421,7 @@ impl App {
         self.ghost_receiver = None;
         self.ghost_generation += 1;
         self.mode = AppMode::Editing;
-        self.status = Some(if crate::brand::env_var_os("AI_ENDPOINT").is_some() {
+        self.notify(if crate::brand::env_var_os("AI_ENDPOINT").is_some() {
             "Saved AI setup removed · MELLOW_AI_ENDPOINT is still set in your environment"
                 .to_owned()
         } else {
@@ -1474,14 +1494,14 @@ impl App {
         if self.ai_setup_then_ask {
             self.ai_setup_then_ask = false;
             self.begin_ai_intent();
-            self.status = Some(format!("AI ready · {summary}"));
+            self.notify(format!("AI ready · {summary}"));
         } else {
             self.mode = AppMode::Editing;
             let ask = self
                 .shortcut_label(Command::AiIntent)
                 .map(|key| format!(" · {key} to ask"))
                 .unwrap_or_default();
-            self.status = Some(format!("AI ready · {summary}{ask}"));
+            self.notify(format!("AI ready · {summary}{ask}"));
         }
     }
 
@@ -1504,7 +1524,7 @@ impl App {
             .set_last_history_state(pre_cursor, None, self.cursor, None);
         self.last_edit_at = Instant::now();
         self.typed_since_suggestion = false;
-        self.status = Some("AI suggestion inserted · Ctrl+Z to undo".to_owned());
+        self.notify("AI suggestion inserted · Ctrl+Z to undo".to_owned());
         self.sync_code_intelligence_after_edit();
     }
 
@@ -1617,7 +1637,7 @@ impl App {
         self.ai_receiver = None;
         self.ai_context = Some(self.build_ai_context());
         self.mode = AppMode::AiPrompt;
-        self.status = None;
+        self.clear_status();
     }
 
     /// "lines 13–16" for a selection, otherwise "this file".
@@ -1646,7 +1666,7 @@ impl App {
     fn start_ai_request(&mut self) {
         let instruction = self.ai_query.as_str().trim().to_owned();
         if instruction.is_empty() {
-            self.status = Some("Type a question, or press Tab for a suggestion".to_owned());
+            self.notify("Type a question, or press Tab for a suggestion".to_owned());
             return;
         }
         if self.ai_shell_request {
@@ -1659,7 +1679,7 @@ impl App {
             return;
         };
         let Some(context) = self.ai_context.clone() else {
-            self.status = Some("AI context is no longer available".to_owned());
+            self.notify("AI context is no longer available".to_owned());
             return;
         };
 
@@ -1677,7 +1697,7 @@ impl App {
         });
         self.ai_receiver = Some(receiver);
         self.mode = AppMode::AiWaiting;
-        self.status = None;
+        self.clear_status();
     }
 
     fn poll_ai_request(&mut self) {
@@ -1701,11 +1721,11 @@ impl App {
                 self.ai_proposal = Some(proposal);
                 self.ai_review_scroll = 0;
                 self.mode = AppMode::AiReview;
-                self.status = None;
+                self.clear_status();
             }
             Err(error) => {
                 self.mode = AppMode::AiPrompt;
-                self.status = Some(format!("AI: {error}"));
+                self.notify(format!("AI: {error}"));
             }
         }
     }
@@ -1716,7 +1736,7 @@ impl App {
                 self.ai_query.clear();
                 self.ai_context = None;
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Left => self.ai_query.move_left(),
             KeyCode::Right => self.ai_query.move_right(),
@@ -1763,7 +1783,7 @@ impl App {
             self.ai_receiver = None;
             self.ai_context = None;
             self.mode = AppMode::Editing;
-            self.status = Some("AI response dismissed".to_owned());
+            self.notify("AI response dismissed".to_owned());
         }
     }
 
@@ -1800,7 +1820,7 @@ impl App {
                 self.ai_proposal = None;
                 self.ai_context = None;
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
                 return;
             }
             _ => {}
@@ -1810,7 +1830,7 @@ impl App {
                 self.ai_proposal = None;
                 self.ai_context = None;
                 self.mode = AppMode::Editing;
-                self.status = Some("Suggestion rejected · nothing changed".to_owned());
+                self.notify("Suggestion rejected · nothing changed".to_owned());
             }
             KeyCode::Enter | KeyCode::Char('a' | 'A') => self.apply_ai_proposal(),
             _ => {}
@@ -1824,7 +1844,7 @@ impl App {
         };
         let Some(context) = self.ai_context.clone() else {
             self.mode = AppMode::Editing;
-            self.status = Some("AI proposal expired: context is unavailable".to_owned());
+            self.fail("AI proposal expired: context is unavailable".to_owned());
             return;
         };
 
@@ -1832,12 +1852,12 @@ impl App {
             self.ai_proposal = None;
             self.ai_context = None;
             self.mode = AppMode::Editing;
-            self.status = Some(format!("AI: {}", proposal.summary));
+            self.notify(format!("AI: {}", proposal.summary));
             return;
         };
         let Some((start, end)) = context.range else {
             self.mode = AppMode::Editing;
-            self.status = Some("AI replacement ignored: no selected edit target".to_owned());
+            self.notify("AI replacement ignored: no selected edit target".to_owned());
             return;
         };
         if self.buffer.display_path() != context.path
@@ -1847,7 +1867,7 @@ impl App {
             self.mode = AppMode::Editing;
             self.ai_proposal = None;
             self.ai_context = None;
-            self.status = Some("AI proposal expired because the target buffer changed".to_owned());
+            self.fail("AI proposal expired because the target buffer changed".to_owned());
             return;
         }
 
@@ -1868,7 +1888,7 @@ impl App {
         self.ai_proposal = None;
         self.ai_context = None;
         self.mode = AppMode::Editing;
-        self.status = Some("Suggestion applied · Ctrl+Z to undo".to_owned());
+        self.notify("Suggestion applied · Ctrl+Z to undo".to_owned());
         self.sync_code_intelligence_after_edit();
     }
 
@@ -1894,7 +1914,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Enter if shift => self.find_previous(),
             KeyCode::Enter => self.find_next(),
@@ -1929,7 +1949,7 @@ impl App {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
                 self.goto_query.clear();
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Left => self.goto_query.move_left(),
             KeyCode::Right => self.goto_query.move_right(),
@@ -1959,7 +1979,7 @@ impl App {
                     self.preferred_col = None;
                     self.preferred_visual_col = None;
                     self.should_scroll_to_cursor = true;
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "Jumped to line {}, col {}",
                         target_row + 1,
                         target_col + 1
@@ -1996,7 +2016,7 @@ impl App {
                 );
             }
             Err(error) => {
-                self.status = Some(format!("Find failed: {error}"));
+                self.fail(format!("Find failed: {error}"));
                 return;
             }
         }
@@ -2061,7 +2081,7 @@ impl App {
         if self.replace_query.is_empty() {
             self.replace_preview.clear();
             self.replace_selected = 0;
-            self.status = None;
+            self.clear_status();
             return;
         }
 
@@ -2077,12 +2097,12 @@ impl App {
                 self.replace_selected = self
                     .replace_selected
                     .min(self.replace_preview.len().saturating_sub(1));
-                self.status = None;
+                self.clear_status();
             }
             Err(error) => {
                 self.replace_preview.clear();
                 self.replace_selected = 0;
-                self.status = Some(format!("Replace pattern: {error}"));
+                self.notify(format!("Replace pattern: {error}"));
             }
         }
     }
@@ -2118,7 +2138,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.replace_active_field = if self.replace_active_field == 0 { 1 } else { 0 };
@@ -2210,11 +2230,11 @@ impl App {
 
     fn replace_selected_match(&mut self) {
         let Some(replacement) = self.replace_preview.get(self.replace_selected).cloned() else {
-            self.status = Some("No replacement match selected".to_owned());
+            self.notify("No replacement match selected".to_owned());
             return;
         };
         if replacement.search.start_byte == replacement.search.end_byte {
-            self.status = Some("Zero-width matches are preview-only".to_owned());
+            self.notify("Zero-width matches are preview-only".to_owned());
             return;
         }
 
@@ -2234,12 +2254,12 @@ impl App {
         );
         self.sync_code_intelligence_after_edit();
         self.recalculate_replace_preview();
-        self.status = Some("Replaced 1 match".to_owned());
+        self.notify("Replaced 1 match".to_owned());
     }
 
     fn replace_all_matches(&mut self) {
         if self.replace_query.is_empty() {
-            self.status = Some("Replace All: enter a search pattern".to_owned());
+            self.notify("Replace All: enter a search pattern".to_owned());
             return;
         }
 
@@ -2253,7 +2273,7 @@ impl App {
         ) {
             Ok(replacements) => replacements,
             Err(error) => {
-                self.status = Some(format!("Replace pattern: {error}"));
+                self.notify(format!("Replace pattern: {error}"));
                 return;
             }
         };
@@ -2275,7 +2295,7 @@ impl App {
         self.selection_anchor = None;
         let count = self.buffer.replace_ranges(&ranges, self.cursor);
         if count == 0 {
-            self.status = Some("Replace All: no replaceable matches".to_owned());
+            self.notify("Replace All: no replaceable matches".to_owned());
             return;
         }
 
@@ -2288,7 +2308,7 @@ impl App {
         );
         self.sync_code_intelligence_after_edit();
         self.recalculate_replace_preview();
-        self.status = Some(format!("Replaced {count} matches"));
+        self.notify(format!("Replaced {count} matches"));
     }
 
     fn begin_project_search(&mut self) {
@@ -2310,7 +2330,7 @@ impl App {
                 self.recalculate_project_search();
             }
             Err(error) => {
-                self.status = Some(format!("Project search failed: {error}"));
+                self.fail(format!("Project search failed: {error}"));
             }
         }
     }
@@ -2319,7 +2339,7 @@ impl App {
         if self.project_search_query.is_empty() {
             self.project_search_report = ProjectSearchReport::default();
             self.project_search_selected = 0;
-            self.status = None;
+            self.clear_status();
             return;
         }
 
@@ -2336,12 +2356,12 @@ impl App {
                 self.project_search_selected = self
                     .project_search_selected
                     .min(self.project_search_report.results.len().saturating_sub(1));
-                self.status = None;
+                self.clear_status();
             }
             Err(error) => {
                 self.project_search_report = ProjectSearchReport::default();
                 self.project_search_selected = 0;
-                self.status = Some(format!("Project search pattern: {error}"));
+                self.notify(format!("Project search pattern: {error}"));
             }
         }
     }
@@ -2390,7 +2410,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.project_search_selected = self.project_search_selected.saturating_sub(1);
@@ -2443,7 +2463,7 @@ impl App {
             .get(self.project_search_selected)
             .cloned()
         else {
-            self.status = Some("Project search: no result selected".to_owned());
+            self.notify("Project search: no result selected".to_owned());
             return;
         };
 
@@ -2466,7 +2486,7 @@ impl App {
                 self.preferred_visual_col = None;
                 self.should_scroll_to_cursor = true;
                 self.mode = AppMode::Editing;
-                self.status = Some(format!(
+                self.notify(format!(
                     "{} · Ln {}, Col {}",
                     result.path.display(),
                     start.row + 1,
@@ -2474,7 +2494,7 @@ impl App {
                 ));
             }
             Err(error) => {
-                self.status = Some(format!("Project search open failed: {error}"));
+                self.fail(format!("Project search open failed: {error}"));
             }
         }
     }
@@ -2495,7 +2515,7 @@ impl App {
         let revision_before = self.buffer.revision();
         match self.mode {
             AppMode::Editing => {
-                self.status = None;
+                self.clear_status();
                 self.preferred_col = None;
                 self.should_scroll_to_cursor = true;
                 if let Some((start, end)) = self.selection_range() {
@@ -2597,7 +2617,7 @@ impl App {
                 self.post_save_action = PostSaveAction::None;
                 self.save_as_query.clear();
                 self.mode = AppMode::Editing;
-                self.status = Some("Save As cancelled".to_owned());
+                self.notify("Save As cancelled".to_owned());
             }
             KeyCode::Left => self.save_as_query.move_left(),
             KeyCode::Right => self.save_as_query.move_right(),
@@ -2612,7 +2632,7 @@ impl App {
             KeyCode::Enter => {
                 let raw = self.save_as_query.as_str().trim();
                 if raw.is_empty() {
-                    self.status = Some("Save As failed: enter a file path".to_owned());
+                    self.fail("Save As failed: enter a file path".to_owned());
                     return;
                 }
 
@@ -2630,7 +2650,7 @@ impl App {
                         self.post_save_action = PostSaveAction::None;
                         self.save_as_query.clear();
                         self.mode = AppMode::Editing;
-                        self.status = Some(match note {
+                        self.notify(match note {
                             Some(note) => format!("Saved as {} · {note}", self.short_path(&path)),
                             None => format!("Saved as {}", self.short_path(&path)),
                         });
@@ -2638,7 +2658,7 @@ impl App {
                         self.finish_post_save(post_action);
                     }
                     Err(error) => {
-                        self.status = Some(format!("Save As failed: {error}"));
+                        self.fail(format!("Save As failed: {error}"));
                     }
                 }
             }
@@ -2665,7 +2685,7 @@ impl App {
                 self.conflict_read_only = false;
                 self.post_save_action = post_action;
                 self.mode = AppMode::SaveConflict;
-                self.status = None;
+                self.clear_status();
             }
             // Saving replaces the file, which succeeds even when it is
             // read-only; a chmod 444 file was overwritten without a word.
@@ -2678,7 +2698,7 @@ impl App {
                 self.conflict_read_only = true;
                 self.post_save_action = post_action;
                 self.mode = AppMode::SaveConflict;
-                self.status = None;
+                self.clear_status();
             }
             Ok(None) => {
                 let note = self
@@ -2690,7 +2710,7 @@ impl App {
                     Ok(()) => {
                         let _ = self.journal.clear_now(&self.buffer.recovery_key());
                         self.last_journal_revision = None;
-                        self.status = Some(match (note, self.buffer.last_save_mode()) {
+                        self.notify(match (note, self.buffer.last_save_mode()) {
                             (_, SaveMode::InPlace) => {
                                 "Saved in place: this file cannot be replaced, so a crash during save could damage it".to_owned()
                             }
@@ -2700,12 +2720,12 @@ impl App {
                         self.finish_post_save(post_action);
                     }
                     Err(error) => {
-                        self.status = Some(format!("Save failed: {error}"));
+                        self.fail(format!("Save failed: {error}"));
                     }
                 }
             }
             Err(error) => {
-                self.status = Some(format!("Save failed: {error}"));
+                self.fail(format!("Save failed: {error}"));
             }
         }
     }
@@ -2799,7 +2819,7 @@ impl App {
                 self.post_save_action = PostSaveAction::None;
                 self.conflict_reason = None;
                 self.mode = AppMode::Editing;
-                self.status = Some(if self.conflict_read_only {
+                self.notify(if self.conflict_read_only {
                     "Save cancelled; the read-only file is unchanged and your edits are kept"
                         .to_owned()
                 } else {
@@ -2821,7 +2841,7 @@ impl App {
                         self.post_save_action = PostSaveAction::None;
                         self.conflict_reason = None;
                         self.mode = AppMode::Editing;
-                        self.status = Some(if self.conflict_read_only {
+                        self.notify(if self.conflict_read_only {
                             "Replaced the read-only file by explicit choice".to_owned()
                         } else {
                             "Overwrote external version by explicit choice".to_owned()
@@ -2829,7 +2849,7 @@ impl App {
                         self.finish_post_save(post_action);
                     }
                     Err(error) => {
-                        self.status = Some(format!("Overwrite failed: {error}"));
+                        self.fail(format!("Overwrite failed: {error}"));
                     }
                 }
             }
@@ -2853,7 +2873,7 @@ impl App {
             self.cursor = Cursor::new(0, 0);
             self.selection_anchor = None;
             self.mode = AppMode::Editing;
-            self.status = Some("Recovered unsaved edits; save to persist them".to_owned());
+            self.notify("Recovered unsaved edits; save to persist them".to_owned());
             self.last_journal_revision = None;
             self.sync_code_intelligence_after_edit();
             // Journal the draft under this buffer before letting go of the
@@ -2864,7 +2884,7 @@ impl App {
                 && journaled
                 && let Err(error) = recovery::remove_journal(&journal)
             {
-                self.status = Some(format!("Recovery cleanup failed: {error}"));
+                self.fail(format!("Recovery cleanup failed: {error}"));
             }
         }
     }
@@ -2933,7 +2953,7 @@ impl App {
         } else {
             AppMode::Editing
         };
-        self.status = Some(format!(
+        self.notify(format!(
             "Discarded {discarded} unsaved draft{}",
             if discarded == 1 { "" } else { "s" }
         ));
@@ -2954,7 +2974,7 @@ impl App {
             self.status =
                 Some("Draft kept for later · it will be offered again next time".to_owned());
         } else {
-            self.status = Some(
+            self.notify(
                 "Choose Restore or Discard: editing this file would replace the saved draft"
                     .to_owned(),
             );
@@ -2972,7 +2992,7 @@ impl App {
         }
         self.recovery_candidate = None;
         self.mode = AppMode::Editing;
-        self.status = Some("Recovery journal discarded".to_owned());
+        self.notify("Recovery journal discarded".to_owned());
     }
 
     /// Queues the active buffer's journal: its content while dirty, removal
@@ -3018,7 +3038,7 @@ impl App {
         let Some(error) = self.journal.take_failures().pop() else {
             return true;
         };
-        self.status = Some(format!("Recovery journal failed: {error}"));
+        self.fail(format!("Recovery journal failed: {error}"));
         // Write the active buffer again on the next tick.
         self.last_journal_revision = None;
         false
@@ -3026,7 +3046,7 @@ impl App {
 
     fn begin_save_as(&mut self, post_action: PostSaveAction) {
         self.post_save_action = post_action;
-        self.status = None;
+        self.clear_status();
         if let Some(path) = self.buffer.path() {
             self.save_as_query.set(path.to_string_lossy().into_owned());
         } else {
@@ -3085,7 +3105,7 @@ impl App {
     fn toggle_terminal(&mut self) {
         if self.terminal_visible && self.terminal_focused {
             self.terminal_focused = false;
-            self.status = Some("Back in the editor · terminal still running".to_owned());
+            self.notify("Back in the editor · terminal still running".to_owned());
             return;
         }
         if !self.terminal_visible {
@@ -3103,7 +3123,7 @@ impl App {
         if self.terminal_visible {
             self.terminal_visible = false;
             self.terminal_focused = false;
-            self.status = Some("Terminal hidden · the shell keeps running".to_owned());
+            self.notify("Terminal hidden · the shell keeps running".to_owned());
         }
     }
 
@@ -3381,7 +3401,7 @@ impl App {
         } else {
             AppMode::Editing
         };
-        app.status = Some(format!("Restored {} file session", app.tabs.len()));
+        app.notify(format!("Restored {} file session", app.tabs.len()));
         Ok(Some(app))
     }
 
@@ -3472,7 +3492,7 @@ impl App {
         if let Err(error) = session::write(&self.workspace_root, &snapshot)
             && !self.should_quit
         {
-            self.status = Some(format!("Session save failed: {error}"));
+            self.fail(format!("Session save failed: {error}"));
         }
     }
 
@@ -3502,7 +3522,7 @@ impl App {
             && let Err(error) = document.sync(&language, &source, revision)
         {
             self.syntax_document = None;
-            self.status = Some(format!("Tree-sitter update failed: {error}"));
+            self.fail(format!("Tree-sitter update failed: {error}"));
         }
     }
 
@@ -3510,7 +3530,7 @@ impl App {
         if self.buffer.reduced_intelligence_mode() {
             self.language_service.stop();
             if user_initiated {
-                self.status = Some(format!(
+                self.notify(format!(
                     "Code intelligence paused for large file ({:.1} MiB); editing remains available",
                     self.buffer.byte_len() as f64 / (1024.0 * 1024.0)
                 ));
@@ -3530,14 +3550,14 @@ impl App {
         }
 
         if let Some(error) = self.language_service.last_error() {
-            self.status = Some(format!("Code intelligence unavailable: {error}"));
+            self.fail(format!("Code intelligence unavailable: {error}"));
         } else if !self.language_service.supported_for_current_language() {
-            self.status = Some(format!(
+            self.notify(format!(
                 "No language server configured for {}",
                 self.buffer.language()
             ));
         } else {
-            self.status = Some(format!(
+            self.notify(format!(
                 "Starting {}…",
                 self.language_service
                     .server_label()
@@ -3613,7 +3633,7 @@ impl App {
                     manual,
                 });
                 if manual {
-                    self.status = Some("Completion requested…".to_owned());
+                    self.notify("Completion requested…".to_owned());
                 }
             }
             Ok(None) => {
@@ -3625,11 +3645,11 @@ impl App {
                 }
                 if manual {
                     if let Some(error) = self.language_service.last_error() {
-                        self.status = Some(format!("Completion unavailable: {error}"));
+                        self.fail(format!("Completion unavailable: {error}"));
                     } else if self.language_service.supported_for_current_language() {
-                        self.status = Some("Language server is still starting".to_owned());
+                        self.notify("Language server is still starting".to_owned());
                     } else {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "No completion server configured for {}",
                             self.buffer.language()
                         ));
@@ -3639,7 +3659,7 @@ impl App {
             Err(error) => {
                 self.completion_request = None;
                 if manual {
-                    self.status = Some(format!("Completion request failed: {error}"));
+                    self.fail(format!("Completion request failed: {error}"));
                 }
             }
         }
@@ -3708,7 +3728,7 @@ impl App {
         if self.completion_items.is_empty() {
             return false;
         }
-        self.status = Some("Words from this file · no language helper installed".to_owned());
+        self.notify("Words from this file · no language helper installed".to_owned());
         true
     }
 
@@ -3886,22 +3906,22 @@ impl App {
             .request_definition(self.lsp_cursor_position())
         {
             Ok(true) => {
-                self.status = Some("Looking up definition…".to_owned());
+                self.notify("Looking up definition…".to_owned());
             }
             Ok(false) => {
                 if let Some(error) = self.language_service.last_error() {
-                    self.status = Some(format!("Definition unavailable: {error}"));
+                    self.fail(format!("Definition unavailable: {error}"));
                 } else if self.language_service.supported_for_current_language() {
-                    self.status = Some("Language server is still starting".to_owned());
+                    self.notify("Language server is still starting".to_owned());
                 } else {
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "No definition server configured for {}",
                         self.buffer.language()
                     ));
                 }
             }
             Err(error) => {
-                self.status = Some(format!("Definition request failed: {error}"));
+                self.fail(format!("Definition request failed: {error}"));
             }
         }
     }
@@ -3919,14 +3939,11 @@ impl App {
             .language_service
             .request_hover(self.lsp_cursor_position())
         {
-            Ok(true) => self.status = Some("Hover requested…".to_owned()),
-            Ok(false) => {
-                self.status = Some(
-                    "Hover unavailable while language server starts or is not configured"
-                        .to_owned(),
-                )
-            }
-            Err(error) => self.status = Some(format!("Hover request failed: {error}")),
+            Ok(true) => self.notify("Hover requested…".to_owned()),
+            Ok(false) => self.fail(
+                "Hover unavailable while language server starts or is not configured".to_owned(),
+            ),
+            Err(error) => self.fail(format!("Hover request failed: {error}")),
         }
     }
 
@@ -3936,9 +3953,9 @@ impl App {
             .language_service
             .request_signature_help(self.lsp_cursor_position())
         {
-            Ok(true) => self.status = Some("Signature help requested…".to_owned()),
-            Ok(false) => self.status = Some("Signature help unavailable".to_owned()),
-            Err(error) => self.status = Some(format!("Signature request failed: {error}")),
+            Ok(true) => self.notify("Signature help requested…".to_owned()),
+            Ok(false) => self.fail("Signature help unavailable".to_owned()),
+            Err(error) => self.fail(format!("Signature request failed: {error}")),
         }
     }
 
@@ -3948,9 +3965,9 @@ impl App {
             .language_service
             .request_references(self.lsp_cursor_position())
         {
-            Ok(true) => self.status = Some("Finding references…".to_owned()),
-            Ok(false) => self.status = Some("References unavailable".to_owned()),
-            Err(error) => self.status = Some(format!("References request failed: {error}")),
+            Ok(true) => self.notify("Finding references…".to_owned()),
+            Ok(false) => self.fail("References unavailable".to_owned()),
+            Err(error) => self.fail(format!("References request failed: {error}")),
         }
     }
 
@@ -3960,9 +3977,9 @@ impl App {
             .language_service
             .request_formatting(TAB_WIDTH, !self.buffer.uses_tab_indent())
         {
-            Ok(true) => self.status = Some("Formatting preview requested…".to_owned()),
-            Ok(false) => self.status = Some("Formatting unavailable".to_owned()),
-            Err(error) => self.status = Some(format!("Formatting request failed: {error}")),
+            Ok(true) => self.notify("Formatting preview requested…".to_owned()),
+            Ok(false) => self.fail("Formatting unavailable".to_owned()),
+            Err(error) => self.fail(format!("Formatting request failed: {error}")),
         }
     }
 
@@ -3974,9 +3991,9 @@ impl App {
             end: pos,
         };
         match self.language_service.request_code_actions(range) {
-            Ok(true) => self.status = Some("Code actions requested…".to_owned()),
-            Ok(false) => self.status = Some("Code actions unavailable".to_owned()),
-            Err(error) => self.status = Some(format!("Code action request failed: {error}")),
+            Ok(true) => self.notify("Code actions requested…".to_owned()),
+            Ok(false) => self.fail("Code actions unavailable".to_owned()),
+            Err(error) => self.fail(format!("Code action request failed: {error}")),
         }
     }
 
@@ -3987,7 +4004,7 @@ impl App {
             .word_range(self.cursor.row, self.cursor.col)
             .map(|(start, end)| self.buffer.get_text_range(start, end));
         let Some(current_name) = current_name else {
-            self.status = Some("Rename unavailable: place the cursor on a symbol".to_owned());
+            self.fail("Rename unavailable: place the cursor on a symbol".to_owned());
             return;
         };
         self.rename_query.set(&current_name);
@@ -4001,7 +4018,7 @@ impl App {
         for event in events {
             match event {
                 LanguageServiceEvent::Ready(label) => {
-                    self.status = Some(format!("{label} ready"));
+                    self.notify(format!("{label} ready"));
                 }
                 LanguageServiceEvent::DiagnosticsChanged => {
                     let count = self.problem_items().len();
@@ -4022,10 +4039,10 @@ impl App {
                     self.refresh_completion_filter();
                     if self.completion_items.is_empty() {
                         if request.manual {
-                            self.status = Some("No completions".to_owned());
+                            self.notify("No completions".to_owned());
                         }
                     } else {
-                        self.status = None;
+                        self.clear_status();
                     }
                 }
                 LanguageServiceEvent::CompletionError { request_id, error } => {
@@ -4037,7 +4054,7 @@ impl App {
                     }
                     if request.manual {
                         self.mode = AppMode::Editing;
-                        self.status = Some(format!("Completion failed: {error}"));
+                        self.fail(format!("Completion failed: {error}"));
                     }
                 }
                 LanguageServiceEvent::Definition(location) => {
@@ -4045,7 +4062,7 @@ impl App {
                     if let Some(location) = location {
                         self.apply_definition_location(location);
                     } else {
-                        self.status = Some("No definition found".to_owned());
+                        self.notify("No definition found".to_owned());
                     }
                 }
                 LanguageServiceEvent::Hover(contents) => {
@@ -4053,7 +4070,7 @@ impl App {
                         Some(contents.unwrap_or_else(|| "No hover information".to_owned()));
                 }
                 LanguageServiceEvent::SignatureHelp(signatures) => {
-                    self.status = Some(
+                    self.notify(
                         signatures
                             .first()
                             .cloned()
@@ -4064,10 +4081,10 @@ impl App {
                     self.reference_items = locations;
                     self.reference_selected = 0;
                     if self.reference_items.is_empty() {
-                        self.status = Some("No references found".to_owned());
+                        self.notify("No references found".to_owned());
                     } else {
                         self.mode = AppMode::References;
-                        self.status = None;
+                        self.clear_status();
                     }
                 }
                 LanguageServiceEvent::RenamePreview(preview) => {
@@ -4077,7 +4094,7 @@ impl App {
                             Some(format!("Rename refused: {reason}; nothing was changed"));
                     } else if preview.has_resource_operations {
                         self.mode = AppMode::Editing;
-                        self.status = Some(
+                        self.notify(
                             "Rename blocked: language server requested file create/rename/delete operations that Mellow will not execute automatically"
                                 .to_owned(),
                         );
@@ -4092,17 +4109,17 @@ impl App {
                     self.code_action_items = actions;
                     self.code_action_selected = 0;
                     if self.code_action_items.is_empty() {
-                        self.status = Some("No code actions available".to_owned());
+                        self.notify("No code actions available".to_owned());
                     } else {
                         self.mode = AppMode::CodeActions;
-                        self.status = None;
+                        self.clear_status();
                     }
                 }
                 LanguageServiceEvent::Exited(label) => {
-                    self.status = Some(format!("{label} exited"));
+                    self.notify(format!("{label} exited"));
                 }
                 LanguageServiceEvent::Error(error) => {
-                    self.status = Some(format!("Language server: {error}"));
+                    self.notify(format!("Language server: {error}"));
                 }
             }
         }
@@ -4112,7 +4129,7 @@ impl App {
         if self.buffer.path() != Some(&location.path)
             && let Err(error) = self.open_path_in_tab(location.path.clone())
         {
-            self.status = Some(format!("Definition open failed: {error}"));
+            self.fail(format!("Definition open failed: {error}"));
             return;
         }
 
@@ -4127,7 +4144,7 @@ impl App {
         self.cursor = Cursor::new(row, col);
         self.selection_anchor = None;
         self.should_scroll_to_cursor = true;
-        self.status = Some(format!("Definition · Ln {}, Col {}", row + 1, col + 1));
+        self.notify(format!("Definition · Ln {}, Col {}", row + 1, col + 1));
     }
 
     fn apply_selected_completion(&mut self) {
@@ -4178,7 +4195,7 @@ impl App {
         }
 
         self.dismiss_completion();
-        self.status = Some(format!("Inserted {}", item.label));
+        self.notify(format!("Inserted {}", item.label));
         self.sync_code_intelligence_after_edit();
     }
 
@@ -4186,7 +4203,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.dismiss_completion();
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.completion_selected = self.completion_selected.saturating_sub(1);
@@ -4268,7 +4285,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => self.reference_selected = self.reference_selected.saturating_sub(1),
             KeyCode::Down => {
@@ -4300,7 +4317,7 @@ impl App {
 
     fn begin_lsp_edit_preview(&mut self, label: &str, edits: Vec<crate::lsp::LspTextEdit>) {
         if edits.is_empty() {
-            self.status = Some(format!("{label}: no edits returned"));
+            self.notify(format!("{label}: no edits returned"));
             self.mode = AppMode::Editing;
             return;
         }
@@ -4309,7 +4326,7 @@ impl App {
         self.pending_lsp_scroll = 0;
         self.pending_lsp_edits = edits;
         self.mode = AppMode::ConfirmLspEdits;
-        self.status = None;
+        self.clear_status();
     }
 
     /// Before/after lines for each edit, grouped by file, using the same
@@ -4510,7 +4527,7 @@ impl App {
 
     fn apply_pending_lsp_edits(&mut self) {
         if let Err(reason) = self.validate_lsp_edits() {
-            self.status = Some(format!("{} blocked: {reason}", self.pending_lsp_label));
+            self.notify(format!("{} blocked: {reason}", self.pending_lsp_label));
             self.mode = AppMode::Editing;
             return;
         }
@@ -4526,7 +4543,7 @@ impl App {
         for (path, edits) in grouped {
             if let Some(index) = self.find_open_tab(&path) {
                 let Some(buffer) = self.tab_buffer(index) else {
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "{} blocked: open buffer state disappeared for {}",
                         self.pending_lsp_label,
                         path.display()
@@ -4537,7 +4554,7 @@ impl App {
                 let replacements = match Self::lsp_replacements_for_buffer(buffer, &edits) {
                     Ok(replacements) => replacements,
                     Err(reason) => {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "{} blocked while preparing {}: {reason}",
                             self.pending_lsp_label,
                             path.display()
@@ -4551,7 +4568,7 @@ impl App {
                 let buffer = match Buffer::open(Some(path.clone())) {
                     Ok(buffer) => buffer,
                     Err(error) => {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "{} blocked: {} changed or became unreadable during preview: {error}",
                             self.pending_lsp_label,
                             path.display()
@@ -4563,7 +4580,7 @@ impl App {
                 let replacements = match Self::lsp_replacements_for_buffer(&buffer, &edits) {
                     Ok(replacements) => replacements,
                     Err(reason) => {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "{} blocked while preparing {}: {reason}",
                             self.pending_lsp_label,
                             path.display()
@@ -4721,7 +4738,7 @@ impl App {
         for member in &history.members {
             let Some(index) = self.find_open_tab(&member.path) else {
                 self.workspace_edit_history = None;
-                self.status = Some(format!(
+                self.fail(format!(
                     "Atomic {} unavailable: {} is no longer open",
                     if redo { "redo" } else { "undo" },
                     member.path.display()
@@ -4741,7 +4758,7 @@ impl App {
             };
             if buffer.revision() != member.expected_revision || !history_ready {
                 self.workspace_edit_history = None;
-                self.status = Some(format!(
+                self.fail(format!(
                     "Atomic {} refused: {} changed after the workspace edit",
                     if redo { "redo" } else { "undo" },
                     member.path.display()
@@ -4780,7 +4797,7 @@ impl App {
             };
             if !changed {
                 self.workspace_edit_history = None;
-                self.status = Some("Atomic workspace history failed before completion".to_owned());
+                self.fail("Atomic workspace history failed before completion".to_owned());
                 return Some(false);
             }
 
@@ -4830,7 +4847,7 @@ impl App {
         self.sync_code_intelligence_after_edit();
         self.sync_session_state();
         self.refresh_git_state(true);
-        self.status = Some(if recovery_warnings.is_empty() {
+        self.notify(if recovery_warnings.is_empty() {
             format!(
                 "{} {} across {member_count} buffers",
                 if redo { "Redid" } else { "Undid" },
@@ -4860,7 +4877,7 @@ impl App {
                 self.pending_lsp_edits.clear();
                 self.pending_lsp_preview.clear();
                 self.mode = AppMode::Editing;
-                self.status = Some("LSP edits cancelled".to_owned());
+                self.notify("LSP edits cancelled".to_owned());
             }
             _ => {}
         }
@@ -4913,7 +4930,7 @@ impl App {
             KeyCode::Enter => {
                 let name = self.rename_query.as_str().trim().to_owned();
                 if name.is_empty() {
-                    self.status = Some("Rename requires a non-empty symbol name".to_owned());
+                    self.notify("Rename requires a non-empty symbol name".to_owned());
                     return;
                 }
                 self.mode = AppMode::Editing;
@@ -4921,9 +4938,9 @@ impl App {
                     .language_service
                     .request_rename(self.lsp_cursor_position(), &name)
                 {
-                    Ok(true) => self.status = Some(format!("Rename preview requested → {name}")),
-                    Ok(false) => self.status = Some("Rename unavailable".to_owned()),
-                    Err(error) => self.status = Some(format!("Rename request failed: {error}")),
+                    Ok(true) => self.notify(format!("Rename preview requested → {name}")),
+                    Ok(false) => self.fail("Rename unavailable".to_owned()),
+                    Err(error) => self.fail(format!("Rename request failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -4958,18 +4975,18 @@ impl App {
                 {
                     if let Some(reason) = action.rejected {
                         self.mode = AppMode::Editing;
-                        self.status = Some(format!(
+                        self.fail(format!(
                             "Code action refused: {reason}; nothing was changed"
                         ));
                     } else if action.has_resource_operations {
                         self.mode = AppMode::Editing;
-                        self.status = Some(
+                        self.notify(
                             "Code action requires file create/rename/delete operations; Mellow will not partially apply it"
                                 .to_owned(),
                         );
                     } else if action.edits.is_empty() {
                         self.mode = AppMode::Editing;
-                        self.status = Some(if action.has_command {
+                        self.notify(if action.has_command {
                             "Code action contains a server command; Mellow will not execute it automatically".to_owned()
                         } else {
                             "Code action has no supported WorkspaceEdit".to_owned()
@@ -4994,7 +5011,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.problem_selected = self.problem_selected.saturating_sub(1);
@@ -5021,7 +5038,7 @@ impl App {
                     self.selection_anchor = None;
                     self.should_scroll_to_cursor = true;
                     self.mode = AppMode::Editing;
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "{} · Ln {}, Col {}",
                         problem.source,
                         problem.cursor.row + 1,
@@ -5132,7 +5149,7 @@ impl App {
                 Ok(Some(_)) => reload.push(path),
                 Ok(None) => {}
                 Err(error) => {
-                    self.status = Some(format!("External-change check failed: {error}"));
+                    self.fail(format!("External-change check failed: {error}"));
                     return;
                 }
             }
@@ -5143,12 +5160,12 @@ impl App {
         }
         if !dirty_conflicts.is_empty() {
             let first = &dirty_conflicts[0];
-            self.status = Some(format!(
+            self.notify(format!(
                 "External change detected for dirty buffer {} · save conflict protection is active",
                 first.display()
             ));
         } else if !reload.is_empty() {
-            self.status = Some(format!(
+            self.notify(format!(
                 "Reloaded {} clean file(s) changed outside Mellow",
                 reload.len()
             ));
@@ -5163,7 +5180,7 @@ impl App {
         match GitRepository::discover(&self.workspace_root) {
             Ok(repository) => self.git_repository = repository,
             Err(error) => {
-                self.status = Some(format!("Git discovery failed: {error}"));
+                self.fail(format!("Git discovery failed: {error}"));
             }
         }
     }
@@ -5188,7 +5205,7 @@ impl App {
 
         match repository.refresh() {
             Ok(snapshot) => self.apply_git_snapshot(snapshot),
-            Err(error) => self.status = Some(format!("Git refresh failed: {error}")),
+            Err(error) => self.fail(format!("Git refresh failed: {error}")),
         }
     }
 
@@ -5287,12 +5304,12 @@ impl App {
         }
         self.refresh_git_state(true);
         if self.git_repository.is_none() {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         }
         // Not cleared: a message from a failed commit stays for the retry.
         self.mode = AppMode::GitCommitInput;
-        self.status = Some(
+        self.notify(
             "Commit staged changes · Enter commit · Ctrl+G draft a message · Esc cancel".to_owned(),
         );
     }
@@ -5302,7 +5319,7 @@ impl App {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
                 self.git_commit_query.clear();
-                self.status = Some("Commit cancelled".to_owned());
+                self.notify("Commit cancelled".to_owned());
             }
             KeyCode::Left => self.git_commit_query.move_left(),
             KeyCode::Right => self.git_commit_query.move_right(),
@@ -5317,7 +5334,7 @@ impl App {
             KeyCode::Enter => {
                 let message = self.git_commit_query.as_str().trim().to_owned();
                 if message.is_empty() {
-                    self.status = Some("Commit message cannot be empty".to_owned());
+                    self.fail("Commit message cannot be empty".to_owned());
                     return;
                 }
                 self.mode = AppMode::Editing;
@@ -5348,7 +5365,7 @@ impl App {
 
     fn generate_commit_message(&mut self) {
         if self.commit_message_receiver.is_some() {
-            self.status = Some("Already writing a commit message".to_owned());
+            self.notify("Already writing a commit message".to_owned());
             return;
         }
         let Some(config) = self.ai_config.clone() else {
@@ -5357,18 +5374,18 @@ impl App {
             return;
         };
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         let diff = match repository.staged_diff() {
             Ok(diff) => diff,
             Err(error) => {
-                self.status = Some(format!("Could not read staged changes: {error}"));
+                self.fail(format!("Could not read staged changes: {error}"));
                 return;
             }
         };
         if diff.trim().is_empty() {
-            self.status = Some("Nothing is staged to write a message for".to_owned());
+            self.fail("Nothing is staged to write a message for".to_owned());
             return;
         }
         let (sender, receiver) = mpsc::channel();
@@ -5377,7 +5394,7 @@ impl App {
             let _ = sender.send(result);
         });
         self.commit_message_receiver = Some(receiver);
-        self.status = Some("Writing a commit message…".to_owned());
+        self.notify("Writing a commit message…".to_owned());
     }
 
     fn poll_commit_message(&mut self) {
@@ -5402,20 +5419,20 @@ impl App {
         }
         match result {
             Ok(message) if message.is_empty() => {
-                self.status = Some("AI returned an empty commit message".to_owned());
+                self.notify("AI returned an empty commit message".to_owned());
             }
             Ok(message) => {
                 self.git_commit_query.set(message);
-                self.status = Some("Message drafted · review it, then Enter to commit".to_owned());
+                self.notify("Message drafted · review it, then Enter to commit".to_owned());
             }
-            Err(error) => self.status = Some(format!("AI: {error}")),
+            Err(error) => self.notify(format!("AI: {error}")),
         }
     }
 
     fn begin_git_branches(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         match repository.branches() {
@@ -5423,9 +5440,9 @@ impl App {
                 self.git_branches = branches;
                 self.git_branch_selected = 0;
                 self.mode = AppMode::GitBranches;
-                self.status = None;
+                self.clear_status();
             }
-            Err(error) => self.status = Some(format!("Branch list failed: {error}")),
+            Err(error) => self.fail(format!("Branch list failed: {error}")),
         }
     }
 
@@ -5434,12 +5451,12 @@ impl App {
             return;
         };
         if branch.current {
-            self.status = Some(format!("Already on {}", branch.name));
+            self.notify(format!("Already on {}", branch.name));
             self.mode = AppMode::Editing;
             return;
         }
         if self.any_dirty_tabs() {
-            self.status = Some(
+            self.notify(
                 "Branch switch blocked: save/discard all dirty Mellow buffers first".to_owned(),
             );
             self.mode = AppMode::Editing;
@@ -5456,7 +5473,7 @@ impl App {
             match repository.branch_contains_path(&branch.name, path) {
                 Ok(true) => {}
                 Ok(false) => {
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "Branch switch blocked: {} does not exist on {}",
                         path.display(),
                         branch.name
@@ -5465,7 +5482,7 @@ impl App {
                     return;
                 }
                 Err(error) => {
-                    self.status = Some(format!("Branch switch preflight failed: {error}"));
+                    self.fail(format!("Branch switch preflight failed: {error}"));
                     self.mode = AppMode::Editing;
                     return;
                 }
@@ -5478,9 +5495,9 @@ impl App {
                 }
                 self.mode = AppMode::Editing;
                 self.refresh_git_state(true);
-                self.status = Some(format!("Switched to {}", branch.name));
+                self.notify(format!("Switched to {}", branch.name));
             }
-            Err(error) => self.status = Some(format!("Branch switch failed: {error}")),
+            Err(error) => self.fail(format!("Branch switch failed: {error}")),
         }
     }
 
@@ -5488,7 +5505,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => self.git_branch_selected = self.git_branch_selected.saturating_sub(1),
             KeyCode::Down => {
@@ -5503,7 +5520,7 @@ impl App {
             KeyCode::Char('n' | 'N') => {
                 self.git_branch_query.clear();
                 self.mode = AppMode::GitBranchCreate;
-                self.status = Some("New local branch · Enter create · Esc cancel".to_owned());
+                self.notify("New local branch · Enter create · Esc cancel".to_owned());
             }
             KeyCode::Char('r' | 'R') => self.begin_git_branch_rename(),
             KeyCode::Char('d' | 'D') | KeyCode::Delete => self.begin_git_branch_delete(),
@@ -5537,9 +5554,9 @@ impl App {
                     Ok(()) => {
                         self.git_branch_query.clear();
                         self.begin_git_branches();
-                        self.status = Some(format!("Created branch {}", name.trim()));
+                        self.notify(format!("Created branch {}", name.trim()));
                     }
-                    Err(error) => self.status = Some(format!("Create branch failed: {error}")),
+                    Err(error) => self.fail(format!("Create branch failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -5560,7 +5577,7 @@ impl App {
         self.git_branch_action_target = Some(branch.name.clone());
         self.git_branch_query.set(branch.name);
         self.mode = AppMode::GitBranchRename;
-        self.status = Some("Rename local branch · Enter apply · Esc back".to_owned());
+        self.notify("Rename local branch · Enter apply · Esc back".to_owned());
     }
 
     fn handle_git_branch_rename_key(&mut self, key: KeyEvent) {
@@ -5583,7 +5600,7 @@ impl App {
             KeyCode::Enter => {
                 let Some(old_name) = self.git_branch_action_target.clone() else {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Branch rename target is no longer available".to_owned());
+                    self.notify("Branch rename target is no longer available".to_owned());
                     return;
                 };
                 let new_name = self.git_branch_query.as_str().to_owned();
@@ -5600,7 +5617,7 @@ impl App {
                         self.status =
                             Some(format!("Renamed branch {} → {}", old_name, new_name.trim()));
                     }
-                    Err(error) => self.status = Some(format!("Rename branch failed: {error}")),
+                    Err(error) => self.fail(format!("Rename branch failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -5619,12 +5636,12 @@ impl App {
             return;
         };
         if branch.current {
-            self.status = Some("Cannot delete the current branch".to_owned());
+            self.fail("Cannot delete the current branch".to_owned());
             return;
         }
         self.git_branch_action_target = Some(branch.name);
         self.mode = AppMode::ConfirmGitBranchDelete;
-        self.status = None;
+        self.clear_status();
     }
 
     fn handle_git_branch_delete_confirmation(&mut self, key: KeyEvent) {
@@ -5632,7 +5649,7 @@ impl App {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 let Some(name) = self.git_branch_action_target.clone() else {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Branch delete target is no longer available".to_owned());
+                    self.notify("Branch delete target is no longer available".to_owned());
                     return;
                 };
                 let Some(repository) = self.git_repository.clone() else {
@@ -5643,19 +5660,19 @@ impl App {
                     Ok(()) => {
                         self.git_branch_action_target = None;
                         self.begin_git_branches();
-                        self.status = Some(format!("Deleted merged branch {name}"));
+                        self.notify(format!("Deleted merged branch {name}"));
                     }
                     Err(error) => {
                         self.mode = AppMode::GitBranches;
                         self.git_branch_action_target = None;
-                        self.status = Some(format!("Delete branch failed: {error}"));
+                        self.fail(format!("Delete branch failed: {error}"));
                     }
                 }
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 self.git_branch_action_target = None;
                 self.begin_git_branches();
-                self.status = Some("Branch delete cancelled".to_owned());
+                self.notify("Branch delete cancelled".to_owned());
             }
             _ => {}
         }
@@ -5664,7 +5681,7 @@ impl App {
     fn begin_git_blame(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         if self.buffer.is_dirty() {
@@ -5673,7 +5690,7 @@ impl App {
             return;
         }
         let Some(path) = self.buffer.path().cloned() else {
-            self.status = Some("Blame unavailable for untitled buffer".to_owned());
+            self.fail("Blame unavailable for untitled buffer".to_owned());
             return;
         };
         match repository.blame(&path) {
@@ -5682,13 +5699,13 @@ impl App {
                 self.git_blame_selected =
                     self.cursor.row.min(self.git_blame.len().saturating_sub(1));
                 if self.git_blame.is_empty() {
-                    self.status = Some("No blame information for active file".to_owned());
+                    self.notify("No blame information for active file".to_owned());
                 } else {
                     self.mode = AppMode::GitBlame;
-                    self.status = None;
+                    self.clear_status();
                 }
             }
-            Err(error) => self.status = Some(format!("Git blame failed: {error}")),
+            Err(error) => self.fail(format!("Git blame failed: {error}")),
         }
     }
 
@@ -5696,7 +5713,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => self.git_blame_selected = self.git_blame_selected.saturating_sub(1),
             KeyCode::Down => {
@@ -5723,7 +5740,7 @@ impl App {
                     self.selection_anchor = None;
                     self.should_scroll_to_cursor = true;
                     self.mode = AppMode::Editing;
-                    self.status = Some(format!("Blame · {} · {}", line.short_oid, line.author));
+                    self.notify(format!("Blame · {} · {}", line.short_oid, line.author));
                 }
             }
             _ => {}
@@ -5737,7 +5754,7 @@ impl App {
             .map(|row| self.buffer.line_text(row))
             .collect();
         let Some(block) = crate::conflict::block_at(&lines, self.cursor.row) else {
-            self.status = Some("The cursor is not inside a merge conflict".to_owned());
+            self.notify("The cursor is not inside a merge conflict".to_owned());
             return;
         };
         let resolved = crate::conflict::resolved_lines(&lines, block, choice);
@@ -5779,7 +5796,7 @@ impl App {
         );
         self.selection_anchor = None;
         self.should_scroll_to_cursor = true;
-        self.status = Some("Kept the chosen side · Ctrl+Z undoes it".to_owned());
+        self.notify("Kept the chosen side · Ctrl+Z undoes it".to_owned());
     }
 
     /// Asks AI to fix the problem on the cursor line. The line is selected as
@@ -5791,7 +5808,7 @@ impl App {
             .into_iter()
             .find(|problem| problem.cursor.row == row)
         else {
-            self.status = Some("No problem on this line".to_owned());
+            self.notify("No problem on this line".to_owned());
             return;
         };
         if self.ai_config.is_none() {
@@ -5825,7 +5842,7 @@ impl App {
     /// Undoes the latest AI edit, but only while it is still the latest change.
     fn undo_last_ai_edit(&mut self) {
         let Some(last) = self.ai_edit_history.last() else {
-            self.status = Some("No AI edit to undo in this session".to_owned());
+            self.notify("No AI edit to undo in this session".to_owned());
             return;
         };
         if last.revision_after != self.buffer.revision() || last.path != self.buffer.display_path()
@@ -5845,16 +5862,16 @@ impl App {
             self.workspace_edit_history = None;
             self.should_scroll_to_cursor = true;
             self.ai_edit_history.pop();
-            self.status = Some(format!("Undid AI edit: {summary}"));
+            self.notify(format!("Undid AI edit: {summary}"));
             self.sync_code_intelligence_after_edit();
         } else {
-            self.status = Some("Nothing to undo".to_owned());
+            self.notify("Nothing to undo".to_owned());
         }
     }
 
     fn show_ai_edit_history(&mut self) {
         if self.ai_edit_history.is_empty() {
-            self.status = Some("No AI edits accepted in this session yet".to_owned());
+            self.notify("No AI edits accepted in this session yet".to_owned());
             return;
         }
         let summaries: Vec<&str> = self
@@ -5864,7 +5881,7 @@ impl App {
             .take(5)
             .map(|record| record.summary.as_str())
             .collect();
-        self.status = Some(format!(
+        self.notify(format!(
             "AI edits, latest first ({}): {}",
             self.ai_edit_history.len(),
             summaries.join(" · ")
@@ -5881,13 +5898,13 @@ impl App {
         self.ai_receiver = None;
         self.ai_shell_request = true;
         self.mode = AppMode::AiPrompt;
-        self.status = Some("Describe the command you need · Enter asks AI".to_owned());
+        self.notify("Describe the command you need · Enter asks AI".to_owned());
     }
 
     fn start_shell_command(&mut self, request: String) {
         let Some(config) = self.ai_config.clone() else {
             self.ai_shell_request = false;
-            self.status = Some("AI is not set up yet".to_owned());
+            self.fail("AI is not set up yet".to_owned());
             return;
         };
         let (sender, receiver) = mpsc::channel();
@@ -5897,7 +5914,7 @@ impl App {
         });
         self.shell_receiver = Some(receiver);
         self.mode = AppMode::AiWaiting;
-        self.status = None;
+        self.clear_status();
     }
 
     fn poll_shell_command(&mut self) {
@@ -5936,18 +5953,18 @@ impl App {
                 match typed {
                     Some(Ok(())) => {
                         self.terminal_focused = true;
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Typed in the terminal, not run yet: {command} · Enter there to run"
                         ));
                     }
                     _ => {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Suggested: {command} · open the terminal (Ctrl+T) to type it"
                         ));
                     }
                 }
             }
-            Err(error) => self.status = Some(format!("AI: {error}")),
+            Err(error) => self.notify(format!("AI: {error}")),
         }
     }
 
@@ -5957,13 +5974,13 @@ impl App {
             .as_ref()
             .is_some_and(|document| !document.symbols().is_empty());
         if !has_symbols {
-            self.status = Some("This file has no symbols to jump to".to_owned());
+            self.notify("This file has no symbols to jump to".to_owned());
             return;
         }
         self.symbol_query.clear();
         self.symbol_selected = 0;
         self.mode = AppMode::Symbols;
-        self.status = None;
+        self.clear_status();
     }
 
     /// Definitions whose names contain the query, in document order.
@@ -5982,7 +5999,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => self.symbol_selected = self.symbol_selected.saturating_sub(1),
             KeyCode::Down => {
@@ -6000,7 +6017,7 @@ impl App {
                     self.selection_anchor = None;
                     self.should_scroll_to_cursor = true;
                     self.mode = AppMode::Editing;
-                    self.status = None;
+                    self.clear_status();
                 }
             }
             KeyCode::Backspace => {
@@ -6022,21 +6039,21 @@ impl App {
     fn begin_git_conflicts(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         match repository.conflict_paths() {
             Ok(paths) if paths.is_empty() => {
                 self.mode = AppMode::Editing;
-                self.status = Some("No unresolved Git conflicts".to_owned());
+                self.notify("No unresolved Git conflicts".to_owned());
             }
             Ok(paths) => {
                 self.git_conflicts = paths;
                 self.git_conflict_selected = 0;
                 self.mode = AppMode::GitConflicts;
-                self.status = None;
+                self.clear_status();
             }
-            Err(error) => self.status = Some(format!("Conflict scan failed: {error}")),
+            Err(error) => self.fail(format!("Conflict scan failed: {error}")),
         }
     }
 
@@ -6058,12 +6075,12 @@ impl App {
                 self.selection_anchor = None;
                 self.should_scroll_to_cursor = true;
                 self.mode = AppMode::Editing;
-                self.status = Some(format!(
+                self.notify(format!(
                     "Resolve {} manually, save it, then run Mark active conflict resolved",
                     relative.display()
                 ));
             }
-            Err(error) => self.status = Some(format!("Open conflict failed: {error}")),
+            Err(error) => self.fail(format!("Open conflict failed: {error}")),
         }
     }
 
@@ -6071,7 +6088,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.git_conflict_selected = self.git_conflict_selected.saturating_sub(1)
@@ -6102,15 +6119,15 @@ impl App {
     fn mark_active_git_conflict_resolved(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         let Some(path) = self.buffer.path().cloned() else {
-            self.status = Some("Active buffer has no file path".to_owned());
+            self.notify("Active buffer has no file path".to_owned());
             return;
         };
         if self.buffer.is_dirty() {
-            self.status = Some(
+            self.notify(
                 "Resolve conflict and save the active buffer before marking it resolved".to_owned(),
             );
             return;
@@ -6127,7 +6144,7 @@ impl App {
                     Ok(paths) if paths.is_empty() => {
                         self.git_conflicts.clear();
                         self.mode = AppMode::Editing;
-                        self.status = Some(
+                        self.notify(
                             "Conflict marked resolved · no unresolved paths remain".to_owned(),
                         );
                     }
@@ -6137,7 +6154,7 @@ impl App {
                             .git_conflict_selected
                             .min(self.git_conflicts.len().saturating_sub(1));
                         self.mode = AppMode::GitConflicts;
-                        self.status = Some("Conflict marked resolved".to_owned());
+                        self.notify("Conflict marked resolved".to_owned());
                     }
                     Err(error) => {
                         self.mode = AppMode::Editing;
@@ -6146,7 +6163,7 @@ impl App {
                     }
                 }
             }
-            Err(error) => self.status = Some(format!("Mark resolved failed: {error}")),
+            Err(error) => self.fail(format!("Mark resolved failed: {error}")),
         }
     }
 
@@ -6187,14 +6204,14 @@ impl App {
     /// Second half of a pull, after the background fetch: local and quick.
     fn finish_git_pull(&mut self, upstream: String) {
         if self.any_dirty_tabs() {
-            self.status = Some(
+            self.notify(
                 "Pull stopped: a buffer was edited during the fetch; save or discard, then pull again"
                     .to_owned(),
             );
             return;
         }
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         let open_paths: Vec<PathBuf> = (0..self.tabs.len())
@@ -6204,7 +6221,7 @@ impl App {
             match repository.branch_contains_path(&upstream, path) {
                 Ok(true) => {}
                 Ok(false) => {
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "Pull blocked: {} does not exist in upstream {}",
                         path.display(),
                         upstream
@@ -6212,7 +6229,7 @@ impl App {
                     return;
                 }
                 Err(error) => {
-                    self.status = Some(format!("Pull preflight failed: {error}"));
+                    self.fail(format!("Pull preflight failed: {error}"));
                     return;
                 }
             }
@@ -6224,9 +6241,9 @@ impl App {
                     self.reload_open_path_from_disk(&path);
                 }
                 self.refresh_git_state(true);
-                self.status = Some(format!("Fast-forwarded from {upstream}"));
+                self.notify(format!("Fast-forwarded from {upstream}"));
             }
-            Err(error) => self.status = Some(format!("Git pull refused: {error}")),
+            Err(error) => self.fail(format!("Git pull refused: {error}")),
         }
     }
 
@@ -6248,7 +6265,7 @@ impl App {
         let Some(operation) = &self.git_operation else {
             return false;
         };
-        self.status = Some(format!(
+        self.notify(format!(
             "Git {} is still running · Ctrl+P, Cancel Git operation",
             operation.kind.name()
         ));
@@ -6261,7 +6278,7 @@ impl App {
         work: impl FnOnce(&GitRepository) -> Result<GitOperationDone, String> + Send + 'static,
     ) {
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         let cancel = GitCancel::default();
@@ -6271,7 +6288,7 @@ impl App {
             let _ = sender.send(work(&repository));
         });
         let progress = format!("{}… · Ctrl+P, Cancel Git operation", kind.progress());
-        self.status = Some(progress.clone());
+        self.notify(progress.clone());
         self.git_operation = Some(GitOperation {
             kind,
             started: Instant::now(),
@@ -6283,11 +6300,11 @@ impl App {
 
     fn cancel_git_operation(&mut self) {
         let Some(operation) = &self.git_operation else {
-            self.status = Some("No Git operation is running".to_owned());
+            self.notify("No Git operation is running".to_owned());
             return;
         };
         operation.cancel.cancel();
-        self.status = Some(format!("Cancelling Git {}…", operation.kind.name()));
+        self.notify(format!("Cancelling Git {}…", operation.kind.name()));
     }
 
     fn poll_git_operation(&mut self) {
@@ -6306,7 +6323,8 @@ impl App {
                             "{}… {seconds}s · Ctrl+P, Cancel Git operation",
                             operation.kind.progress()
                         );
-                        self.status = Some(operation.progress.clone());
+                        let progress = operation.progress.clone();
+                        self.notify(progress);
                     }
                 }
                 return;
@@ -6318,28 +6336,28 @@ impl App {
         };
         if operation.cancel.is_cancelled() {
             self.refresh_git_state(true);
-            self.status = Some(format!("Git {} cancelled", operation.kind.name()));
+            self.notify(format!("Git {} cancelled", operation.kind.name()));
             return;
         }
         match result {
             Ok(GitOperationDone::Fetched) => {
                 self.refresh_git_state(true);
-                self.status = Some("Git fetch complete".to_owned());
+                self.notify("Git fetch complete".to_owned());
             }
             Ok(GitOperationDone::PullFetched { upstream }) => self.finish_git_pull(upstream),
             Ok(GitOperationDone::Pushed) => {
                 self.refresh_git_state(true);
-                self.status = Some("Git push complete".to_owned());
+                self.notify("Git push complete".to_owned());
             }
             Ok(GitOperationDone::Committed { oid }) => {
                 self.git_commit_query.clear();
                 self.refresh_git_state(true);
-                self.status = Some(format!("Committed {oid}"));
+                self.notify(format!("Committed {oid}"));
             }
             Err(error) if operation.kind == GitOperationKind::Commit => {
-                self.status = Some(format!("Commit failed: {error} · message kept for retry"));
+                self.fail(format!("Commit failed: {error} · message kept for retry"));
             }
-            Err(error) => self.status = Some(error),
+            Err(error) => self.notify(error),
         }
     }
 
@@ -6354,23 +6372,23 @@ impl App {
 
     fn git_stage_active_file(&mut self) {
         let Some(path) = self.buffer.path().cloned() else {
-            self.status = Some("Save this file before staging it".to_owned());
+            self.notify("Save this file before staging it".to_owned());
             return;
         };
         if self.buffer.is_dirty() {
-            self.status = Some("Save first: staging uses the saved file".to_owned());
+            self.notify("Save first: staging uses the saved file".to_owned());
             return;
         }
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         match repository.stage_file(&path) {
             Ok(()) => {
                 self.refresh_git_state(true);
-                self.status = Some(format!("Staged {}", self.short_path(&path)));
+                self.notify(format!("Staged {}", self.short_path(&path)));
             }
-            Err(error) => self.status = Some(format!("Stage file failed: {error}")),
+            Err(error) => self.fail(format!("Stage file failed: {error}")),
         }
     }
 
@@ -6379,22 +6397,22 @@ impl App {
             return;
         };
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         match repository.unstage_file(&path) {
             Ok(()) => {
                 self.refresh_git_state(true);
-                self.status = Some(format!("Unstaged {}", self.short_path(&path)));
+                self.notify(format!("Unstaged {}", self.short_path(&path)));
             }
-            Err(error) => self.status = Some(format!("Unstage file failed: {error}")),
+            Err(error) => self.fail(format!("Unstage file failed: {error}")),
         }
     }
 
     fn begin_git_history(&mut self) {
         self.refresh_git_state(true);
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("No Git repository found".to_owned());
+            self.fail("No Git repository found".to_owned());
             return;
         };
         match repository.history(100) {
@@ -6402,9 +6420,9 @@ impl App {
                 self.git_history = history;
                 self.git_history_selected = 0;
                 self.mode = AppMode::GitHistory;
-                self.status = None;
+                self.clear_status();
             }
-            Err(error) => self.status = Some(format!("Git history failed: {error}")),
+            Err(error) => self.fail(format!("Git history failed: {error}")),
         }
     }
 
@@ -6412,7 +6430,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => self.git_history_selected = self.git_history_selected.saturating_sub(1),
             KeyCode::Down => {
@@ -6441,13 +6459,13 @@ impl App {
     fn begin_changes_review(&mut self) {
         self.refresh_git_state(true);
         if self.git_repository.is_none() {
-            self.status = Some("No Git repository found for this workspace".to_owned());
+            self.fail("No Git repository found for this workspace".to_owned());
             self.mode = AppMode::Editing;
             return;
         }
 
         if self.git_snapshot.hunks.is_empty() {
-            self.status = Some("Git working tree is clean".to_owned());
+            self.notify("Git working tree is clean".to_owned());
             self.mode = AppMode::Editing;
             return;
         }
@@ -6456,7 +6474,7 @@ impl App {
             .changes_selected
             .min(self.git_snapshot.hunks.len().saturating_sub(1));
         self.mode = AppMode::Changes;
-        self.status = None;
+        self.clear_status();
     }
 
     fn handle_changes_key(&mut self, key: KeyEvent) {
@@ -6506,7 +6524,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.changes_selected = self.changes_selected.saturating_sub(1);
@@ -6538,7 +6556,7 @@ impl App {
             KeyCode::Char('r' | 'R') => self.begin_revert_selected_git_hunk(),
             KeyCode::Char('g' | 'G') => {
                 self.refresh_git_state(true);
-                self.status = Some("Git status refreshed".to_owned());
+                self.notify("Git status refreshed".to_owned());
             }
             _ => {}
         }
@@ -6546,12 +6564,12 @@ impl App {
 
     fn selected_hunk_is_safe_to_operate(&mut self, hunk: &GitHunk) -> bool {
         let Some(path) = self.git_hunk_absolute_path(hunk) else {
-            self.status = Some("Git repository is unavailable".to_owned());
+            self.fail("Git repository is unavailable".to_owned());
             return false;
         };
 
         if self.open_buffer_is_dirty_for_path(&path) {
-            self.status = Some(
+            self.notify(
                 "Save or discard editor changes before staging, unstaging, or reverting this hunk"
                     .to_owned(),
             );
@@ -6565,7 +6583,7 @@ impl App {
             return;
         };
         if hunk.stage != GitHunkStage::Unstaged {
-            self.status = Some("Selected hunk is already staged".to_owned());
+            self.notify("Selected hunk is already staged".to_owned());
             return;
         }
         if !self.selected_hunk_is_safe_to_operate(&hunk) {
@@ -6573,17 +6591,17 @@ impl App {
         }
 
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("Git repository is unavailable".to_owned());
+            self.fail("Git repository is unavailable".to_owned());
             return;
         };
         match repository.stage_hunk(&hunk) {
             Ok(()) => {
                 self.refresh_git_state(true);
                 self.mode = AppMode::Changes;
-                self.status = Some(format!("Staged {}", hunk.path.display()));
+                self.notify(format!("Staged {}", hunk.path.display()));
             }
             Err(error) => {
-                self.status = Some(format!("Stage hunk failed: {error}"));
+                self.fail(format!("Stage hunk failed: {error}"));
             }
         }
     }
@@ -6593,7 +6611,7 @@ impl App {
             return;
         };
         if hunk.stage != GitHunkStage::Staged {
-            self.status = Some("Selected hunk is not staged".to_owned());
+            self.notify("Selected hunk is not staged".to_owned());
             return;
         }
         if !self.selected_hunk_is_safe_to_operate(&hunk) {
@@ -6601,17 +6619,17 @@ impl App {
         }
 
         let Some(repository) = self.git_repository.clone() else {
-            self.status = Some("Git repository is unavailable".to_owned());
+            self.fail("Git repository is unavailable".to_owned());
             return;
         };
         match repository.unstage_hunk(&hunk) {
             Ok(()) => {
                 self.refresh_git_state(true);
                 self.mode = AppMode::Changes;
-                self.status = Some(format!("Unstaged {}", hunk.path.display()));
+                self.notify(format!("Unstaged {}", hunk.path.display()));
             }
             Err(error) => {
-                self.status = Some(format!("Unstage hunk failed: {error}"));
+                self.fail(format!("Unstage hunk failed: {error}"));
             }
         }
     }
@@ -6621,7 +6639,7 @@ impl App {
             return;
         };
         if hunk.stage != GitHunkStage::Unstaged {
-            self.status = Some("Only unstaged hunks can be reverted".to_owned());
+            self.notify("Only unstaged hunks can be reverted".to_owned());
             return;
         }
         if hunk.untracked {
@@ -6635,7 +6653,7 @@ impl App {
 
         self.revert_hunk = Some(hunk);
         self.mode = AppMode::ConfirmRevertHunk;
-        self.status = None;
+        self.clear_status();
     }
 
     fn handle_revert_confirmation_key(&mut self, key: KeyEvent) {
@@ -6643,7 +6661,7 @@ impl App {
             KeyCode::Esc | KeyCode::Char('c' | 'C') => {
                 self.revert_hunk = None;
                 self.mode = AppMode::Changes;
-                self.status = Some("Revert cancelled".to_owned());
+                self.notify("Revert cancelled".to_owned());
             }
             KeyCode::Enter | KeyCode::Char('r' | 'R') => {
                 let Some(hunk) = self.revert_hunk.take() else {
@@ -6657,7 +6675,7 @@ impl App {
 
                 let Some(repository) = self.git_repository.clone() else {
                     self.mode = AppMode::Changes;
-                    self.status = Some("Git repository is unavailable".to_owned());
+                    self.fail("Git repository is unavailable".to_owned());
                     return;
                 };
                 match repository.revert_hunk(&hunk) {
@@ -6671,11 +6689,11 @@ impl App {
                         } else {
                             AppMode::Changes
                         };
-                        self.status = Some(format!("Reverted hunk in {}", hunk.path.display()));
+                        self.notify(format!("Reverted hunk in {}", hunk.path.display()));
                     }
                     Err(error) => {
                         self.mode = AppMode::Changes;
-                        self.status = Some(format!("Revert hunk failed: {error}"));
+                        self.fail(format!("Revert hunk failed: {error}"));
                     }
                 }
             }
@@ -6688,11 +6706,11 @@ impl App {
             return;
         };
         let Some(path) = self.git_hunk_absolute_path(&hunk) else {
-            self.status = Some("Git repository is unavailable".to_owned());
+            self.fail("Git repository is unavailable".to_owned());
             return;
         };
         if !path.is_file() {
-            self.status = Some(format!(
+            self.notify(format!(
                 "{} no longer exists in the working tree",
                 hunk.path.display()
             ));
@@ -6708,7 +6726,7 @@ impl App {
                 self.selection_anchor = None;
                 self.should_scroll_to_cursor = true;
                 self.mode = AppMode::Editing;
-                self.status = Some(format!(
+                self.notify(format!(
                     "{} · {} · Ln {}",
                     hunk.action_label(),
                     hunk.path.display(),
@@ -6716,7 +6734,7 @@ impl App {
                 ));
             }
             Err(error) => {
-                self.status = Some(format!("Open Git change failed: {error}"));
+                self.fail(format!("Open Git change failed: {error}"));
             }
         }
     }
@@ -6856,7 +6874,7 @@ impl App {
         } else {
             AppMode::Editing
         };
-        self.status = Some(format!("Switched to {}", self.active_short_path()));
+        self.notify(format!("Switched to {}", self.active_short_path()));
         self.find_matches.clear();
         self.reset_active_code_intelligence();
     }
@@ -6939,7 +6957,7 @@ impl App {
         self.explorer_focused = false;
         self.terminal_focused = false;
         if self.active_tab_is_pristine() {
-            self.status = Some("New file · start typing".to_owned());
+            self.notify("New file · start typing".to_owned());
             return;
         }
         self.sync_recovery_journal();
@@ -6950,7 +6968,7 @@ impl App {
         self.active_tab = self.tabs.len() - 1;
         self.assign_tab_to_active_pane(self.active_tab);
         self.mode = AppMode::Editing;
-        self.status = Some("New file · Ctrl+S chooses where to save it".to_owned());
+        self.notify("New file · Ctrl+S chooses where to save it".to_owned());
         self.reset_active_code_intelligence();
     }
 
@@ -6979,7 +6997,7 @@ impl App {
         } else {
             AppMode::Editing
         };
-        self.status = Some(format!("Opened {}", self.active_short_path()));
+        self.notify(format!("Opened {}", self.active_short_path()));
         self.reset_active_code_intelligence();
         Ok(())
     }
@@ -6991,10 +7009,10 @@ impl App {
             Ok(files) => {
                 self.quick_open_candidates = files;
                 self.mode = AppMode::QuickOpen;
-                self.status = None;
+                self.clear_status();
             }
             Err(error) => {
-                self.status = Some(format!("Quick Open failed: {error}"));
+                self.fail(format!("Quick Open failed: {error}"));
             }
         }
     }
@@ -7056,7 +7074,7 @@ impl App {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
                 self.quick_open_query.clear();
-                self.status = Some("Quick Open cancelled".to_owned());
+                self.notify("Quick Open cancelled".to_owned());
             }
             KeyCode::Up => {
                 self.quick_open_selected = self.quick_open_selected.saturating_sub(1);
@@ -7077,7 +7095,7 @@ impl App {
                 let raw = self.quick_open_query.as_str().to_owned();
                 match workspace::path_completions(&self.workspace_root, &raw, 64) {
                     Ok(completions) if completions.is_empty() => {
-                        self.status = Some("Quick Open: no path completion".to_owned());
+                        self.notify("Quick Open: no path completion".to_owned());
                     }
                     Ok(completions) => {
                         let common = common_path_prefix(&completions);
@@ -7086,7 +7104,7 @@ impl App {
                         } else if common.chars().count() > raw.trim().chars().count() {
                             common
                         } else {
-                            self.status = Some(format!(
+                            self.notify(format!(
                                 "Quick Open: {} path completions · keep typing to narrow",
                                 completions.len()
                             ));
@@ -7095,7 +7113,7 @@ impl App {
                         if !completion.is_empty() {
                             self.quick_open_query.set(completion);
                             self.quick_open_selected = 0;
-                            self.status = Some(if completions.len() == 1 {
+                            self.notify(if completions.len() == 1 {
                                 "Quick Open: path completed".to_owned()
                             } else {
                                 format!(
@@ -7107,7 +7125,7 @@ impl App {
                         }
                     }
                     Err(error) => {
-                        self.status = Some(format!("Quick Open path completion failed: {error}"));
+                        self.fail(format!("Quick Open path completion failed: {error}"));
                     }
                 }
             }
@@ -7142,7 +7160,7 @@ impl App {
                 };
 
                 let Some(path) = selected.or(direct) else {
-                    self.status = Some("Quick Open: no matching file".to_owned());
+                    self.notify("Quick Open: no matching file".to_owned());
                     return;
                 };
 
@@ -7161,7 +7179,7 @@ impl App {
                         self.quick_open_selected = 0;
                     }
                     Err(error) => {
-                        self.status = Some(format!("Open failed: {error}"));
+                        self.fail(format!("Open failed: {error}"));
                     }
                 }
             }
@@ -7194,7 +7212,7 @@ impl App {
             Ok(paths) => self.quick_open_candidates = paths,
             Err(error) => {
                 self.quick_open_candidates.clear();
-                self.status = Some(format!("Quick Open: {error}"));
+                self.notify(format!("Quick Open: {error}"));
             }
         }
     }
@@ -7210,7 +7228,7 @@ impl App {
             Err(error) => {
                 self.explorer_files.clear();
                 self.explorer_selected = 0;
-                self.status = Some(format!("Explorer refresh failed: {error}"));
+                self.fail(format!("Explorer refresh failed: {error}"));
             }
         }
     }
@@ -7233,13 +7251,13 @@ impl App {
         if self.explorer_visible {
             self.explorer_visible = false;
             self.explorer_focused = false;
-            self.status = Some("Explorer hidden".to_owned());
+            self.notify("Explorer hidden".to_owned());
         } else {
             self.reload_explorer();
             self.explorer_visible = true;
             self.explorer_focused = true;
             self.terminal_focused = false;
-            self.status = Some("Explorer focused · Esc returns to editor".to_owned());
+            self.notify("Explorer focused · Esc returns to editor".to_owned());
         }
         self.persist_editor_settings();
     }
@@ -7260,7 +7278,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.explorer_focused = false;
-                self.status = Some("Editor focused".to_owned());
+                self.notify("Editor focused".to_owned());
             }
             KeyCode::Up => {
                 self.explorer_selected = self.explorer_selected.saturating_sub(1);
@@ -7286,7 +7304,7 @@ impl App {
                             self.explorer_focused = false;
                         }
                         Err(error) => {
-                            self.status = Some(format!("Open failed: {error}"));
+                            self.fail(format!("Open failed: {error}"));
                         }
                     }
                 }
@@ -7374,7 +7392,7 @@ impl App {
         self.explorer_action_query.set(&initial);
         self.explorer_action_target = None;
         self.mode = AppMode::ExplorerCreate;
-        self.status = Some("Create file inside workspace · Enter create · Esc cancel".to_owned());
+        self.notify("Create file inside workspace · Enter create · Esc cancel".to_owned());
     }
 
     fn begin_explorer_create_directory(&mut self) {
@@ -7398,20 +7416,20 @@ impl App {
 
     fn begin_explorer_rename(&mut self) {
         let Some(entry) = self.selected_explorer_entry() else {
-            self.status = Some("Explorer has no selected file".to_owned());
+            self.notify("Explorer has no selected file".to_owned());
             return;
         };
         let absolute = self.workspace_root.join(&entry.path);
         if entry.is_dir {
             if let Some(open_path) = self.open_buffer_under_path(&absolute) {
-                self.status = Some(format!(
+                self.notify(format!(
                     "Close open file {} before moving this directory",
                     open_path.display()
                 ));
                 return;
             }
         } else if self.find_open_tab(&absolute).is_some() {
-            self.status = Some("Close the file before renaming or moving it".to_owned());
+            self.notify("Close the file before renaming or moving it".to_owned());
             return;
         }
         self.explorer_action_query
@@ -7424,13 +7442,13 @@ impl App {
 
     fn begin_explorer_delete(&mut self) {
         let Some(entry) = self.selected_explorer_entry() else {
-            self.status = Some("Explorer has no selected file".to_owned());
+            self.notify("Explorer has no selected file".to_owned());
             return;
         };
         let absolute = self.workspace_root.join(&entry.path);
         if entry.is_dir {
             if let Some(open_path) = self.open_buffer_under_path(&absolute) {
-                self.status = Some(format!(
+                self.notify(format!(
                     "Close open file {} before deleting this directory",
                     open_path.display()
                 ));
@@ -7439,24 +7457,24 @@ impl App {
             match std::fs::read_dir(&absolute) {
                 Ok(entries) => {
                     if entries.count() != 0 {
-                        self.status = Some(
+                        self.notify(
                             "Delete blocked: only empty directories can be removed".to_owned(),
                         );
                         return;
                     }
                 }
                 Err(error) => {
-                    self.status = Some(format!("Delete blocked: {error}"));
+                    self.notify(format!("Delete blocked: {error}"));
                     return;
                 }
             }
         } else if self.find_open_tab(&absolute).is_some() {
-            self.status = Some("Close the file before deleting it".to_owned());
+            self.notify("Close the file before deleting it".to_owned());
             return;
         }
         self.explorer_action_target = Some(entry.path);
         self.mode = AppMode::ConfirmExplorerDelete;
-        self.status = None;
+        self.clear_status();
     }
 
     fn handle_explorer_create_key(&mut self, key: KeyEvent) {
@@ -7465,7 +7483,7 @@ impl App {
                 self.mode = AppMode::Editing;
                 self.explorer_action_query.clear();
                 self.explorer_focused = true;
-                self.status = Some("Create cancelled".to_owned());
+                self.notify("Create cancelled".to_owned());
             }
             KeyCode::Left => self.explorer_action_query.move_left(),
             KeyCode::Right => self.explorer_action_query.move_right(),
@@ -7482,17 +7500,17 @@ impl App {
                 let relative = match self.safe_workspace_relative(&query) {
                     Ok(path) => path,
                     Err(reason) => {
-                        self.status = Some(format!("Create blocked: {reason}"));
+                        self.notify(format!("Create blocked: {reason}"));
                         return;
                     }
                 };
                 let absolute = self.workspace_root.join(&relative);
                 if absolute.exists() {
-                    self.status = Some("Create blocked: destination already exists".to_owned());
+                    self.notify("Create blocked: destination already exists".to_owned());
                     return;
                 }
                 let Some(parent) = absolute.parent() else {
-                    self.status = Some("Create blocked: destination has no parent".to_owned());
+                    self.notify("Create blocked: destination has no parent".to_owned());
                     return;
                 };
                 if !parent.is_dir() {
@@ -7519,13 +7537,13 @@ impl App {
                         self.mode = AppMode::Editing;
                         self.explorer_focused = true;
                         match self.open_path_in_tab(absolute) {
-                            Ok(()) => self.status = Some(format!("Created {}", relative.display())),
+                            Ok(()) => self.notify(format!("Created {}", relative.display())),
                             Err(error) => {
-                                self.status = Some(format!("Created file but open failed: {error}"))
+                                self.fail(format!("Created file but open failed: {error}"))
                             }
                         }
                     }
-                    Err(error) => self.status = Some(format!("Create failed: {error}")),
+                    Err(error) => self.fail(format!("Create failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -7545,7 +7563,7 @@ impl App {
                 self.mode = AppMode::Editing;
                 self.explorer_action_query.clear();
                 self.explorer_focused = true;
-                self.status = Some("Create directory cancelled".to_owned());
+                self.notify("Create directory cancelled".to_owned());
             }
             KeyCode::Left => self.explorer_action_query.move_left(),
             KeyCode::Right => self.explorer_action_query.move_right(),
@@ -7562,7 +7580,7 @@ impl App {
                 let relative = match self.safe_workspace_relative(&query) {
                     Ok(path) => path,
                     Err(reason) => {
-                        self.status = Some(format!("Create directory blocked: {reason}"));
+                        self.notify(format!("Create directory blocked: {reason}"));
                         return;
                     }
                 };
@@ -7578,7 +7596,7 @@ impl App {
                     return;
                 };
                 if !parent.is_dir() {
-                    self.status = Some(
+                    self.notify(
                         "Create directory blocked: parent directory does not exist".to_owned(),
                     );
                     return;
@@ -7597,10 +7615,10 @@ impl App {
                         self.explorer_action_query.clear();
                         self.mode = AppMode::Editing;
                         self.explorer_focused = true;
-                        self.status = Some(format!("Created directory {}", relative.display()));
+                        self.notify(format!("Created directory {}", relative.display()));
                         self.refresh_git_state(true);
                     }
-                    Err(error) => self.status = Some(format!("Create directory failed: {error}")),
+                    Err(error) => self.fail(format!("Create directory failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -7621,7 +7639,7 @@ impl App {
                 self.explorer_action_query.clear();
                 self.explorer_action_target = None;
                 self.explorer_focused = true;
-                self.status = Some("Rename cancelled".to_owned());
+                self.notify("Rename cancelled".to_owned());
             }
             KeyCode::Left => self.explorer_action_query.move_left(),
             KeyCode::Right => self.explorer_action_query.move_right(),
@@ -7635,7 +7653,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let Some(source_relative) = self.explorer_action_target.clone() else {
-                    self.status = Some("Rename target is no longer available".to_owned());
+                    self.notify("Rename target is no longer available".to_owned());
                     self.mode = AppMode::Editing;
                     return;
                 };
@@ -7643,38 +7661,38 @@ impl App {
                 let destination_relative = match self.safe_workspace_relative(&query) {
                     Ok(path) => path,
                     Err(reason) => {
-                        self.status = Some(format!("Rename blocked: {reason}"));
+                        self.notify(format!("Rename blocked: {reason}"));
                         return;
                     }
                 };
                 if destination_relative == source_relative {
                     self.mode = AppMode::Editing;
                     self.explorer_focused = true;
-                    self.status = Some("Rename unchanged".to_owned());
+                    self.notify("Rename unchanged".to_owned());
                     return;
                 }
                 let source = self.workspace_root.join(&source_relative);
                 let destination = self.workspace_root.join(&destination_relative);
                 if destination.exists() {
-                    self.status = Some("Rename blocked: destination already exists".to_owned());
+                    self.notify("Rename blocked: destination already exists".to_owned());
                     return;
                 }
                 if !destination.parent().is_some_and(std::path::Path::is_dir) {
-                    self.status = Some(
+                    self.notify(
                         "Rename blocked: destination parent directory does not exist".to_owned(),
                     );
                     return;
                 }
                 if source.is_dir() {
                     if let Some(open_path) = self.open_buffer_under_path(&source) {
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Rename blocked: close open file {} first",
                             open_path.display()
                         ));
                         return;
                     }
                 } else if self.find_open_tab(&source).is_some() {
-                    self.status = Some("Rename blocked: close the source file first".to_owned());
+                    self.notify("Rename blocked: close the source file first".to_owned());
                     return;
                 }
                 match std::fs::rename(&source, &destination) {
@@ -7704,14 +7722,14 @@ impl App {
                         self.explorer_action_target = None;
                         self.mode = AppMode::Editing;
                         self.explorer_focused = true;
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Moved {} → {}",
                             source_relative.display(),
                             destination_relative.display()
                         ));
                         self.refresh_git_state(true);
                     }
-                    Err(error) => self.status = Some(format!("Rename failed: {error}")),
+                    Err(error) => self.fail(format!("Rename failed: {error}")),
                 }
             }
             KeyCode::Char(ch)
@@ -7730,7 +7748,7 @@ impl App {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 let Some(relative) = self.explorer_action_target.clone() else {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Delete target is no longer available".to_owned());
+                    self.notify("Delete target is no longer available".to_owned());
                     return;
                 };
                 let absolute = self.workspace_root.join(&relative);
@@ -7738,7 +7756,7 @@ impl App {
                 if is_directory {
                     if let Some(open_path) = self.open_buffer_under_path(&absolute) {
                         self.mode = AppMode::Editing;
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Delete blocked: close open file {} first",
                             open_path.display()
                         ));
@@ -7746,7 +7764,7 @@ impl App {
                     }
                 } else if self.find_open_tab(&absolute).is_some() {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Delete blocked: close the file first".to_owned());
+                    self.notify("Delete blocked: close the file first".to_owned());
                     return;
                 }
 
@@ -7763,21 +7781,21 @@ impl App {
                         self.reload_explorer();
                         self.mode = AppMode::Editing;
                         self.explorer_focused = true;
-                        self.status = Some(format!(
+                        self.notify(format!(
                             "Deleted {} {}",
                             if is_directory { "directory" } else { "file" },
                             relative.display()
                         ));
                         self.refresh_git_state(true);
                     }
-                    Err(error) => self.status = Some(format!("Delete failed: {error}")),
+                    Err(error) => self.fail(format!("Delete failed: {error}")),
                 }
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 self.explorer_action_target = None;
                 self.mode = AppMode::Editing;
                 self.explorer_focused = true;
-                self.status = Some("Delete cancelled".to_owned());
+                self.notify("Delete cancelled".to_owned());
             }
             _ => {}
         }
@@ -7814,12 +7832,12 @@ impl App {
 
     fn toggle_split_orientation(&mut self) {
         if !self.split_enabled() {
-            self.status = Some("Open a split editor before changing orientation".to_owned());
+            self.notify("Open a split editor before changing orientation".to_owned());
             return;
         }
         self.split_orientation = self.split_orientation.toggled();
         self.is_resizing_split = false;
-        self.status = Some(format!(
+        self.notify(format!(
             "Split orientation: {}",
             self.split_orientation.label()
         ));
@@ -8027,6 +8045,19 @@ impl App {
     }
 
     /// The file path plus the definition the cursor is in, for the breadcrumb bar.
+    /// Whether the cursor sits inside a merge-conflict block. Only the rows
+    /// around the cursor are read, so this stays cheap on large files.
+    pub fn cursor_in_conflict(&self) -> bool {
+        const REACH: usize = 500;
+        let row = self.cursor.row;
+        let start = row.saturating_sub(REACH);
+        let end = (row + REACH + 1).min(self.buffer.line_count());
+        let window: Vec<String> = (start..end)
+            .map(|index| self.buffer.line_text(index))
+            .collect();
+        crate::conflict::block_at(&window, row - start).is_some()
+    }
+
     pub fn breadcrumb_with_symbol(&self) -> Vec<String> {
         let mut segments = self.breadcrumb_segments();
         if let Some(symbol) = self.enclosing_symbol() {
@@ -8137,7 +8168,7 @@ impl App {
         self.secondary_pane_tab = Some(secondary);
         self.active_pane = 0;
         self.explorer_focused = false;
-        self.status = Some("Split editor opened · F6 changes pane focus".to_owned());
+        self.notify("Split editor opened · F6 changes pane focus".to_owned());
     }
 
     fn focus_pane(&mut self, pane: u8) {
@@ -8151,13 +8182,13 @@ impl App {
         if target != self.active_tab {
             self.switch_tab(target);
         } else {
-            self.status = Some(format!("Pane {} focused", usize::from(pane) + 1));
+            self.notify(format!("Pane {} focused", usize::from(pane) + 1));
         }
     }
 
     fn focus_next_pane(&mut self) {
         if self.secondary_pane_tab.is_none() {
-            self.status = Some("No split editor is open".to_owned());
+            self.notify("No split editor is open".to_owned());
             return;
         }
         self.focus_pane(if self.active_pane == 0 { 1 } else { 0 });
@@ -8167,7 +8198,7 @@ impl App {
         self.primary_pane_tab = self.active_tab;
         self.secondary_pane_tab = None;
         self.active_pane = 0;
-        self.status = Some("Split editor closed".to_owned());
+        self.notify("Split editor closed".to_owned());
     }
 
     fn repair_panes_after_tab_removal(&mut self, removed: usize) {
@@ -8348,7 +8379,7 @@ impl App {
             KeyCode::End => self.confirmation_selected = 2,
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = Some("Close tab cancelled".to_owned());
+                self.notify("Close tab cancelled".to_owned());
             }
             KeyCode::Char('s' | 'S') => self.request_save(PostSaveAction::CloseTab),
             KeyCode::Char('d' | 'D') => self.close_active_tab_now(true),
@@ -8357,7 +8388,7 @@ impl App {
                 1 => self.close_active_tab_now(true),
                 _ => {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Close tab cancelled".to_owned());
+                    self.notify("Close tab cancelled".to_owned());
                 }
             },
             _ => {}
@@ -8393,7 +8424,7 @@ impl App {
             self.secondary_pane_tab = None;
             self.active_pane = 0;
             self.mode = AppMode::Editing;
-            self.status = Some("Closed file".to_owned());
+            self.notify("Closed file".to_owned());
             self.reset_active_code_intelligence();
             return;
         }
@@ -8413,7 +8444,7 @@ impl App {
         } else {
             AppMode::Editing
         };
-        self.status = Some(format!("Closed · now showing {}", self.active_short_path()));
+        self.notify(format!("Closed · now showing {}", self.active_short_path()));
         self.reset_active_code_intelligence();
     }
 
@@ -8428,7 +8459,7 @@ impl App {
     fn handle_help_key(&mut self, key: KeyEvent) {
         if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Enter) {
             self.mode = AppMode::Editing;
-            self.status = None;
+            self.clear_status();
         } else if self.keymap_config.resolve(key) == Some(Command::ShowPalette) {
             self.mode = AppMode::Editing;
             self.execute(Command::ShowPalette);
@@ -8446,7 +8477,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = None;
+                self.clear_status();
             }
             KeyCode::Up => {
                 self.palette_selected = self.palette_selected.saturating_sub(1);
@@ -8634,7 +8665,7 @@ impl App {
             KeyCode::End => self.confirmation_selected = 2,
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
-                self.status = Some("Quit cancelled".to_owned());
+                self.notify("Quit cancelled".to_owned());
             }
             KeyCode::Char('d' | 'D') => self.discard_current_and_continue_quit(),
             KeyCode::Char('s' | 'S') => self.request_save(PostSaveAction::Quit),
@@ -8651,7 +8682,7 @@ impl App {
                 1 => self.discard_current_and_continue_quit(),
                 _ => {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Quit cancelled".to_owned());
+                    self.notify("Quit cancelled".to_owned());
                 }
             },
             _ => {}
@@ -8739,7 +8770,7 @@ impl App {
                     }
                     if mouse.column >= inner_x + 36 && mouse.column < inner_x + 50 {
                         self.mode = AppMode::Editing;
-                        self.status = Some("Quit cancelled".to_owned());
+                        self.notify("Quit cancelled".to_owned());
                         return;
                     }
                 }
@@ -8750,7 +8781,7 @@ impl App {
                     || mouse.row >= popup_y + popup_height
                 {
                     self.mode = AppMode::Editing;
-                    self.status = Some("Quit cancelled".to_owned());
+                    self.notify("Quit cancelled".to_owned());
                 }
             }
             return;
@@ -8771,7 +8802,7 @@ impl App {
                         self.close_active_tab_now(true);
                     } else if mouse.column >= inner_x + 37 && mouse.column < inner_x + 51 {
                         self.mode = AppMode::Editing;
-                        self.status = Some("Close tab cancelled".to_owned());
+                        self.notify("Close tab cancelled".to_owned());
                     }
                 }
             }
@@ -8806,7 +8837,7 @@ impl App {
                 let back = self
                     .shortcut_label(Command::ToggleTerminal)
                     .unwrap_or_else(|| "Ctrl+T".to_owned());
-                self.status = Some(format!("Terminal focused · {back} returns to editor"));
+                self.notify(format!("Terminal focused · {back} returns to editor"));
             }
 
             if let Some((cols, rows)) =
@@ -8900,7 +8931,7 @@ impl App {
                                     match self.open_path_in_tab(path) {
                                         Ok(()) => self.explorer_focused = false,
                                         Err(error) => {
-                                            self.status = Some(format!("Open failed: {error}"));
+                                            self.fail(format!("Open failed: {error}"));
                                         }
                                     }
                                 }
@@ -8941,7 +8972,7 @@ impl App {
                         MouseEventKind::Up(MouseButton::Left) if self.is_resizing_split => {
                             self.resize_split_to_column(terminal_width, mouse.column);
                             self.is_resizing_split = false;
-                            self.status = Some(format!(
+                            self.notify(format!(
                                 "Split width: {}% / {}%",
                                 self.split_ratio,
                                 100 - self.split_ratio
@@ -8973,7 +9004,7 @@ impl App {
                         MouseEventKind::Up(MouseButton::Left) if self.is_resizing_split => {
                             self.resize_split_to_row(editor_top, editor_bottom, mouse.row);
                             self.is_resizing_split = false;
-                            self.status = Some(format!(
+                            self.notify(format!(
                                 "Split height: {}% / {}%",
                                 self.split_ratio,
                                 100 - self.split_ratio
@@ -8989,7 +9020,7 @@ impl App {
             && matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
         {
             self.is_resizing_split = false;
-            self.status = Some(format!(
+            self.notify(format!(
                 "Split ratio: {}% / {}%",
                 self.split_ratio,
                 100 - self.split_ratio
@@ -9115,7 +9146,7 @@ impl App {
                         Some(ui::StartAction::Run(command)) => self.execute(command),
                         Some(ui::StartAction::Open(path)) => {
                             if let Err(error) = self.open_path_in_tab(path) {
-                                self.status = Some(format!("Open failed: {error}"));
+                                self.fail(format!("Open failed: {error}"));
                             }
                         }
                         None => {}
@@ -9236,7 +9267,7 @@ impl App {
                         {
                             self.selection_anchor = Some(start);
                             self.cursor = end;
-                            self.status = Some("Word selected".to_owned());
+                            self.notify("Word selected".to_owned());
                         } else {
                             self.selection_anchor = Some(self.cursor);
                         }
@@ -9248,7 +9279,7 @@ impl App {
                         } else {
                             Cursor::new(row, self.buffer.grapheme_count(row))
                         };
-                        self.status = Some("Line selected".to_owned());
+                        self.notify("Line selected".to_owned());
                     }
                     _ => {
                         self.selection_anchor = Some(self.cursor);
@@ -9390,7 +9421,7 @@ impl App {
             None
         };
         let Some(row) = target_row else {
-            self.status = Some("No additional line available for another cursor".to_owned());
+            self.notify("No additional line available for another cursor".to_owned());
             return;
         };
         let target = Cursor::new(row, source.col.min(self.buffer.grapheme_count(row)));
@@ -9400,7 +9431,7 @@ impl App {
         self.secondary_cursors.push(target);
         self.secondary_cursors.sort();
         self.secondary_cursors.dedup();
-        self.status = Some(format!(
+        self.notify(format!(
             "{} cursors active",
             self.secondary_cursors.len() + 1
         ));
@@ -9603,7 +9634,7 @@ impl App {
         let count = text.chars().count();
         let delivery = copy_to_system_clipboard(&text);
         self.clipboard = text;
-        self.status = Some(delivery.message(verb, count));
+        self.notify(delivery.message(verb, count));
     }
 
     fn copy_active_selection_to_clipboard(&mut self) -> bool {
@@ -9673,7 +9704,7 @@ impl App {
             self.auto_completion_trigger = None;
             self.completion_request = None;
         }
-        self.status = None;
+        self.clear_status();
         self.should_scroll_to_cursor = true;
         match command {
             Command::MoveUp
@@ -9713,7 +9744,7 @@ impl App {
                 if !self.terminal_visible {
                     self.toggle_terminal();
                 }
-                self.status = Some(format!(
+                self.notify(format!(
                     "Terminal size: {}",
                     match self.terminal_size {
                         Tall => "tall",
@@ -9727,7 +9758,7 @@ impl App {
                     let text = session.screen_text();
                     self.store_clipboard(text, "Copied terminal screen");
                 }
-                None => self.status = Some("No terminal is open".to_owned()),
+                None => self.notify("No terminal is open".to_owned()),
             },
             Command::Quit => self.begin_quit(),
             Command::Undo => {
@@ -9742,9 +9773,9 @@ impl App {
                     self.rectangular_selection = None;
                     self.clamp_cursor();
                     self.workspace_edit_history = None;
-                    self.status = Some("Undo".to_owned());
+                    self.notify("Undo".to_owned());
                 } else {
-                    self.status = Some("Nothing to undo".to_owned());
+                    self.notify("Nothing to undo".to_owned());
                 }
             }
             Command::Redo => {
@@ -9759,9 +9790,9 @@ impl App {
                     self.rectangular_selection = None;
                     self.clamp_cursor();
                     self.workspace_edit_history = None;
-                    self.status = Some("Redo".to_owned());
+                    self.notify("Redo".to_owned());
                 } else {
-                    self.status = Some("Nothing to redo".to_owned());
+                    self.notify("Nothing to redo".to_owned());
                 }
             }
             Command::ShowPalette => {
@@ -9775,7 +9806,7 @@ impl App {
             Command::ShowSettings => {
                 self.settings_selected = 0;
                 self.mode = AppMode::Settings;
-                self.status = None;
+                self.clear_status();
             }
             Command::Find => {
                 self.mode = AppMode::Find;
@@ -9808,7 +9839,7 @@ impl App {
                 let last_col = self.buffer.grapheme_count(last_row);
                 self.selection_anchor = Some(Cursor::new(0, 0));
                 self.cursor = Cursor::new(last_row, last_col);
-                self.status = Some("All selected".to_owned());
+                self.notify("All selected".to_owned());
             }
             Command::Copy => {
                 if let Some(text) = self.rectangular_text() {
@@ -9882,7 +9913,7 @@ impl App {
                     } else {
                         self.buffer.insert_text(&mut self.cursor, &text);
                     }
-                    self.status = Some(
+                    self.notify(
                         if from_system {
                             "Pasted from system clipboard"
                         } else {
@@ -9891,7 +9922,7 @@ impl App {
                         .to_owned(),
                     );
                 } else {
-                    self.status = Some(
+                    self.fail(
                         if from_system {
                             "System clipboard is empty"
                         } else {
@@ -9916,9 +9947,9 @@ impl App {
                         self.cursor,
                         self.selection_anchor,
                     );
-                    self.status = Some("Toggled line comment".to_owned());
+                    self.notify("Toggled line comment".to_owned());
                 } else {
-                    self.status = Some(format!(
+                    self.notify(format!(
                         "No line-comment syntax for {}",
                         self.buffer.language()
                     ));
@@ -9939,7 +9970,7 @@ impl App {
                         self.cursor,
                         self.selection_anchor,
                     );
-                    self.status = Some("Moved line(s) up".to_owned());
+                    self.notify("Moved line(s) up".to_owned());
                 }
             }
             Command::MoveLinesDown => {
@@ -9958,7 +9989,7 @@ impl App {
                         self.cursor,
                         self.selection_anchor,
                     );
-                    self.status = Some("Moved line(s) down".to_owned());
+                    self.notify("Moved line(s) down".to_owned());
                 }
             }
             Command::DuplicateLines => {
@@ -9978,18 +10009,18 @@ impl App {
                         self.cursor,
                         self.selection_anchor,
                     );
-                    self.status = Some("Duplicated line(s)".to_owned());
+                    self.notify("Duplicated line(s)".to_owned());
                 }
             }
             Command::CycleTheme => {
                 self.theme_preset = self.theme_preset.next();
                 self.theme = Theme::for_preset(self.theme_preset);
-                self.status = Some(format!("Theme: {}", self.theme_preset.label()));
+                self.notify(format!("Theme: {}", self.theme_preset.label()));
                 self.persist_editor_settings();
             }
             Command::ToggleWhitespace => {
                 self.show_whitespace = !self.show_whitespace;
-                self.status = Some(format!(
+                self.notify(format!(
                     "Whitespace: {}",
                     if self.show_whitespace {
                         "shown"
@@ -10001,7 +10032,7 @@ impl App {
             }
             Command::ToggleIndentGuides => {
                 self.show_indent_guides = !self.show_indent_guides;
-                self.status = Some(format!(
+                self.notify(format!(
                     "Indent guides: {}",
                     if self.show_indent_guides {
                         "shown"
@@ -10018,7 +10049,7 @@ impl App {
                 self.visual_scroll_row = 0;
                 self.scroll_col = 0;
                 self.should_scroll_to_cursor = true;
-                self.status = Some(format!(
+                self.notify(format!(
                     "Word wrap: {}",
                     if self.word_wrap { "on" } else { "off" }
                 ));
@@ -10028,7 +10059,7 @@ impl App {
             Command::AddCursorBelow => self.add_cursor_vertical(1),
             Command::ClearSecondaryCursors => {
                 self.secondary_cursors.clear();
-                self.status = Some("Extra cursors cleared".to_owned());
+                self.notify("Extra cursors cleared".to_owned());
             }
             Command::ReloadKeybindings => match keymap::KeymapConfig::load() {
                 Ok(config) => {
@@ -10037,10 +10068,10 @@ impl App {
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "defaults".to_owned());
                     self.keymap_config = config;
-                    self.status = Some(format!("Keybindings reloaded · {source}"));
+                    self.notify(format!("Keybindings reloaded · {source}"));
                 }
                 Err(error) => {
-                    self.status = Some(format!("Keybinding reload blocked: {error}"));
+                    self.notify(format!("Keybinding reload blocked: {error}"));
                 }
             },
             Command::ToggleExplorer => self.toggle_explorer(),
@@ -10059,7 +10090,7 @@ impl App {
             Command::ToggleIndentStyle => {
                 let tabs = !self.buffer.uses_tab_indent();
                 self.buffer.set_tab_indent(tabs);
-                self.status = Some(if tabs {
+                self.notify(if tabs {
                     "This file now indents with tabs".to_owned()
                 } else {
                     "This file now indents with 4 spaces".to_owned()
@@ -10067,12 +10098,12 @@ impl App {
             }
             Command::LanguageServerStatus => {
                 self.mode = AppMode::LanguageStatus;
-                self.status = None;
+                self.clear_status();
             }
             Command::ShowProblems => {
                 let count = self.problem_items().len();
                 if count == 0 {
-                    self.status = Some("No problems in active file".to_owned());
+                    self.notify("No problems in active file".to_owned());
                 } else {
                     self.problem_selected = self.problem_selected.min(count - 1);
                     self.mode = AppMode::Problems;
@@ -10086,9 +10117,9 @@ impl App {
             Command::RefreshGit => {
                 self.refresh_git_state(true);
                 if self.git_repository.is_some() {
-                    self.status = Some("Git status refreshed".to_owned());
+                    self.notify("Git status refreshed".to_owned());
                 } else {
-                    self.status = Some("No Git repository found for this workspace".to_owned());
+                    self.fail("No Git repository found for this workspace".to_owned());
                 }
             }
             Command::StageHunk => self.stage_selected_git_hunk(),
@@ -10125,7 +10156,7 @@ impl App {
                 self.rectangular_selection = None;
                 if !self.secondary_cursors.is_empty() {
                     self.secondary_cursors.clear();
-                    self.status = Some("Extra cursors cleared".to_owned());
+                    self.notify("Extra cursors cleared".to_owned());
                 }
             }
             Command::MoveLeft => {
@@ -11007,7 +11038,7 @@ mod tests {
             let mut app = App::new(Buffer::empty(None));
             app.execute(Command::Insert('x'));
             app.mode = AppMode::ConfirmQuit;
-            app.status = Some("Save failed: disposable fixture".to_owned());
+            app.fail("Save failed: disposable fixture".to_owned());
             let rect = ui::quit_dialog_rect(ratatui::layout::Rect::new(0, 0, width, height), true);
             app.handle_mouse(
                 MouseEvent {
