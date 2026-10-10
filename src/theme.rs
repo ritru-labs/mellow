@@ -363,13 +363,15 @@ impl Theme {
             text: Color::Black,
             muted: Color::DarkGray,
             faint: Color::DarkGray,
-            mint: Color::Green,
-            warning: Color::Yellow,
+            // Green, yellow and cyan text is hard to read on white in the
+            // standard 16-colour palette, so this theme uses darker ones.
+            mint: Color::Blue,
+            warning: Color::Magenta,
             error: Color::Red,
             keyword: Color::Blue,
-            string: Color::Yellow,
+            string: Color::Red,
             number: Color::Magenta,
-            function: Color::Cyan,
+            function: Color::Blue,
             constant: Color::Magenta,
             comment: Color::DarkGray,
             punctuation: Color::Black,
@@ -722,6 +724,53 @@ mod tests {
         };
         let (x, y) = (luminance(a), luminance(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Audit: the 16-colour Light theme drew warnings and strings in yellow on
+    /// white. With the standard xterm palette, every text colour must reach
+    /// 3:1 against the background.
+    #[test]
+    fn basic_light_text_is_readable_with_the_standard_palette() {
+        let standard = |color: Color| -> Color {
+            let index = match color {
+                Color::Black => 0,
+                Color::Red => 1,
+                Color::Green => 2,
+                Color::Yellow => 3,
+                Color::Blue => 4,
+                Color::Magenta => 5,
+                Color::Cyan => 6,
+                Color::Gray => 7,
+                Color::DarkGray => 8,
+                Color::LightRed => 9,
+                Color::LightGreen => 10,
+                Color::LightYellow => 11,
+                Color::LightBlue => 12,
+                Color::LightMagenta => 13,
+                Color::LightCyan => 14,
+                Color::White => 15,
+                other => panic!("{other:?} is not a basic colour"),
+            };
+            let (r, g, b) = BASIC_RGB[index];
+            Color::Rgb(r, g, b)
+        };
+        let theme = Theme::basic_light();
+        for (role, color) in [
+            ("text", theme.text),
+            ("muted", theme.muted),
+            ("mint", theme.mint),
+            ("warning", theme.warning),
+            ("error", theme.error),
+            ("keyword", theme.keyword),
+            ("string", theme.string),
+            ("number", theme.number),
+            ("function", theme.function),
+            ("constant", theme.constant),
+            ("comment", theme.comment),
+        ] {
+            let ratio = contrast(standard(color), standard(theme.canvas));
+            assert!(ratio >= 3.0, "{role} is {ratio:.2}:1 on the background");
+        }
     }
 
     /// Audit: diffs used fixed dark backgrounds, leaving Light-theme text at
