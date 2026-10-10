@@ -1,9 +1,10 @@
 [package]
 name = "mellow"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 description = "A calm, modern terminal editor by Ritru Labs. No modes, no manual: just start typing."
+authors = ["Supraj Maripeddi"]
 license = "Apache-2.0"
 repository = "https://github.com/ritru-labs/mellow"
 homepage = "https://github.com/ritru-labs/mellow"
