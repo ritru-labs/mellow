@@ -2055,7 +2055,7 @@ fn status_message(app: &App) -> Option<StatusItem> {
             )
         } else if status == "Undo" || status == "Redo" {
             (status.to_owned(), Style::default().fg(theme.mint))
-        } else if status.contains("failed") || status.contains("Failed") {
+        } else if is_error_status(status) {
             (
                 status.to_owned(),
                 Style::default()
@@ -2629,6 +2629,29 @@ fn draw_buttons(
 /// Records a clickable row or button of the overlay being drawn.
 fn click_target(app: &App, rect: Rect, target: crate::app::ClickTarget) {
     app.overlay_targets.borrow_mut().push((rect, target));
+}
+
+/// Whether a status message reports a failure or a refusal. Messages are
+/// plain text, so this matches the phrases Mellow uses for those outcomes.
+fn is_error_status(status: &str) -> bool {
+    const ERROR_PHRASES: &[&str] = &[
+        "failed",
+        "Failed",
+        "Could not",
+        "could not",
+        "Cannot ",
+        "cannot ",
+        "refused",
+        "refusing",
+        "expired",
+        "is too large",
+        "not UTF-8",
+        "not valid",
+        "No Git repository found",
+        "Nothing is staged",
+        "not set up",
+    ];
+    ERROR_PHRASES.iter().any(|phrase| status.contains(phrase))
 }
 
 /// Fits text into `max_width` cells by replacing its middle with "…", so
@@ -6506,6 +6529,26 @@ mod tests {
                     "{mode:?} row {row_index} has non-ASCII {odd:?}: {row}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn failures_and_refusals_are_styled_as_errors_and_plain_news_is_not() {
+        for message in [
+            "Save failed: disk full",
+            "Could not read staged changes: git missing",
+            "AI proposal expired because the target buffer changed",
+            "destination already exists; refusing to replace it",
+        ] {
+            assert!(super::is_error_status(message), "{message}");
+        }
+        for message in [
+            "Saved",
+            "Copied 12 chars · system clipboard",
+            "Undo",
+            "Find: 3 matches",
+        ] {
+            assert!(!super::is_error_status(message), "{message}");
         }
     }
 

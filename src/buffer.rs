@@ -119,6 +119,8 @@ pub struct Buffer {
     has_bom: bool,
     revision: u64,
     saved_revision: u64,
+    /// How the most recent save reached the disk.
+    pub last_save_mode: SaveMode,
     next_revision: u64,
     disk_snapshot: Option<FileSnapshot>,
     persisted: bool,
@@ -195,6 +197,7 @@ impl Buffer {
             has_bom,
             revision: 0,
             saved_revision: 0,
+            last_save_mode: SaveMode::Atomic,
             next_revision: 1,
             disk_snapshot,
             persisted: true,
@@ -217,6 +220,7 @@ impl Buffer {
             has_bom: false,
             revision: 0,
             saved_revision: 0,
+            last_save_mode: SaveMode::Atomic,
             next_revision: 1,
             disk_snapshot: None,
             persisted: false,
@@ -878,6 +882,11 @@ impl Buffer {
         false
     }
 
+    /// How the most recent save reached the disk.
+    pub fn last_save_mode(&self) -> SaveMode {
+        self.last_save_mode
+    }
+
     pub fn save(&mut self) -> Result<()> {
         if let Some(reason) = self.external_conflict()? {
             bail!("conflict: {reason}");
@@ -891,7 +900,7 @@ impl Buffer {
             .clone()
             .context("this buffer has no path yet; use Save As")?;
 
-        atomic_write(&path, self.has_bom, &self.text, Publish::Replace)?;
+        self.last_save_mode = atomic_write(&path, self.has_bom, &self.text, Publish::Replace)?;
         self.saved_revision = self.revision;
         self.disk_snapshot = capture_file_snapshot(&path)?;
         self.persisted = true;
@@ -933,7 +942,7 @@ impl Buffer {
             }
         }
 
-        atomic_write(&path, self.has_bom, &self.text, Publish::NewFileOnly)?;
+        self.last_save_mode = atomic_write(&path, self.has_bom, &self.text, Publish::NewFileOnly)?;
 
         self.path = Some(path.clone());
         self.save_path = Some(path.clone());
@@ -1519,6 +1528,15 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// How a save reached the disk. `InPlace` is the fallback for files that
+/// cannot be replaced (bind mounts): their content is rewritten directly, so
+/// a crash mid-write can damage that file; the recovery journal keeps a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveMode {
+    Atomic,
+    InPlace,
+}
+
 /// How the finished temporary file takes the destination's place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Publish {
@@ -1528,7 +1546,7 @@ enum Publish {
     NewFileOnly,
 }
 
-fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Result<()> {
+fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Result<SaveMode> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -1543,7 +1561,7 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
         std::process::id()
     ));
 
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<SaveMode> {
         #[allow(unused_mut)]
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
@@ -1581,9 +1599,10 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
             if let Ok(directory) = fs::File::open(parent) {
                 let _ = directory.sync_all();
             }
-            return Ok(());
+            return Ok(SaveMode::Atomic);
         }
 
+        let mut mode = SaveMode::Atomic;
         match fs::rename(&temp_path, path) {
             Ok(()) => {}
             // A file that is itself a mount point (Docker's single-file
@@ -1597,6 +1616,7 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
                     format!("failed to rewrite mounted file {}", path.display())
                 })?;
                 let _ = fs::remove_file(&temp_path);
+                mode = SaveMode::InPlace;
             }
             Err(error) => {
                 return Err(error).with_context(|| format!("failed to replace {}", path.display()));
@@ -1607,7 +1627,7 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
         if let Ok(directory) = fs::File::open(parent) {
             let _ = directory.sync_all();
         }
-        Ok(())
+        Ok(mode)
     })();
 
     if result.is_err() {
@@ -1936,6 +1956,7 @@ mod tests {
             has_bom: false,
             revision: 0,
             saved_revision: 0,
+            last_save_mode: SaveMode::Atomic,
             next_revision: 1,
             disk_snapshot: None,
             persisted: false,

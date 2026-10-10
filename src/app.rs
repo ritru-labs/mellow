@@ -12,7 +12,7 @@ use crossterm::event::{
 
 use crate::{
     ai::{self, AiProposal, AiRequest},
-    buffer::Buffer,
+    buffer::{Buffer, SaveMode},
     command::{COMMAND_SPECS, Command},
     cursor::Cursor,
     git::{
@@ -2690,9 +2690,12 @@ impl App {
                     Ok(()) => {
                         let _ = self.journal.clear_now(&self.buffer.recovery_key());
                         self.last_journal_revision = None;
-                        self.status = Some(match note {
-                            Some(note) => format!("Saved · {note}"),
-                            None => "Saved".to_owned(),
+                        self.status = Some(match (note, self.buffer.last_save_mode()) {
+                            (_, SaveMode::InPlace) => {
+                                "Saved in place: this file cannot be replaced, so a crash during save could damage it".to_owned()
+                            }
+                            (Some(note), SaveMode::Atomic) => format!("Saved · {note}"),
+                            (None, SaveMode::Atomic) => "Saved".to_owned(),
                         });
                         self.finish_post_save(post_action);
                     }
@@ -11476,6 +11479,16 @@ mod tests {
         });
         app.mode = AppMode::AiReview;
         app.apply_ai_proposal();
+    }
+
+    #[test]
+    fn a_normal_save_says_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.buffer.insert_text(&mut Cursor::default(), "hello");
+        app.execute(Command::Save);
+        assert_eq!(app.status.as_deref(), Some("Saved"));
     }
 
     #[test]
