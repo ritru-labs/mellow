@@ -630,6 +630,15 @@ pub fn key_event_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     key_event_bytes_with_mode(key, false)
 }
 
+/// The terminal type the shell is told. Programs then use only colours the
+/// real terminal can show; the pane still maps any others down.
+fn child_term(tier: crate::theme::ColorTier) -> &'static str {
+    match tier {
+        crate::theme::ColorTier::Basic => "TERM=xterm",
+        _ => "TERM=xterm-256color",
+    }
+}
+
 /// The shell's environment: Mellow's own, with the terminal type the screen
 /// model understands.
 fn child_environment() -> Vec<CString> {
@@ -643,8 +652,11 @@ fn child_environment() -> Vec<CString> {
         })
         .collect();
     entries.extend(
-        ["TERM=xterm-256color", "TERM_PROGRAM=Mellow"]
-            .map(|entry| CString::new(entry).expect("static environment entry")),
+        [
+            child_term(crate::theme::cached_color_tier()),
+            "TERM_PROGRAM=Mellow",
+        ]
+        .map(|entry| CString::new(entry).expect("static environment entry")),
     );
     entries
 }
@@ -676,6 +688,17 @@ mod tests {
     /// servers, other shells), so closing a terminal could leave its jobs
     /// running. Each shell must also see Mellow's environment and TERM.
     #[test]
+    fn the_shell_is_told_an_honest_terminal_type() {
+        use crate::theme::ColorTier;
+        assert_eq!(super::child_term(ColorTier::Basic), "TERM=xterm");
+        assert_eq!(super::child_term(ColorTier::Ansi256), "TERM=xterm-256color");
+        assert_eq!(
+            super::child_term(ColorTier::TrueColor),
+            "TERM=xterm-256color"
+        );
+    }
+
+    #[test]
     fn terminals_do_not_leak_into_other_programs_and_set_term() {
         let dir = tempdir().unwrap();
         let first = PtySession::spawn_program(
@@ -706,7 +729,8 @@ mod tests {
         .unwrap();
         let text = pump_until(&mut second, "HAS-PATH", Duration::from_secs(5));
         assert!(text.contains("CLEAN"), "{text}");
-        assert!(text.contains("T=xterm-256color P=Mellow"), "{text}");
+        let term = super::child_term(crate::theme::cached_color_tier()).trim_start_matches("TERM=");
+        assert!(text.contains(&format!("T={term} P=Mellow")), "{text}");
         assert!(text.contains("HAS-PATH"), "{text}");
     }
 

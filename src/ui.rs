@@ -742,8 +742,12 @@ fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn terminal_color(color: crate::pty::TerminalColor, default: Color) -> Color {
     match color {
         crate::pty::TerminalColor::Default => default,
-        crate::pty::TerminalColor::Indexed(index) => Color::Indexed(index),
-        crate::pty::TerminalColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        crate::pty::TerminalColor::Indexed(index) => {
+            crate::theme::fit_to_tier(Color::Indexed(index), crate::theme::cached_color_tier())
+        }
+        crate::pty::TerminalColor::Rgb(r, g, b) => {
+            crate::theme::fit_to_tier(Color::Rgb(r, g, b), crate::theme::cached_color_tier())
+        }
     }
 }
 
