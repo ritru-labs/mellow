@@ -143,7 +143,7 @@ impl AiProvider {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AiProviderConfig {
     pub provider: AiProvider,
     pub endpoint: String,
@@ -152,6 +152,19 @@ pub struct AiProviderConfig {
     /// Ask for grey suggestions after a typing pause. Off unless chosen,
     /// because it sends nearby code without an explicit request.
     pub inline_suggestions: bool,
+}
+
+// The key must never reach a log or a panic message, so Debug hides it.
+impl std::fmt::Debug for AiProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiProviderConfig")
+            .field("provider", &self.provider)
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("inline_suggestions", &self.inline_suggestions)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,8 +613,10 @@ fn chat_completion(
     user: &str,
     timeout: Duration,
 ) -> Result<String> {
+    // Never follow redirects: the key header would go to wherever they point.
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("failed to build AI HTTP client")?;
     let mut http = client.post(&config.endpoint).json(&json!({
@@ -758,6 +773,49 @@ mod tests {
     }
 
     /// Serves one canned chat-completions envelope on localhost.
+    #[test]
+    fn ai_requests_do_not_follow_redirects_to_another_host() {
+        use std::io::Write;
+        // The "other host" counts connections; a followed redirect would reach it.
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        other.set_nonblocking(true).unwrap();
+        let other_address = other.local_addr().unwrap();
+        let front = TcpListener::bind("127.0.0.1:0").unwrap();
+        let front_address = front.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = front.accept().unwrap();
+            let mut request = vec![0u8; 16 * 1024];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: http://{other_address}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let config = local_config(format!("http://{front_address}/v1/chat/completions"));
+        let result = request(&config, &edit_request("x".to_owned()));
+        server.join().unwrap();
+        assert!(result.is_err(), "a redirect must not succeed silently");
+        assert!(
+            matches!(other.accept(), Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "the redirect target was contacted"
+        );
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_api_key() {
+        let config = super::AiProviderConfig {
+            provider: super::AiProvider::Claude,
+            endpoint: "https://example.invalid/v1/messages".to_owned(),
+            model: "m".to_owned(),
+            api_key: Some("sk-secret-value".to_owned()),
+            inline_suggestions: false,
+        };
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("sk-secret-value"), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
+    }
+
     fn one_shot_server(envelope: String) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
