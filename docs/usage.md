@@ -29,6 +29,8 @@ to write the correction.
 
 - **Open a file:** `Ctrl+O`, type part of the filename, select a result and press
   `Enter`. Typing a path also lets you create a file.
+  Recently opened files are listed first, so the file you were just in is one
+  keystroke away.
 - **Browse:** `Ctrl+B` toggles the file tree.
 - **Search text:** press `Ctrl+F` twice to search all project files, or use
   **Search across project** in the command palette. Search for a setting name such
@@ -74,6 +76,8 @@ Mellow uses your existing repository configuration and credentials.
    for the active file. **Unstage this file** keeps the edits but removes them
    from the next commit.
 4. Search the palette for `commit`, review what is staged and enter a message.
+   In the commit box, `Ctrl+G` drafts a message with AI from the staged changes
+   (needs AI set up). Read the draft, edit it if you like, then press `Enter`.
 
 Staging and committing modify your repository. **Revert selected hunk** discards
 an unstaged change after confirmation; use it only when that edit is unwanted.
@@ -83,6 +87,36 @@ force. If authentication needs an interactive prompt, resolve it in your shell.
 **Cancel Git operation** stops an operation running in the background.
 
 ![The command palette with Git actions](images/palette.png){ .mellow-shot }
+
+## Jump to a function
+
+In a Rust, Python or shell file, `Ctrl+Shift+O` (on terminals that send it; the
+palette has **Go to symbol** everywhere) opens the list of functions, types and
+other definitions. Type part of a name to filter it, then press `Enter` or click
+a row. The breadcrumb above the editor ends with the definition the cursor is in,
+so you always know where you are. Other languages report that the file has no
+symbols to jump to.
+
+## Resolve a merge conflict
+
+When a file has conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), put the
+cursor inside the block. The status line says so and names the three commands:
+
+- **Keep ours in conflict:** keeps your branch's side.
+- **Keep theirs in conflict:** keeps the incoming side.
+- **Keep both sides of conflict:** keeps both, yours first.
+
+Each choice is one edit, so `Ctrl+Z` undoes it. A side with nothing in it removes
+the marker lines. Mark the file resolved from **Git conflicts** once no markers
+remain.
+
+## Use the mouse
+
+Click a row in the palette, Open file, Go to symbol, the references and the Git
+lists to select it; in Git branches and quick fixes, the second click acts. Click
+a button in a dialog to press it. A click outside a list closes it, and the wheel
+scrolls lists. A click inside a dialog that hits nothing does nothing, so a stray
+click never throws your work away.
 
 ## Add code assistance when you need it
 

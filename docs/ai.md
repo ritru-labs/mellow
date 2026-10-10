@@ -29,6 +29,27 @@ plain text, not an encrypted credential vault. If you prefer not to save a key, 
 - Optional typing suggestions (off by default) show grey text after a pause at
   the end of a line you just typed; `Tab` accepts.
 
+## Work on a problem
+
+Each of these is in the command palette (`Ctrl+P`), and each waits for your
+review before anything changes:
+
+- **Fix problem on this line with AI:** sends the line that has a problem, with
+  its message, and shows the fix as a diff. Accept it with `Enter`, or reject it
+  with `Esc`.
+- **Ask AI for a shell command:** describe what you want in plain words. The
+  command is typed into the built-in terminal, without `Enter`, so you read it
+  and run it yourself. With the terminal closed, Mellow shows the command in the
+  status line instead.
+- **Draft a commit message:** press `Ctrl+G` in the commit box. See
+  [Keys](keys.md#in-dialogs).
+- **Undo last AI edit:** undoes the most recent accepted AI edit, as long as it is
+  still the latest change. If you have typed since, `Ctrl+Z` steps back instead.
+- **Show AI edits this session:** lists the latest accepted AI edits.
+
+Mellow records AI edits for the current session only. They are not saved to disk,
+and an AI edit touches only the file you are editing.
+
 ## Environment variables
 
 An environment configuration takes precedence over the saved setup when

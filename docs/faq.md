@@ -26,6 +26,31 @@ Start Mellow with `mellow --no-mouse`, and your terminal handles the mouse.
 Open the same file (or folder) again and choose **[R] Restore**. Recovery copies
 are kept, readable only by you, in `~/.local/state/mellow`.
 
+Several unsaved drafts from one crash each get a tab. Press **A** (or click
+**Discard all**) to discard them together. A draft that holds only blank
+space is removed without asking. Press **Esc** to decide later: an unnamed draft
+is offered again next time, and a draft of a named file keeps the dialog open,
+because editing that file would replace the saved draft.
+
+## Why does Go to symbol not open in my terminal?
+
+Go to symbol uses `Ctrl+Shift+O`, and terminals without the kitty keyboard
+protocol send that as `Ctrl+O`, which opens a file. Use **Go to symbol** from the
+palette (`Ctrl+P`), which works everywhere. See [Keys](keys.md#without-the-kitty-protocol).
+
+## What happens to a large copy over SSH?
+
+When Mellow has no system clipboard, it sends copies through your terminal's
+clipboard (OSC 52). Copies up to 256 KB go that way. Larger copies stay inside
+Mellow, and the status line says so, so a slow connection is not flooded.
+
+## What if a save is written in place?
+
+Some files, such as ones mounted into a container, cannot be replaced. Mellow then
+writes the new text into the same file, and the status line says **Saved in
+place**. If the machine crashes during that write, the file can be damaged; the
+recovery journal keeps a copy of your text until the save succeeds.
+
 ## Can Mellow damage my files?
 
 Saves are atomic: the new text is written to a temporary file and moved into
