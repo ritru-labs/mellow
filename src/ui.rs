@@ -5804,8 +5804,21 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .style(Style::default().fg(theme.text).bg(theme.elevated)),
         Rect::new(inner.x, inner.y, inner.width, 3),
     );
-    let (restore, discard) = recovery_button_rects(area);
+    let (restore, discard, discard_all) = recovery_button_rects(area);
+    let show_all = app.pending_draft_count() > 1;
     let buffer = frame.buffer_mut();
+    if show_all {
+        buffer.set_stringn(
+            discard_all.x,
+            discard_all.y,
+            RECOVERY_DISCARD_ALL_LABEL,
+            discard_all.width as usize,
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.elevated2)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
     buffer.set_stringn(
         restore.x,
         restore.y,
@@ -5837,17 +5850,19 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 const RECOVERY_RESTORE_LABEL: &str = " [R] Restore ";
 const RECOVERY_DISCARD_LABEL: &str = " [D] Discard journal ";
+const RECOVERY_DISCARD_ALL_LABEL: &str = " [A] Discard all ";
 
 /// A button in the "Unsaved work found" dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryButton {
     Restore,
     Discard,
+    DiscardAll,
 }
 
 /// Where the recovery dialog draws its two buttons. Drawing and mouse
 /// hit-testing both use this, so a click always lands on what is shown.
-pub fn recovery_button_rects(area: Rect) -> (Rect, Rect) {
+pub fn recovery_button_rects(area: Rect) -> (Rect, Rect, Rect) {
     let popup = centered_rect(area, 68, 9);
     let inner = inset(popup, 2, 1);
     let row = inner.y + 3;
@@ -5855,14 +5870,23 @@ pub fn recovery_button_rects(area: Rect) -> (Rect, Rect) {
     let discard_x = inner.x + restore_width + 3;
     let discard_width =
         (RECOVERY_DISCARD_LABEL.len() as u16).min(inner.right().saturating_sub(discard_x));
+    let all_x = discard_x + discard_width + 3;
+    let all_width =
+        (RECOVERY_DISCARD_ALL_LABEL.len() as u16).min(inner.right().saturating_sub(all_x));
     (
         Rect::new(inner.x, row, restore_width, 1),
         Rect::new(discard_x, row, discard_width, 1),
+        Rect::new(all_x, row, all_width, 1),
     )
 }
 
-pub fn recovery_button_hit(area: Rect, column: u16, row: u16) -> Option<RecoveryButton> {
-    let (restore, discard) = recovery_button_rects(area);
+pub fn recovery_button_hit(
+    area: Rect,
+    column: u16,
+    row: u16,
+    show_all: bool,
+) -> Option<RecoveryButton> {
+    let (restore, discard, discard_all) = recovery_button_rects(area);
     let inside = |rect: Rect| {
         rect.width > 0 && row == rect.y && column >= rect.x && column < rect.x + rect.width
     };
@@ -5870,6 +5894,8 @@ pub fn recovery_button_hit(area: Rect, column: u16, row: u16) -> Option<Recovery
         Some(RecoveryButton::Restore)
     } else if inside(discard) {
         Some(RecoveryButton::Discard)
+    } else if show_all && inside(discard_all) {
+        Some(RecoveryButton::DiscardAll)
     } else {
         None
     }
@@ -6084,7 +6110,7 @@ mod tests {
         app.mode = crate::app::AppMode::Recovery;
         for (width, height) in [(80u16, 24u16), (120, 34)] {
             let rows = render_rows(&app, width, height);
-            let (restore, discard) =
+            let (restore, discard, _) =
                 super::recovery_button_rects(ratatui::layout::Rect::new(0, 0, width, height));
             let text_at = |rect: ratatui::layout::Rect| -> String {
                 rows[rect.y as usize]

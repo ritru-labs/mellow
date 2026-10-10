@@ -592,6 +592,18 @@ impl App {
         if drafts.is_empty() {
             return;
         }
+        // A draft with nothing but blank space is not worth a prompt.
+        let (drafts, blank): (Vec<_>, Vec<_>) = drafts
+            .into_iter()
+            .partition(|record| !record.content.trim().is_empty());
+        for record in blank {
+            if let Some(journal) = record.orphan_journal.as_ref() {
+                let _ = recovery::remove_journal(journal);
+            }
+        }
+        if drafts.is_empty() {
+            return;
+        }
         let count = drafts.len();
         for record in drafts {
             if self.recovery_candidate.is_none() && self.active_tab_is_pristine() {
@@ -2791,6 +2803,7 @@ impl App {
         match key.code {
             KeyCode::Char('r' | 'R') | KeyCode::Enter => self.restore_recovery(),
             KeyCode::Char('d' | 'D') => self.discard_recovery(),
+            KeyCode::Char('a' | 'A') if self.pending_draft_count() > 1 => self.discard_all_drafts(),
             _ => {}
         }
     }
@@ -2815,6 +2828,76 @@ impl App {
                 self.status = Some(format!("Recovery cleanup failed: {error}"));
             }
         }
+    }
+
+    /// Unnamed drafts from earlier sessions still waiting for a decision,
+    /// in this tab and in the others.
+    pub fn pending_draft_count(&self) -> usize {
+        let is_draft = |record: &RecoveryRecord| record.orphan_journal.is_some();
+        let here = usize::from(self.recovery_candidate.as_ref().is_some_and(is_draft));
+        let elsewhere = self
+            .tabs
+            .iter()
+            .filter_map(|slot| slot.state.as_ref())
+            .filter(|state| state.recovery_candidate.as_ref().is_some_and(is_draft))
+            .count();
+        here + elsewhere
+    }
+
+    /// Discards every waiting unnamed draft and closes the blank tabs that
+    /// were opened only to show them. Drafts of named files are left alone.
+    fn discard_all_drafts(&mut self) {
+        let is_draft = |record: &RecoveryRecord| record.orphan_journal.is_some();
+        let mut discarded = 0;
+        loop {
+            // Closing one draft's tab can bring the next one to the front, so
+            // the front tab is checked on every pass, not just the first.
+            if self.recovery_candidate.as_ref().is_some_and(is_draft) {
+                if let Some(journal) = self
+                    .recovery_candidate
+                    .take()
+                    .and_then(|record| record.orphan_journal)
+                {
+                    let _ = recovery::remove_journal(&journal);
+                }
+                discarded += 1;
+                if self.tabs.len() > 1 && self.active_tab_is_pristine() {
+                    self.close_active_tab_now(false);
+                }
+                continue;
+            }
+            let Some(index) = self.tabs.iter().position(|slot| {
+                slot.state
+                    .as_ref()
+                    .is_some_and(|state| state.recovery_candidate.as_ref().is_some_and(is_draft))
+            }) else {
+                break;
+            };
+            // Take the draft first, so switching to the tab does not reopen
+            // the dialog for it.
+            if let Some(journal) = self.tabs[index]
+                .state
+                .as_mut()
+                .and_then(|state| state.recovery_candidate.take())
+                .and_then(|record| record.orphan_journal)
+            {
+                let _ = recovery::remove_journal(&journal);
+            }
+            discarded += 1;
+            self.switch_tab(index);
+            if self.tabs.len() > 1 && self.active_tab_is_pristine() {
+                self.close_active_tab_now(false);
+            }
+        }
+        self.mode = if self.recovery_candidate.is_some() {
+            AppMode::Recovery
+        } else {
+            AppMode::Editing
+        };
+        self.status = Some(format!(
+            "Discarded {discarded} unsaved draft{}",
+            if discarded == 1 { "" } else { "s" }
+        ));
     }
 
     fn discard_recovery(&mut self) {
@@ -8520,9 +8603,11 @@ impl App {
         if self.mode == AppMode::Recovery {
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                 let area = ratatui::layout::Rect::new(0, 0, terminal_width, terminal_height);
-                match ui::recovery_button_hit(area, mouse.column, mouse.row) {
+                let show_all = self.pending_draft_count() > 1;
+                match ui::recovery_button_hit(area, mouse.column, mouse.row, show_all) {
                     Some(ui::RecoveryButton::Restore) => self.restore_recovery(),
                     Some(ui::RecoveryButton::Discard) => self.discard_recovery(),
+                    Some(ui::RecoveryButton::DiscardAll) => self.discard_all_drafts(),
                     None => {}
                 }
             }
@@ -13705,6 +13790,74 @@ mod tests {
         );
     }
 
+    fn orphan_drafts_in(dir: &std::path::Path, contents: &[&str]) -> Vec<RecoveryRecord> {
+        contents
+            .iter()
+            .enumerate()
+            .map(|(index, content)| {
+                let journal = dir.join(format!("untitled-test-{index}.journal"));
+                std::fs::write(&journal, content).unwrap();
+                RecoveryRecord {
+                    original_path: None,
+                    content: (*content).to_owned(),
+                    orphan_journal: Some(journal),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn discard_all_clears_every_waiting_draft_and_its_blank_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["one", "two", "three"]);
+        let journals: Vec<_> = drafts
+            .iter()
+            .filter_map(|record| record.orphan_journal.clone())
+            .collect();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_eq!(app.mode, AppMode::Recovery);
+        assert_eq!(app.pending_draft_count(), 3);
+        assert_eq!(app.tabs.len(), 3);
+
+        app.handle_recovery_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.pending_draft_count(), 0);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(journals.iter().all(|journal| !journal.exists()));
+        assert_eq!(app.status.as_deref(), Some("Discarded 3 unsaved drafts"));
+    }
+
+    #[test]
+    fn blank_drafts_are_removed_instead_of_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let drafts = orphan_drafts_in(dir.path(), &["  \n\t"]);
+        let journal = drafts[0].orphan_journal.clone().unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.offer_orphan_drafts(drafts);
+        assert_ne!(app.mode, AppMode::Recovery);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn discard_all_is_offered_only_for_more_than_one_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut single = App::new(Buffer::empty(None));
+        single.offer_orphan_drafts(orphan_drafts_in(dir.path(), &["only"]));
+        // A does nothing with a single draft; the dialog stays open.
+        single.handle_recovery_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(single.mode, AppMode::Recovery);
+
+        let other = tempfile::tempdir().unwrap();
+        let mut several = App::new(Buffer::empty(None));
+        several.offer_orphan_drafts(orphan_drafts_in(other.path(), &["a", "b"]));
+        let (_, _, all) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
+        click(&mut several, all.x + 1, all.y, 80, 24);
+        assert_eq!(several.pending_draft_count(), 0);
+        assert_eq!(several.mode, AppMode::Editing);
+    }
+
     #[test]
     fn clicking_restore_in_the_recovery_dialog_restores_the_draft() {
         let dir = tempfile::tempdir().unwrap();
@@ -13714,7 +13867,7 @@ mod tests {
         let mut app = App::new(Buffer::open(Some(path)).unwrap());
         assert_eq!(app.mode, AppMode::Recovery);
 
-        let (restore, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
+        let (restore, _, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 80, 24));
         click(&mut app, restore.x + 2, restore.y, 80, 24);
         assert_eq!(app.mode, AppMode::Editing);
         assert_eq!(app.buffer.contents(), "draft from crash");
@@ -13727,7 +13880,7 @@ mod tests {
         std::fs::write(&path, "disk").unwrap();
         recovery::write(&RecoveryKey::File(path.clone()), "draft from crash").unwrap();
         let mut app = App::new(Buffer::open(Some(path)).unwrap());
-        let (_, discard) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 120, 34));
+        let (_, discard, _) = ui::recovery_button_rects(ratatui::layout::Rect::new(0, 0, 120, 34));
 
         // A click beside the buttons keeps the dialog open.
         click(&mut app, discard.x, discard.y + 1, 120, 34);
