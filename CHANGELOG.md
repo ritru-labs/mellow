@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (beta)
 
 An agent-style look, mouse support across overlays, and a set of editing features.
 
