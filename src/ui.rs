@@ -3196,6 +3196,11 @@ fn render_references(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let marker = if index == app.reference_selected {
             select_marker(app)
         } else {
@@ -3324,6 +3329,11 @@ fn render_code_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .enumerate()
         .take(inner.height.saturating_sub(2) as usize)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(i),
+        );
         let marker = if i == app.code_action_selected {
             select_marker(app)
         } else {
@@ -3603,6 +3613,11 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_branch_selected;
         let cursor = if selected { select_marker(app) } else { "  " };
         let current = if branch.current { "* " } else { "  " };
@@ -3771,6 +3786,16 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .skip(start)
         .take(visible)
     {
+        click_target(
+            app,
+            Rect::new(
+                inner.x,
+                inner.y + 1 + (index - start) as u16,
+                inner.width,
+                1,
+            ),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_conflict_selected;
         let marker = if selected { select_marker(app) } else { "  " };
         let style = if selected {
@@ -3811,6 +3836,11 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .saturating_sub(visible.saturating_sub(1));
     let mut lines = Vec::new();
     for (index, commit) in app.git_history.iter().enumerate().skip(start).take(visible) {
+        click_target(
+            app,
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            crate::app::ClickTarget::Row(index),
+        );
         let selected = index == app.git_history_selected;
         let marker = if selected { select_marker(app) } else { "  " };
         let line = format!(

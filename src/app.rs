@@ -264,6 +264,14 @@ pub struct ProblemItem {
     pub cursor: Cursor,
 }
 
+/// What a click on a list row leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowClick {
+    Ignore,
+    Select,
+    Activate,
+}
+
 /// What a click on part of an overlay does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickTarget {
@@ -8511,7 +8519,7 @@ impl App {
                     .map(|(_, target)| *target);
                 match target {
                     Some(ClickTarget::Row(index)) => {
-                        if self.select_overlay_row(index) {
+                        if self.select_overlay_row(index) == RowClick::Activate {
                             self.handle_key(key(KeyCode::Enter));
                         }
                     }
@@ -8557,16 +8565,30 @@ impl App {
             )
     }
 
-    /// Moves the selection of the current list overlay to `index`. Returns
-    /// false for overlays without clickable rows.
-    fn select_overlay_row(&mut self, index: usize) -> bool {
-        match self.mode {
-            AppMode::Palette => self.palette_selected = index,
-            AppMode::QuickOpen => self.quick_open_selected = index,
-            AppMode::Symbols => self.symbol_selected = index,
-            _ => return false,
+    /// Moves the selection of the current list overlay to `index` and says
+    /// whether the click should also open the row. Rows whose action changes
+    /// things (switching branch, applying a quick fix) open on the second
+    /// click, once the user has seen which row is selected.
+    fn select_overlay_row(&mut self, index: usize) -> RowClick {
+        let selected = match self.mode {
+            AppMode::Palette => &mut self.palette_selected,
+            AppMode::QuickOpen => &mut self.quick_open_selected,
+            AppMode::Symbols => &mut self.symbol_selected,
+            AppMode::References => &mut self.reference_selected,
+            AppMode::GitConflicts => &mut self.git_conflict_selected,
+            AppMode::GitHistory => &mut self.git_history_selected,
+            AppMode::GitBranches => &mut self.git_branch_selected,
+            AppMode::CodeActions => &mut self.code_action_selected,
+            _ => return RowClick::Ignore,
+        };
+        let already = *selected == index;
+        *selected = index;
+        let two_step = matches!(self.mode, AppMode::GitBranches | AppMode::CodeActions);
+        if two_step && !already {
+            RowClick::Select
+        } else {
+            RowClick::Activate
         }
-        true
     }
 
     fn discard_current_and_continue_quit(&mut self) {
@@ -14095,6 +14117,38 @@ mod tests {
         click(&mut app, accept.x + 2, accept.y, 80, 24);
         assert_eq!(app.buffer.contents(), "var a = 1;");
         assert_eq!(app.mode, AppMode::Editing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clicking_a_branch_selects_it_first_and_switches_on_the_second_click() {
+        let dir = git_workspace();
+        git_in(dir.path(), &["branch", "feature-x"]);
+        let current = git_in(dir.path(), &["branch", "--show-current"]);
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitBranches);
+        assert_eq!(app.mode, AppMode::GitBranches);
+        let wanted = app
+            .git_branches
+            .iter()
+            .position(|branch| format!("{branch:?}").contains("feature-x"))
+            .expect("feature-x is listed");
+
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(app.mode, AppMode::GitBranches, "first click only selects");
+        assert_eq!(app.git_branch_selected, wanted);
+        assert_eq!(git_in(dir.path(), &["branch", "--show-current"]), current);
+
+        draw_frame(&app, 80, 24);
+        let row = drawn_target(&app, ClickTarget::Row(wanted));
+        click(&mut app, row.x + 2, row.y, 80, 24);
+        assert_eq!(
+            git_in(dir.path(), &["branch", "--show-current"]).trim(),
+            "feature-x"
+        );
     }
 
     #[test]
