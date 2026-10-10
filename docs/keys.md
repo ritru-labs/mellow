@@ -89,7 +89,9 @@ The keymap file can start from a preset. Add one line, and your own
 `command.id = binding` lines still win over it:
 
 ```ini
-preset = vscode   # Ctrl+P opens files, Ctrl+Shift+P opens commands
+preset = vscode   # Ctrl+P opens files; Ctrl+Shift+P or F1 opens commands
 ```
 
 `default` keeps Mellow's own keys, and `vscode` is the only other preset.
+Many terminals send Ctrl+Shift+P as plain Ctrl+P, so with `vscode` use F1
+for commands; Help is then in the command list.

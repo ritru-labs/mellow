@@ -141,10 +141,13 @@ fn keymap_path() -> PathBuf {
 fn preset_bindings(name: &str) -> Result<HashMap<String, Vec<KeyBinding>>, String> {
     let entries: &[(&str, &str)] = match name.to_ascii_lowercase().as_str() {
         "default" => &[],
-        // VS Code: Ctrl+P opens files, Ctrl+Shift+P opens commands.
+        // VS Code: Ctrl+P opens files; Ctrl+Shift+P and F1 open commands.
+        // Many terminals send Ctrl+Shift+P as plain Ctrl+P, so F1 keeps the
+        // palette reachable everywhere. Help stays one search away in it.
         "vscode" => &[
             ("file.open", "ctrl+p"),
-            ("workbench.commands", "ctrl+shift+p"),
+            ("workbench.commands", "ctrl+shift+p, f1"),
+            ("help.shortcuts", "none"),
         ],
         other => {
             return Err(format!(
@@ -154,10 +157,18 @@ fn preset_bindings(name: &str) -> Result<HashMap<String, Vec<KeyBinding>>, Strin
     };
     entries
         .iter()
-        .map(|(id, binding)| {
-            parse_binding(binding)
-                .map(|parsed| ((*id).to_owned(), vec![parsed]))
-                .ok_or_else(|| format!("preset binding '{binding}' is not supported"))
+        .map(|(id, bindings)| {
+            if bindings.eq_ignore_ascii_case("none") {
+                return Ok(((*id).to_owned(), Vec::new()));
+            }
+            bindings
+                .split(',')
+                .map(|binding| {
+                    parse_binding(binding.trim())
+                        .ok_or_else(|| format!("preset binding '{binding}' is not supported"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|parsed| ((*id).to_owned(), parsed))
         })
         .collect()
 }
@@ -448,6 +459,20 @@ mod tests {
         };
         assert_eq!(config.resolve(ctrl('p')), Some(Command::OpenFile));
         assert_eq!(config.resolve(ctrl_shift('p')), Some(Command::ShowPalette));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vscode_preset_keeps_the_palette_on_a_key_every_terminal_can_send() {
+        let dir = std::env::temp_dir().join(format!("mellow-keymap-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys");
+        std::fs::write(&path, "preset = vscode\n").unwrap();
+        let config = KeymapConfig::load_from_path(&path).unwrap();
+        assert_eq!(
+            config.resolve(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(Command::ShowPalette)
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
