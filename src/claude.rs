@@ -76,8 +76,10 @@ pub fn send(config: &AiProviderConfig, exchange: &Exchange<'_>) -> Result<String
     let first_party = config.endpoint.starts_with(MESSAGES_ENDPOINT);
     let body = request_body(&config.model, exchange, first_party);
 
+    // Never follow redirects: the key header would go to wherever they point.
     let client = reqwest::blocking::Client::builder()
         .timeout(exchange.timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("failed to build AI HTTP client")?;
     let mut http = client
