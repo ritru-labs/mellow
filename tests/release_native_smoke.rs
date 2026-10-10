@@ -192,6 +192,19 @@ fn wait_for_saved_text(
 }
 
 fn spawn_mellow(binary: &Path, cwd: &Path, file: Option<&Path>, home: &Path) -> (ChildGuard, File) {
+    spawn_mellow_with(binary, cwd, file, home, (80, 24), false)
+}
+
+/// Starts the binary at `size` (columns, rows). `mouse` leaves mouse reporting
+/// on, as a user's terminal would have it.
+fn spawn_mellow_with(
+    binary: &Path,
+    cwd: &Path,
+    file: Option<&Path>,
+    home: &Path,
+    size: (u16, u16),
+    mouse: bool,
+) -> (ChildGuard, File) {
     let binary_c = CString::new(binary.as_os_str().as_bytes()).unwrap();
     let cwd_c = CString::new(cwd.as_os_str().as_bytes()).unwrap();
     let file_c = file.map(|file| CString::new(file.as_os_str().as_bytes()).unwrap());
@@ -199,7 +212,9 @@ fn spawn_mellow(binary: &Path, cwd: &Path, file: Option<&Path>, home: &Path) -> 
     // Built before fork: the child must not allocate.
     let mut argv = vec![binary_c.as_ptr()];
     argv.extend(file_c.as_ref().map(|file| file.as_ptr()));
-    argv.push(no_mouse_c.as_ptr());
+    if !mouse {
+        argv.push(no_mouse_c.as_ptr());
+    }
     argv.push(ptr::null());
 
     let home_c = CString::new(home.as_os_str().as_bytes()).unwrap();
@@ -222,8 +237,8 @@ fn spawn_mellow(binary: &Path, cwd: &Path, file: Option<&Path>, home: &Path) -> 
     #[cfg(target_os = "macos")]
     let opened = unsafe {
         let mut size = libc::winsize {
-            ws_row: 24,
-            ws_col: 80,
+            ws_row: size.1,
+            ws_col: size.0,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
@@ -239,8 +254,8 @@ fn spawn_mellow(binary: &Path, cwd: &Path, file: Option<&Path>, home: &Path) -> 
     #[cfg(not(target_os = "macos"))]
     let opened = unsafe {
         let size = libc::winsize {
-            ws_row: 24,
-            ws_col: 80,
+            ws_row: size.1,
+            ws_col: size.0,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
@@ -720,4 +735,348 @@ fn release_binary_recovers_every_unnamed_draft_after_crash() {
         );
     }
     assert!(recovered.reaped, "could not quit after saving both drafts");
+}
+
+// ---------------------------------------------------------------------------
+// Live scenarios: what a user does in a terminal, checked against the real
+// binary. Each reads the rendered screen (vt100), not the raw bytes.
+// ---------------------------------------------------------------------------
+
+/// The rendered text of the screen, one string per row.
+fn rendered_rows(captured: &[u8], size: (u16, u16)) -> Vec<String> {
+    let mut parser = vt100::Parser::new(size.1, size.0, 0);
+    parser.process(captured);
+    parser
+        .screen()
+        .contents()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Pumps the PTY until `ready` accepts the rendered screen, or panics with
+/// the screen as it was.
+fn wait_for_rows(
+    master: &mut File,
+    captured: &mut Vec<u8>,
+    queries: &mut usize,
+    size: (u16, u16),
+    what: &str,
+    ready: impl Fn(&[String]) -> bool,
+) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        pump(master, captured, queries, Duration::from_millis(100));
+        let rows = rendered_rows(captured, size);
+        if ready(&rows) {
+            return rows;
+        }
+        if Instant::now() > deadline {
+            panic!("Expected {what}; the screen was:\n{}", rows.join("\n"));
+        }
+    }
+}
+
+/// The (column, row) of the first occurrence of `needle` on the screen.
+fn find_on_screen(rows: &[String], needle: &str) -> Option<(u16, u16)> {
+    rows.iter().enumerate().find_map(|(row, line)| {
+        line.find(needle)
+            .map(|byte| (line[..byte].chars().count() as u16, row as u16))
+    })
+}
+
+/// Sends one key or string and lets the screen settle.
+fn type_keys(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize, keys: &[u8]) {
+    write_all(master, keys);
+    pump(master, captured, queries, Duration::from_millis(300));
+}
+
+/// A mouse press and release at a 0-based screen cell (SGR encoding).
+fn click_cell(
+    master: &mut File,
+    captured: &mut Vec<u8>,
+    queries: &mut usize,
+    column: u16,
+    row: u16,
+) {
+    write_all(
+        master,
+        format!("\x1b[<0;{};{}M", column + 1, row + 1).as_bytes(),
+    );
+    pump(master, captured, queries, Duration::from_millis(100));
+    write_all(
+        master,
+        format!("\x1b[<0;{};{}m", column + 1, row + 1).as_bytes(),
+    );
+    pump(master, captured, queries, Duration::from_millis(300));
+}
+
+#[test]
+fn live_first_key_on_the_welcome_screen_reaches_the_file() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("notes.txt");
+    fs::write(&file, "").unwrap();
+    let size = (80, 24);
+    let (_child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        size,
+        false,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the welcome screen",
+        |rows| rows.iter().any(|row| row.contains("Welcome to Mellow")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"Z");
+    let rows = wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "Z on line 1",
+        |rows| {
+            rows.iter()
+                .any(|row| row.starts_with("1 │") && row.contains('Z'))
+        },
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("Welcome to Mellow")),
+        "the first key should dismiss the welcome: {rows:?}"
+    );
+}
+
+#[test]
+fn live_palette_and_open_file_open_and_close_with_escape() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("notes.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let size = (80, 24);
+    let (_child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        size,
+        false,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the editor",
+        |rows| rows.iter().any(|row| row.contains("hello")),
+    );
+
+    type_keys(&mut master, &mut captured, &mut queries, b"\x10"); // Ctrl+P
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the command palette",
+        |rows| rows.iter().any(|row| row.contains("● Commands")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x1b"); // Esc
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the palette closed",
+        |rows| !rows.iter().any(|row| row.contains("● Commands")),
+    );
+
+    type_keys(&mut master, &mut captured, &mut queries, b"\x0f"); // Ctrl+O
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the Open file list",
+        |rows| rows.iter().any(|row| row.contains("● Open file")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x1b");
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "Open file closed",
+        |rows| !rows.iter().any(|row| row.contains("● Open file")),
+    );
+}
+
+#[test]
+fn live_quit_with_unsaved_text_asks_and_discard_exits() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("notes.txt");
+    fs::write(&file, "").unwrap();
+    let size = (80, 24);
+    let (mut child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        size,
+        false,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the editor",
+        |rows| rows.iter().any(|row| row.contains("Welcome to Mellow")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"Z");
+    type_keys(&mut master, &mut captured, &mut queries, b"\x11"); // Ctrl+Q
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the quit question",
+        |rows| {
+            rows.iter()
+                .any(|row| row.contains("Save changes before quitting?"))
+        },
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"d"); // discard
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !child.try_reap() {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(50),
+        );
+        assert!(
+            Instant::now() < deadline,
+            "Mellow did not exit after discarding"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "",
+        "discard must not save"
+    );
+}
+
+#[test]
+fn live_mouse_click_runs_a_palette_row_at_120_by_34() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("notes.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let size = (120, 34);
+    let (_child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        size,
+        true,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the editor",
+        |rows| rows.iter().any(|row| row.contains("hello")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x10"); // Ctrl+P
+    let rows = wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the palette",
+        |rows| find_on_screen(rows, "New file").is_some(),
+    );
+    let (column, row) = find_on_screen(&rows, "New file").unwrap();
+    click_cell(&mut master, &mut captured, &mut queries, column + 2, row);
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "a new Untitled tab",
+        |rows| {
+            rows.iter().any(|row| row.contains("Untitled"))
+                && !rows.iter().any(|row| row.contains("● Commands"))
+        },
+    );
+}
+
+#[test]
+fn live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o() {
+    // Terminals without the kitty keyboard protocol cannot tell Ctrl+Shift+O
+    // from Ctrl+O, so Go to symbol is reached from the palette there. This
+    // pins that behaviour so a change to it is deliberate.
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("demo.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    let size = (80, 24);
+    let (_child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        size,
+        false,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the editor",
+        |rows| rows.iter().any(|row| row.contains("fn main")),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x0f"); // Ctrl+Shift+O, legacy bytes
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "Open file (not symbols)",
+        |rows| rows.iter().any(|row| row.contains("● Open file")),
+    );
 }
