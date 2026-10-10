@@ -1036,11 +1036,10 @@ impl App {
 
         if self.mode == AppMode::Editing && self.terminal_focused {
             let command = self.keymap_config.resolve(key);
-            // Without enhanced keyboard reporting Ctrl+` arrives as Ctrl+Space,
-            // so honor it here: leaving the terminal must always be possible.
-            let legacy_backtick = !crate::terminal::keyboard_enhanced()
-                && command == Some(Command::TriggerCompletion);
-            if command == Some(Command::ToggleTerminal) || legacy_backtick {
+            // Ctrl+Space belongs to the shell (it is NUL there: set-mark,
+            // autosuggest accept). Leaving the terminal always works with
+            // Ctrl+T, which every terminal can send.
+            if command == Some(Command::ToggleTerminal) {
                 self.execute(Command::ToggleTerminal);
             } else {
                 self.handle_terminal_key(key);
@@ -8796,7 +8795,10 @@ impl App {
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                 self.terminal_focused = true;
                 self.explorer_focused = false;
-                self.status = Some("Terminal focused · Ctrl+` returns to editor".to_owned());
+                let back = self
+                    .shortcut_label(Command::ToggleTerminal)
+                    .unwrap_or_else(|| "Ctrl+T".to_owned());
+                self.status = Some(format!("Terminal focused · {back} returns to editor"));
             }
 
             if let Some((cols, rows)) =
@@ -13646,9 +13648,10 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
         assert!(app.terminal_focused);
 
-        // Legacy terminals deliver Ctrl+` as Ctrl+Space (NUL).
+        // Ctrl+Space belongs to the shell (it is NUL there); Ctrl+T is the
+        // way out that every terminal can send.
         app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        assert!(!app.terminal_focused);
+        assert!(app.terminal_focused);
 
         app.execute(Command::HideTerminal);
         assert!(!app.terminal_visible);
@@ -14204,6 +14207,17 @@ mod tests {
         click(&mut app, row.x + 2, row.y, 80, 24);
         assert_eq!(app.mode, AppMode::Editing);
         assert_eq!(app.cursor.row, problem_row);
+    }
+
+    #[test]
+    fn ctrl_space_goes_to_the_shell_and_ctrl_t_leaves_the_terminal() {
+        let mut app = App::new(Buffer::empty(None));
+        app.terminal_visible = true;
+        app.terminal_focused = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert!(app.terminal_focused, "Ctrl+Space stays with the shell");
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert!(!app.terminal_focused, "Ctrl+T returns to the editor");
     }
 
     #[test]
