@@ -163,7 +163,10 @@ impl Buffer {
         }
         const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
         if metadata.len() > MAX_FILE_SIZE {
-            bail!("{} is too large (>100MB) for Mellow v0.1", path.display());
+            bail!(
+                "{} is larger than 100 MB; Mellow opens files up to 100 MB",
+                path.display()
+            );
         }
 
         let bytes =
@@ -176,7 +179,7 @@ impl Buffer {
         };
         let content = std::str::from_utf8(payload).with_context(|| {
             format!(
-                "{} is not valid UTF-8; binary/legacy encodings are not supported in Mellow v0.1",
+                "{} is not UTF-8 text; Mellow opens UTF-8 files only (binary files and other encodings are not supported)",
                 path.display()
             )
         })?;
@@ -1624,6 +1627,16 @@ mod tests {
             buffer.insert_char(&mut cursor, ch);
         }
         (buffer, cursor)
+    }
+
+    #[test]
+    fn open_errors_explain_the_limit_without_an_old_version_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latin1.txt");
+        std::fs::write(&path, [0x63, 0x61, 0x66, 0xe9]).unwrap();
+        let error = Buffer::open(Some(path)).unwrap_err().to_string();
+        assert!(error.contains("not UTF-8 text"), "{error}");
+        assert!(!error.contains("v0.1"), "{error}");
     }
 
     #[test]
