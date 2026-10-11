@@ -1915,7 +1915,12 @@ fn wait_for_marker(master: &mut File, captured: &mut Vec<u8>, queries: &mut usiz
     let deadline = Instant::now() + Duration::from_secs(3);
     while !marker.exists() {
         pump(master, captured, queries, Duration::from_millis(50));
-        assert!(Instant::now() < deadline, "formatter never started");
+        assert!(
+            Instant::now() < deadline,
+            "subprocess marker {} absent after three seconds; screen={:?}",
+            marker.file_name().unwrap().to_string_lossy(),
+            rendered_rows(captured, (80, 24))
+        );
     }
 }
 

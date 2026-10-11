@@ -7,7 +7,7 @@ All 12 findings, 39 capability rows and six ideas are retained. Status applies t
 
 [Baseline](BASELINE.md) · [Machine-readable tracker](tracker.json) · [Delivery](DELIVERY.md) · [User workflows](../audit-workflows.md) · [Security](security-verification.md) · [Language](language-verification.md) · [Terminal](terminal-verification.md) · [Accessibility](accessibility-evidence.md)
 
-Release readiness: **Not ready for publication: exact latest-head native CI rerun pending; patched publication unauthorized; Apple signing/notarization and native accessibility/terminal-family gates unavailable.**
+Release readiness: **Not ready for publication: Intel native artifact gate unavailable; patched publication unauthorized; Apple signing/notarization and native accessibility/terminal-family gates unavailable. Intermittent local marker observation remains unexplained. Jenkins receipts, linked in PR11, identify the exact final accepted SHA.**
 
 ## Coverage
 
@@ -24,7 +24,7 @@ Release readiness: **Not ready for publication: exact latest-head native CI reru
 | [F09: Completion drops supporting edits such as imports](#f09) | F09 Medium · Source-confirmed missing LSP handling · live server impact untested | verified |
 | [F10: Switching language families replaces the language-server process](#f10) | F10 Medium · Source-confirmed limitation | verified |
 | [F11: Version and testing documentation disagree with the release](#f11) | F11 Medium · Source/release evidence | verified |
-| [F12: Published archives lack a complete native artifact acceptance gate](#f12) | F12 Medium · Coverage gap · not a demonstrated broken package | implemented but unverified |
+| [F12: Published archives lack a complete native artifact acceptance gate](#f12) | F12 Medium · Coverage gap · not a demonstrated broken package | blocked |
 | [M01: Save All / close all / close others](#m01) | Next | verified |
 | [M02: Persistent local history](#m02) | Next | verified |
 | [M03: Multi-cursor + rectangle editing](#m03) | Fix now | verified |
@@ -177,7 +177,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Broader native/integration limits in evidence documents.
+Remaining gates: One later local extracted macOS run had unexplained three-second marker timeouts; subsequent same-binary full24/isolated/controlled-load runs passed. Diagnostics added; no timeout weakening or unsupported root-cause claim..
 
 <a id="f05"></a>
 ## F05: Terminal paste silently ignores additional cursors
@@ -371,11 +371,11 @@ Remaining gates: Broader native/integration limits in evidence documents.
 <a id="f12"></a>
 ## F12: Published archives lack a complete native artifact acceptance gate
 
-Priority: F12 Medium · Coverage gap · not a demonstrated broken package. Status: **implemented but unverified**.
+Priority: F12 Medium · Coverage gap · not a demonstrated broken package. Status: **blocked**.
 
 Baseline revalidation: CI contains meaningful unit and PTY tests. However, tagged packaging builds separate musl/macOS target binaries and largely checks architecture and --version. The release publish job tests installer version output. The available archive-install PTY gate is not invoked by release.yml; Intel macOS is cross-built without a native Intel test in that workflow..
 
-Current implementation/evidence: Read-only exact-PR-head candidate jobs cover four native targets; each extracted archive runs all real PTY tests, with exact SHA/digests and package install/uninstall gates. Release path adds provenance and optional signing..
+Current implementation/evidence: Exact-SHA extracted-archive and package gates implemented for four native targets. Historical757 GitHub jobs passed ARM macOS and ARM/x64 Linux; owner switched to local Jenkins and cancelled unfinished Intel gate. Manual-only candidate workflow; automatic audit jobs allocate no Actions runners..
 
 Required change: Recommended change. Run the existing PTY smoke suite against each extracted release archive on its native target. Add install/uninstall checks for .deb/.rpm and a documented Intel macOS gate, plus release provenance and signing/notarization work..
 
@@ -383,7 +383,7 @@ Dependencies: F01–F11 regressions; Clean committed source.
 
 Acceptance: Each claimed archive must pass all PTY tests on its native architecture with recorded source/archive/binary identity; no cross-build or unexecuted workflow substitutes for acceptance..
 
-Tests: native-ci artifact-install; .deb/.rpm install/uninstall PTY; actionlint and Bash validation; scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused; All 24 PTY tests against extracted native macOS archive, Linux musl archive, installed deb and rpm; uninstall verified.
+Tests: native-ci artifact-install; .deb/.rpm install/uninstall PTY; actionlint and Bash validation; scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused; All 24 PTY tests against extracted native macOS archive, Linux musl archive, installed deb and rpm; uninstall verified; Jenkins exact-SHA native gate with actual platform validation and always-archived evidence.
 
 Source: `.github/workflows/candidate-artifacts.yml`; `.github/workflows/release.yml`; `scripts/native-ci.sh`; `scripts/package-linux.sh`; `scripts/package-macos.sh`.
 
@@ -393,7 +393,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Local macOS ARM archive and Linux ARM VM archive/deb/rpm accepted at 917238f. Initial native Linux ARM GitHub candidate passed; initial macOS jobs failed incomplete onboarding observer. Corrected complete-frame observer passes locally; exact latest-head four-target rerun must finish..
+Remaining gates: No local Intel macOS/native Linux agent is available; cancelled Intel job is not a passing native artifact result. Jenkins acceptance receipts identify the exact tested candidate SHA; check the linked build result and artifacts in PR11. Signing/notarization and publication remain separately blocked..
 
 <a id="m01"></a>
 ## M01: Save All / close all / close others
@@ -1149,7 +1149,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Broader native/integration limits in evidence documents.
+Remaining gates: One later local extracted macOS run had unexplained three-second marker timeouts; subsequent same-binary full24/isolated/controlled-load runs passed. Diagnostics added; no timeout weakening or unsupported root-cause claim..
 
 <a id="m29"></a>
 ## M29: AI context exclusions / redaction

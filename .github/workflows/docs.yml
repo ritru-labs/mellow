@@ -24,6 +24,8 @@ concurrency:
 
 jobs:
   build:
+    # Audit docs are built locally/Jenkins without paid GitHub runners.
+    if: github.event_name != 'pull_request' || github.head_ref != 'audit/mellow-20261011'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

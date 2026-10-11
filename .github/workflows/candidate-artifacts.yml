@@ -1,8 +1,8 @@
 name: candidate artifacts
 
-# Native qualification only. No release, tag, signing secrets or tap writes.
+# Explicitly requested native qualification only. The audit uses local Jenkins.
+# No automatic PR run, release, tag, signing secrets or tap writes.
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:

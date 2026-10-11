@@ -1,0 +1,3 @@
+macOS SDK: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    Finished `release` profile [optimized] target(s) in 0.33s
+Artifact provenance regressions passed: stale source and incorrect native target refused.

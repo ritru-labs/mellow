@@ -5,6 +5,9 @@ Branch: `audit/mellow-20261011`. Starting main:
 Implementation commit: `e324b7f0e64080f8c911ae41230e99ebb40313a9`.
 PR: [#11](https://github.com/ritru-labs/mellow/pull/11), authored by `binnukyadari`.
 Packaging commit: `ff6eb86`; static Linux/provenance fix: `917238f`.
+Jenkins job: [mellow-audit-acceptance](http://127.0.0.1:8082/job/mellow-audit-acceptance/).
+The build receipt identifies its exact accepted source SHA; PR #11 links the
+executed result. A configured job or validated Jenkinsfile alone is not a pass.
 All commit/PR writes use `binnukyadari`; no merge, tag, release, tap or deployment.
 
 The [57-item tracker](TRACKER.md) preserves every finding, capability and idea.
@@ -65,10 +68,23 @@ ran real native jobs: Linux ARM and Linux x64 passed; macOS ARM/Intel failed the
 onboarding observer. Source tests passed before that PTY failure. The test helper
 now waits for a complete rendered initial frame before deciding whether to close
 onboarding; local full24 passed after correction. This is a test synchronization
-fix; shell safety assertions remain strict. The latest-head rerun and updated
-exact-head receipts must be checked in PR #11 before claiming all four targets.
-Static workflow validation never substitutes for those actual results.
+fix; shell safety assertions remain strict. The rerun at `757d8b0` passed native macOS ARM64 and Linux ARM64/x64 packages.
+The owner then required local Jenkins instead of paid GitHub Actions; the run was
+cancelled and Intel macOS did not finish. Retained historical receipts identify
+only the three completed targets. Further audit pushes skip Actions runners, and
+the candidate workflow is manual-only. Jenkins is the acceptance path for this
+audit; no new Actions run is authorized. Static workflow validation never
+substitutes for executed results.
 
+
+A later local extracted macOS archive run at `757d8b0` failed two three-second
+subprocess-marker observations (formatter start and the trusted-inside positive
+control). Its log lacked rendered failure state. The unchanged executable then
+passed all 24 tests, both affected tests individually, and both tests twice under
+eight bounded CPU workers. This does not establish the original cause. Marker
+time limits and security positive controls were retained; failure diagnostics now
+capture marker name and screen. Both RED and GREEN logs are retained. Further
+intermittency investigation remains a release-quality limitation.
 
 ## Release decision and remaining gates
 
@@ -77,7 +93,10 @@ explicitly authorized patched publication updates distribution install paths.
 The open version PR #10 is preserved; this branch intentionally does not duplicate
 its version bump. Implementation is unreleased even though Cargo still says 0.3.0.
 
-All four native candidate targets must retain exact-source artifact acceptance.
+All four native candidate targets must retain exact-source artifact acceptance;
+Intel macOS has not completed the corrected packaged gate. The local Jenkins
+controller has an online ARM64 macOS agent, with no Intel/native Linux agent.
+Docker Linux VM evidence is separately labeled.
 Apple signing identity/notarization and executed provenance publication are absent.
 VoiceOver/braille, participant usability, actual terminal/font/system clipboard,
 SSH/tmux, packaged interactive real-LSP panels, and live AI provider behavior are

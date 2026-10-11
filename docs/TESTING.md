@@ -12,6 +12,12 @@ bash scripts/native-ci.sh crate
 Clippy and all-target tests. `make verify` remains the Docker alternative; Linux
 container results describe Linux, even when Docker runs on a Mac.
 
+The October audit uses local Jenkins for CI, with immutable source selection and
+actual agent-platform validation. Automatic Actions jobs skip this audit branch;
+the optional four-target candidate workflow is manual-only. Do not trigger it
+without the owner's explicit request. Keep native-agent, Docker VM and unavailable
+platform results distinct in the acceptance record.
+
 ## Real PTY regressions
 
 `tests/release_native_smoke.rs` starts the executable under a real Unix PTY at
@@ -59,3 +65,20 @@ Release evidence must link the actual logs and archive digests for each target.
 Native Intel/Linux jobs, real SSH/tmux, live provider accounts, native font
 rendering and screen-reader/user evaluations remain unverified until recorded
 for the candidate. See the implementation tracker for current local results.
+
+## Manual Jenkins job
+
+Create a manual Pipeline using the reviewed `Jenkinsfile`, without SCM polling.
+`SOURCE_SHA` is mandatory and immutable; use the public Mellow repository or an
+absolute agent-local checkout for `SOURCE_REPOSITORY`. The default agent is the
+existing `vidhur-mac && darwin-arm64`, with command-scoped Rust 1.90.0. The job
+does not change global toolchains, credentials, other jobs or installed Mellow.
+It runs formatting/lint/source tests, release/crate, isolated installation, and
+all PTY tests against the extracted native archive. Optional Linux VM packages
+are labeled separately and include deb/rpm install/test/uninstall. Failure logs
+and source/archive/binary receipts are always archived.
+
+Only enable optional Intel or native Linux gates when a correctly labeled agent
+exists. Host/toolchain/target mismatches fail before product tests. A timeout or
+missing agent is an unavailable gate, never a passing target. Check the actual
+Jenkins build result and artifact receipts linked in PR #11.

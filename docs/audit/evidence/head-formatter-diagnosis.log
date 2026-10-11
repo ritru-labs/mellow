@@ -1,0 +1,9 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.32s
+     Running tests/release_native_smoke.rs (target/debug/deps/release_native_smoke-3801462941a0a5cf)
+
+running 1 test
+test release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 6.31s
+

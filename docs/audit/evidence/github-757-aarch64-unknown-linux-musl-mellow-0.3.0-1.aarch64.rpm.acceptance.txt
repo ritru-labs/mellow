@@ -1,0 +1,6 @@
+source_commit=757d8b02df3cd365657d513c7f86779642a518a0
+package_sha256=c7669966348402ac6eb69d6da8fb7340ba54c9d3c947c2f952647f2fb9023945
+binary_sha256=07e67832ac984680cf8a75f2a3c0dded4164f9b62105dca23cb9a68e8001015a
+execution_kind=native-container
+install_pty=passed
+uninstall=passed

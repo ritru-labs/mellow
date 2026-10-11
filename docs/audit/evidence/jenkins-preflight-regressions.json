@@ -1,0 +1,32 @@
+[
+  {
+    "case": "clean-exact-sha",
+    "exit": 0,
+    "receipt": "source_commit=58557b82015e1cdc0faa304a3537129d265bc84c\ntarget=aarch64-apple-darwin\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:06Z\nexit_code=0\nbuild_url=local\npreflight=passed; candidate_acceptance=not-run\n"
+  },
+  {
+    "case": "wrong-checkout-sha",
+    "exit": 1,
+    "receipt": "source_commit=0000000000000000000000000000000000000000\ntarget=aarch64-apple-darwin\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:06Z\nexit_code=1\nbuild_url=local\ncandidate_acceptance=failed\n"
+  },
+  {
+    "case": "branch-is-not-sha",
+    "exit": 1,
+    "receipt": "source_commit=main\ntarget=aarch64-apple-darwin\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:06Z\nexit_code=1\nbuild_url=local\ncandidate_acceptance=failed\n"
+  },
+  {
+    "case": "wrong-native-target",
+    "exit": 1,
+    "receipt": "source_commit=58557b82015e1cdc0faa304a3537129d265bc84c\ntarget=unsupported-target\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:06Z\nexit_code=1\nbuild_url=local\ncandidate_acceptance=failed\n"
+  },
+  {
+    "case": "dirty-source-refused",
+    "exit": 1,
+    "receipt": "source_commit=58557b82015e1cdc0faa304a3537129d265bc84c\ntarget=aarch64-apple-darwin\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:06Z\nexit_code=1\nbuild_url=local\ncandidate_acceptance=failed\n"
+  },
+  {
+    "case": "wrong-toolchain-host",
+    "exit": 1,
+    "receipt": "source_commit=58557b82015e1cdc0faa304a3537129d265bc84c\ntarget=aarch64-apple-darwin\nmode=preflight\nstarted=2026-10-11T12:31:06Z\nfinished=2026-10-11T12:31:07Z\nexit_code=1\nbuild_url=local\ncandidate_acceptance=failed\n"
+  }
+]

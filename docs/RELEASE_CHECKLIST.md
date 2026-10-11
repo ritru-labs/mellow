@@ -19,10 +19,18 @@ labels coherent. `version-docs.py --check` fails native verification when a
 label drifts. Update user docs, integration limitations and this checklist with
 the behavior being released.
 
-## Reviewable candidate workflow
+## Jenkins acceptance and optional candidate workflow
 
-`.github/workflows/candidate-artifacts.yml` runs on pull requests/manual dispatch,
-checks out the actual PR head and has read-only repository permissions. Its four
+This audit uses the owner's local Jenkins as its CI acceptance path. The manual
+`Jenkinsfile` requires an immutable source SHA, checks the actual agent platform,
+and archives logs and exact-artifact receipts, including failures. The audit
+branch skips automatic GitHub Actions runners. Missing native agents remain
+explicit gates; a Linux Docker VM on a Mac cannot qualify Intel macOS or a
+native Linux host.
+
+`.github/workflows/candidate-artifacts.yml` is manual-only and requires a separate
+explicit request before use. It checks out the requested source and has read-only
+repository permissions. Its four
 native targets run the shared gates, build archives/packages and run every PTY
 regression against extracted/installed executables. Reports bind the exact
 source commit, archive/binary/package digests and platform. Failed logs are
