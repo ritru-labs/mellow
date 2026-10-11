@@ -162,3 +162,35 @@ logs rather than being described as successful live-server evidence.
 The nonpublishing candidate workflow validates source and installed archives on
 four native targets and retains reports. Creating that workflow is not evidence
 that GitHub runners executed it. No release was published by this work.
+
+## Packaged completion boundary correction
+
+Actual 80×24 Python/TypeScript package interaction at `757d8b0` rejected a valid
+first-line auto-import, although earlier real-server/core-buffer tests passed.
+The app validator confused a zero-width insertion at a replacement boundary
+with two ambiguous insertions at the same point. The narrow correction at
+`cd5e747` permits start/end boundary insertions, retains true-overlap and duplicate
+point refusal, and tests Unicode, atomic undo/redo and exact caret restoration.
+The [LSP edit-array rules](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/specification-3-14.md#textedit-1)
+allow insertion followed by replacement at the same start position. The actual
+packaged server interactions, including failure evidence, are recorded separately
+from source tests and linked in PR #11.
+
+## Actual extracted real-server keyboard workflows
+
+The corrected `cd5e74754db95abfd622a3ab7608588e424102b1` macOS ARM64 archive
+passed both 80×24 keyboard workflows with real Pyright 1.1.414 and
+typescript-language-server 6.0.2/TypeScript 5.9.3. The tested binary SHA256 was
+`f9d1699a7d75d62a6a444b1bbfdbf4ac5f1b805a4865c3bede73da8ddb765d2f`.
+Each workflow explicitly trusted its isolated project, accepted an auto-import
+completion, verified saved import and primary text, undid both edits together,
+redid both, opened the helper through definition, navigated back, bracketed-pasted
+an undefined name, observed its actual Problems error row, saved, and exited
+through Ctrl+Q with exit code 0. Forced cleanup was not used as passing exit evidence.
+
+[Results, provenance and qualification limits](evidence/real-lsp-cd5/verification.md),
+[structured results](evidence/real-lsp-cd5/results.json) and the retained probe/screens
+separate actual packaged UI evidence from earlier real-server core tests.
+The probe retains the preceding packaged completion refusal and safely reaps owned
+children. This establishes native macOS ARM64 PTY keyboard behavior, not native
+screen-reader/Terminal-app, Intel/Linux real-LSP UI, SSH or live AI validation.

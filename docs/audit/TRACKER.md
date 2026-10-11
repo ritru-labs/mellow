@@ -78,7 +78,7 @@ Priority: F01 Critical · Reproduced · remains in reviewed main. Status: **veri
 
 Baseline revalidation: The “Ask AI for a shell command” workflow promises to type a suggestion without running it. A lone carriage return embedded inside the returned string survives cleaning. With a visible /bin/sh session, the string is written directly to the PTY and the carriage return submits it..
 
-Current implementation/evidence: Shell suggestions reject C0/DEL/C1 before cleaning and remain in read-only review. Copy is the only transfer action; there is no insertion into an arbitrary PTY..
+Current implementation/evidence: Shell suggestions reject C0/DEL/C1 before cleaning and remain in read-only review. Copy is the only transfer action; there is no insertion into an arbitrary PTY. Jenkins1 also exposed inherited ignored/blocked interrupt signals; PTY children reset INT/QUIT defaults and unblock delivery without altering their parent..
 
 Required change: Recommended change. Reject terminal control characters, including CR, LF, ESC, NUL and C1 controls, in shell suggestions. Keep the result in a read-only review view until an explicit Insert action. Insert only into a verified idle shell prompt; never into an arbitrary foreground program or partially typed command. Treat bracketed paste as transport, not as an execution authorization boundary..
 
@@ -86,7 +86,7 @@ Dependencies: None.
 
 Acceptance: Control-byte variants cannot execute or alter PTY state; safe suggestions require manual paste and separate shell submission..
 
-Tests: shell_commands_reject_every_terminal_control_before_cleaning; release_binary_rejects_hostile_ai_shell_before_terminal_input; ordinary safe shell review PTY.
+Tests: shell_commands_reject_every_terminal_control_before_cleaning; release_binary_rejects_hostile_ai_shell_before_terminal_input; ordinary safe shell review PTY; terminal_children_restore_signals_without_changing_the_parent.
 
 Source: `src/ai.rs`; `src/app.rs`; `tests/release_native_smoke.rs`.
 
@@ -94,7 +94,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; cd5e74754db95abfd622a3ab7608588e424102b1 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -294,7 +294,7 @@ Priority: F09 Medium · Source-confirmed missing LSP handling · live server imp
 
 Baseline revalidation: Completion parsing retains a label, insertion text and primary range. It does not retain additionalTextEdits or a completion command, and no completion-item resolve path was found. Some servers use those mechanisms to add imports or finish an edit..
 
-Current implementation/evidence: Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed..
+Current implementation/evidence: Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0..
 
 Required change: Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false..
 
@@ -302,17 +302,17 @@ Dependencies: Shared atomic buffer transactions.
 
 Acceptance: Real Python and TypeScript imports plus symbol insertion undo/redo together; stale, overlapping and malformed edits apply neither..
 
-Tests: f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command; f09_stale_completion_import_applies_neither_edit; f09_overlapping_completion_import_applies_neither_edit; actual Pyright and TypeScript workflows.
+Tests: f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command; f09_stale_completion_import_applies_neither_edit; f09_overlapping_completion_import_applies_neither_edit; actual Pyright and TypeScript workflows; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed.
 
 Source: `src/lsp.rs`; `src/app.rs`; `src/buffer.rs`.
 
-Evidence: [language-verification.md](language-verification.md).
+Evidence: [language-verification.md](language-verification.md); [evidence/real-lsp-cd5/verification.md](evidence/real-lsp-cd5/verification.md).
 
-Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
+Verification scope: Source/module/protocol plus actual extracted macOS ARM64 cd5 package with real Python/TypeScript servers at 80×24. Final candidate receipts recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; cd5e74754db95abfd622a3ab7608588e424102b1 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified..
 
 <a id="f10"></a>
 ## F10: Switching language families replaces the language-server process
@@ -339,7 +339,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified..
 
 <a id="f11"></a>
 ## F11: Version and testing documentation disagree with the release
@@ -391,7 +391,7 @@ Evidence: [../RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
+Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf; 53b67363adba30f7892f3550a59a147ea75f03aa · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: No local Intel macOS/native Linux agent is available; cancelled Intel job is not a passing native artifact result. Jenkins acceptance receipts identify the exact tested candidate SHA; check the linked build result and artifacts in PR11. Signing/notarization and publication remain separately blocked..
 
@@ -636,7 +636,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified..
 
 <a id="m10"></a>
 ## M10: Project Problems
@@ -663,7 +663,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified..
 
 <a id="m11"></a>
 ## M11: Completion imports and resolution
@@ -672,7 +672,7 @@ Priority: Next. Status: **verified**.
 
 Baseline revalidation: Partial; baseline src/lsp.rs.
 
-Current implementation/evidence: F09 atomic completion/import/resolve implementation..
+Current implementation/evidence: F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0..
 
 Required change: Complete the LSP edit lifecycle; add snippet support separately..
 
@@ -680,17 +680,17 @@ Dependencies: Stage A foundation.
 
 Acceptance: Primary and supporting edits succeed or refuse as one undo group..
 
-Tests: F09 synthetic and actual Python/TypeScript tests.
+Tests: F09 synthetic and actual Python/TypeScript tests; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed.
 
 Source: `src/lsp.rs`; `src/app.rs`; `src/buffer.rs`.
 
-Evidence: [language-verification.md](language-verification.md).
+Evidence: [language-verification.md](language-verification.md); [evidence/real-lsp-cd5/verification.md](evidence/real-lsp-cd5/verification.md).
 
-Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
+Verification scope: Source/module/protocol plus actual extracted macOS ARM64 cd5 package with real Python/TypeScript servers at 80×24. Final candidate receipts recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; cd5e74754db95abfd622a3ab7608588e424102b1 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified..
 
 <a id="m12"></a>
 ## M12: Warm language services
@@ -717,7 +717,7 @@ Verification scope: Source/module/protocol and recorded native PTY evidence as a
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
+Remaining gates: Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified..
 
 <a id="m13"></a>
 ## M13: Search include/exclude filters
@@ -1444,7 +1444,7 @@ Evidence: [../RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
+Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf; 53b67363adba30f7892f3550a59a147ea75f03aa · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Apple signing identity and notarization credentials unavailable; no signature/notarization/provenance publication executed..
 

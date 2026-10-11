@@ -1,0 +1,4 @@
+macOS SDK: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `release` profile [optimized] target(s) in 8.60s
+Artifact provenance regressions passed: stale source and incorrect native target refused.

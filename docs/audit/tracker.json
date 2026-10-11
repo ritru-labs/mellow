@@ -17,8 +17,8 @@
     {
       "id": "F01",
       "name": "AI shell suggestions can execute before the user presses Enter",
-      "priority": "F01 Critical \u00b7 Reproduced \u00b7 remains in reviewed main",
-      "current_evidence": "Shell suggestions reject C0/DEL/C1 before cleaning and remain in read-only review. Copy is the only transfer action; there is no insertion into an arbitrary PTY.",
+      "priority": "F01 Critical · Reproduced · remains in reviewed main",
+      "current_evidence": "Shell suggestions reject C0/DEL/C1 before cleaning and remain in read-only review. Copy is the only transfer action; there is no insertion into an arbitrary PTY. Jenkins1 also exposed inherited ignored/blocked interrupt signals; PTY children reset INT/QUIT defaults and unblock delivery without altering their parent.",
       "required_change": "Recommended change. Reject terminal control characters, including CR, LF, ESC, NUL and C1 controls, in shell suggestions. Keep the result in a read-only review view until an explicit Insert action. Insert only into a verified idle shell prompt; never into an arbitrary foreground program or partially typed command. Treat bracketed paste as transport, not as an execution authorization boundary.",
       "acceptance": "Acceptance. A synthetic hostile response cannot create a marker or alter terminal state in shells with bracketed paste on/off; ESC terminators and control-byte variants are rejected. Ordinary safe suggestions remain reviewable and require a separate user submission.",
       "status": "verified",
@@ -26,14 +26,16 @@
       "tests": [
         "shell_commands_reject_every_terminal_control_before_cleaning",
         "release_binary_rejects_hostile_ai_shell_before_terminal_input",
-        "ordinary safe shell review PTY"
+        "ordinary safe shell review PTY",
+        "terminal_children_restore_signals_without_changing_the_parent"
       ],
       "commits": [
-        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9",
+        "cd5e74754db95abfd622a3ab7608588e424102b1"
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [],
-      "baseline_evidence": "The \u201cAsk AI for a shell command\u201d workflow promises to type a suggestion without running it. A lone carriage return embedded inside the returned string survives cleaning. With a visible /bin/sh session, the string is written directly to the PTY and the carriage return submits it.",
+      "baseline_evidence": "The “Ask AI for a shell command” workflow promises to type a suggestion without running it. A lone carriage return embedded inside the returned string survives cleaning. With a visible /bin/sh session, the string is written directly to the PTY and the carriage return submits it.",
       "source_evidence": [
         "src/ai.rs",
         "src/app.rs",
@@ -51,7 +53,7 @@
     {
       "id": "F02",
       "name": "Released Claude transport forwards the key through redirects",
-      "priority": "F02 High \u00b7 Reproduced in 0.3.0 \u00b7 fixed in source, awaiting released verification",
+      "priority": "F02 High · Reproduced in 0.3.0 · fixed in source, awaiting released verification",
       "current_evidence": "Retains PR #9 no-redirect/redacted Debug protections and applies them to cancellable streaming. Official 0.3.0 RED forwards a dummy key; candidate PTY target receives zero requests.",
       "required_change": "Recommended change. Publish and verify a patched release containing PR #9, with an explicit upgrade note. Run the redirect regression against the packaged executable. Keep model/provider tests independent of real credentials.",
       "acceptance": "Acceptance. Redirect targets receive zero key-bearing requests; config Debug output contains no key; all distributed install paths resolve to the patched version.",
@@ -89,7 +91,7 @@
     {
       "id": "F03",
       "name": "Save replaces file identity without preserving all metadata",
-      "priority": "F03 High \u00b7 Reproduced xattr loss and hard-link divergence",
+      "priority": "F03 High · Reproduced xattr loss and hard-link divergence",
       "current_evidence": "Atomic save preserves supported xattrs, native ACL, owner/group/mode or refuses. Hard links are refused with independent Save As. Exclusive Save As, inode-bound conflict baseline and no-follow in-place fallback protect competing paths.",
       "required_change": "Recommended change. Define a save policy for hard links, ownership, ACLs and xattrs. Preserve supported metadata, detect unsupported cases and explain the tradeoff before proceeding. Do not silently switch every save to in-place writing: that introduces partial-write risks.",
       "acceptance": "Acceptance. Test user xattrs, group ownership, ACLs, hard links, symlinks, bind mounts and concurrent writers on claimed platforms. Either preserve the chosen contract or ask the user before a known destructive metadata transition.",
@@ -125,7 +127,7 @@
     {
       "id": "F04",
       "name": "Formatter execution freezes the editor and can outlive its timeout",
-      "priority": "F04 High \u00b7 Reproduced \u00b7 remains in reviewed main",
+      "priority": "F04 High · Reproduced · remains in reviewed main",
       "current_evidence": "Formatter workers bind identity/revision and cancellation; one bounded deadline covers stdin, process exit and inherited output pipes; process groups are terminated.",
       "required_change": "Recommended change. Move formatting off the UI thread with progress and cancellation. Bind the result to the original buffer identity/revision. Apply one deadline to process exit, input and output draining; bound output and terminate the formatter process group when cancelled/timed out.",
       "acceptance": "Acceptance. Typing, Escape and palette navigation respond during formatting. Hung descendants cannot outlive the operation deadline. Late output cannot overwrite edits made while formatting.",
@@ -164,7 +166,7 @@
     {
       "id": "F05",
       "name": "Terminal paste silently ignores additional cursors",
-      "priority": "F05 Medium \u00b7 Reproduced \u00b7 remains in reviewed main",
+      "priority": "F05 Medium · Reproduced · remains in reviewed main",
       "current_evidence": "Keyboard insertion, clipboard and bracketed paste share selection/multi-cursor/rectangle edit operations with grouped undo and grapheme boundaries. Clipboard workers reject stale selections.",
       "required_change": "Recommended change. Route bracketed paste and clipboard Paste through a shared edit operation, retaining the existing selection, multi-cursor and rectangle rules. Specify how multiline paste is distributed.",
       "acceptance": "Acceptance. Typing and each paste transport produce the expected edits at all active cursors; one undo restores the entire operation; test Unicode and rectangular selections too.",
@@ -198,7 +200,7 @@
     {
       "id": "F06",
       "name": "New indentation blocks always add four spaces",
-      "priority": "F06 Medium \u00b7 Reproduced \u00b7 remains in reviewed main",
+      "priority": "F06 Medium · Reproduced · remains in reviewed main",
       "current_evidence": "Per-buffer width and style use content inference, supported .editorconfig settings and explicit status/palette overrides, shared by Enter, Tab/outdent and LSP formatting options.",
       "required_change": "Recommended change. Add per-buffer indentation width, content inference, .editorconfig support and an explicit status-bar override. Use that value consistently in insert, outdent, visual columns and formatter requests.",
       "acceptance": "Acceptance. Two-, four- and eight-space fixtures and tab-indented Makefiles retain their conventions across Enter, Tab, Outdent, paste and formatting.",
@@ -213,7 +215,7 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [],
-      "baseline_evidence": "The buffer detects tabs versus spaces, but the space indentation unit is hard-coded to four. There is no configurable width or .editorconfig integration in the reviewed settings. Preserving a current line\u2019s indentation works; inferring the next block\u2019s width does not.",
+      "baseline_evidence": "The buffer detects tabs versus spaces, but the space indentation unit is hard-coded to four. There is no configurable width or .editorconfig integration in the reviewed settings. Preserving a current line’s indentation works; inferring the next block’s width does not.",
       "source_evidence": [
         "src/buffer.rs",
         "src/settings.rs",
@@ -230,7 +232,7 @@
     {
       "id": "F07",
       "name": "The command palette does not contain every action",
-      "priority": "F07 Medium \u00b7 Reproduced discovery gap",
+      "priority": "F07 Medium · Reproduced discovery gap",
       "current_evidence": "Context-aware palette commands expose folder/file creation, rename and recoverable trash with aliases and actionable disabled explanations.",
       "required_change": "Recommended change. Register context-aware explorer actions in the shared command vocabulary. Show why an unavailable action is disabled and offer the next useful step. Include aliases such as folder/directory and rename/move.",
       "acceptance": "Acceptance. A first-time user can create a folder and rename a file by searching the palette, without memorizing n, N, F2 or tree focus rules.",
@@ -263,7 +265,7 @@
     {
       "id": "F08",
       "name": "Project search and discovery run synchronously while typing",
-      "priority": "F08 Medium \u00b7 Source-confirmed performance risk \u00b7 not benchmarked over SSH",
+      "priority": "F08 Medium · Source-confirmed performance risk · not benchmarked over SSH",
       "current_evidence": "Debounced generation-tagged workers cancel and bound discovery/search; include/exclude scope and skipped/truncated results are visible; unsaved named buffers overlay disk.",
       "required_change": "Recommended change. Use a cancellable worker, a short debounce, query generations and incremental results. Show scope, skipped files and truncation. Add include/exclude filters and configurable limits; merge new unsaved buffers into discovery explicitly.",
       "acceptance": "Acceptance. A slow synthetic filesystem/search worker cannot stall typing or closing the panel. Old query results cannot replace a newer query. A cancelled query stops consuming resources.",
@@ -299,8 +301,8 @@
     {
       "id": "F09",
       "name": "Completion drops supporting edits such as imports",
-      "priority": "F09 Medium \u00b7 Source-confirmed missing LSP handling \u00b7 live server impact untested",
-      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed.",
+      "priority": "F09 Medium · Source-confirmed missing LSP handling · live server impact untested",
+      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0.",
       "required_change": "Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false.",
       "acceptance": "Acceptance. A fixture completion that inserts a symbol and adds an import applies both in one undo group. Stale or conflicting edits apply neither. Validate with at least one real Python and TypeScript server.",
       "status": "verified",
@@ -311,14 +313,18 @@
         "f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command",
         "f09_stale_completion_import_applies_neither_edit",
         "f09_overlapping_completion_import_applies_neither_edit",
-        "actual Pyright and TypeScript workflows"
+        "actual Pyright and TypeScript workflows",
+        "f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable",
+        "f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points",
+        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed"
       ],
       "commits": [
-        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9",
+        "cd5e74754db95abfd622a3ab7608588e424102b1"
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified."
       ],
       "baseline_evidence": "Completion parsing retains a label, insertion text and primary range. It does not retain additionalTextEdits or a completion command, and no completion-item resolve path was found. Some servers use those mechanisms to add imports or finish an edit.",
       "source_evidence": [
@@ -330,14 +336,15 @@
         "Real Python and TypeScript imports plus symbol insertion undo/redo together; stale, overlapping and malformed edits apply neither."
       ],
       "evidence_documents": [
-        "language-verification.md"
+        "language-verification.md",
+        "evidence/real-lsp-cd5/verification.md"
       ],
-      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+      "verification_scope": "Source/module/protocol plus actual extracted macOS ARM64 cd5 package with real Python/TypeScript servers at 80×24. Final candidate receipts recorded separately."
     },
     {
       "id": "F10",
       "name": "Switching language families replaces the language-server process",
-      "priority": "F10 Medium \u00b7 Source-confirmed limitation",
+      "priority": "F10 Medium · Source-confirmed limitation",
       "current_evidence": "Bounded workspace/server pool keeps language processes warm, synchronizes all open documents, aggregates file-named Problems and exposes restart/status. Interaction intents prevent abandoned navigation.",
       "required_change": "Recommended change. Pool clients by workspace and server identity. Keep all open documents synchronized and aggregate Problems across files with explicit scope. Bound idle servers and expose restart/status per language.",
       "acceptance": "Acceptance. Alternating two supported language families does not repeatedly start their servers. Unsaved open files retain diagnostics and references, and workspace Problems names each file.",
@@ -355,7 +362,7 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified."
       ],
       "baseline_evidence": "LanguageService owns one optional client. When the next document uses another server, it stops the current one and spawns the next. Same-server file switching is reused, which is good. Mixed Rust/Python/YAML/Terraform projects cannot keep each language service warm.",
       "source_evidence": [
@@ -373,7 +380,7 @@
     {
       "id": "F11",
       "name": "Version and testing documentation disagree with the release",
-      "priority": "F11 Medium \u00b7 Source/release evidence",
+      "priority": "F11 Medium · Source/release evidence",
       "current_evidence": "Cargo version generates release labels; docs distinguish unsafe published 0.3.0 from unreleased candidate and describe actual native/source/package gates. No competing PR #10 version bump.",
       "required_change": "Recommended change. Generate release version labels from one source. Update capability tables and testing/release instructions at the same time as the release. Publish a concise supported-platform and integration validation table.",
       "acceptance": "Acceptance. Binary version, README, docs homepage, release notes and installation result agree. The checklist names the actual jobs and artifacts that run.",
@@ -406,13 +413,13 @@
     {
       "id": "F12",
       "name": "Published archives lack a complete native artifact acceptance gate",
-      "priority": "F12 Medium \u00b7 Coverage gap \u00b7 not a demonstrated broken package",
+      "priority": "F12 Medium · Coverage gap · not a demonstrated broken package",
       "current_evidence": "Exact-SHA extracted-archive and package gates implemented for four native targets. Historical757 GitHub jobs passed ARM macOS and ARM/x64 Linux; owner switched to local Jenkins and cancelled unfinished Intel gate. Manual-only candidate workflow; automatic audit jobs allocate no Actions runners.",
       "required_change": "Recommended change. Run the existing PTY smoke suite against each extracted release archive on its native target. Add install/uninstall checks for .deb/.rpm and a documented Intel macOS gate, plus release provenance and signing/notarization work.",
       "acceptance": "Acceptance. Release evidence records the archive digest and exact executable under test for every claimed platform. Publication depends on the artifact gates, not only source tests and --version.",
       "status": "blocked",
       "dependencies": [
-        "F01\u2013F11 regressions",
+        "F01–F11 regressions",
         "Clean committed source"
       ],
       "tests": [
@@ -425,7 +432,8 @@
       ],
       "commits": [
         "ff6eb860caaaef74fc34d2a3480690f9ea50c89e",
-        "917238f93ec19a7036bfd7fba777a514c8032bbf"
+        "917238f93ec19a7036bfd7fba777a514c8032bbf",
+        "53b67363adba30f7892f3550a59a147ea75f03aa"
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
@@ -728,7 +736,7 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified."
       ],
       "baseline_evidence": "Missing; baseline src/lsp.rs",
       "source_evidence": [
@@ -763,7 +771,7 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified."
       ],
       "baseline_evidence": "Partial; baseline src/lsp.rs",
       "source_evidence": [
@@ -782,7 +790,7 @@
       "id": "M11",
       "name": "Completion imports and resolution",
       "priority": "Next",
-      "current_evidence": "F09 atomic completion/import/resolve implementation.",
+      "current_evidence": "F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0.",
       "required_change": "Complete the LSP edit lifecycle; add snippet support separately.",
       "acceptance": "Complete the LSP edit lifecycle; add snippet support separately.",
       "status": "verified",
@@ -790,14 +798,18 @@
         "Stage A foundation"
       ],
       "tests": [
-        "F09 synthetic and actual Python/TypeScript tests"
+        "F09 synthetic and actual Python/TypeScript tests",
+        "f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable",
+        "f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points",
+        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed"
       ],
       "commits": [
-        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9",
+        "cd5e74754db95abfd622a3ab7608588e424102b1"
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified."
       ],
       "baseline_evidence": "Partial; baseline src/lsp.rs",
       "source_evidence": [
@@ -809,9 +821,10 @@
         "Primary and supporting edits succeed or refuse as one undo group."
       ],
       "evidence_documents": [
-        "language-verification.md"
+        "language-verification.md",
+        "evidence/real-lsp-cd5/verification.md"
       ],
-      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+      "verification_scope": "Source/module/protocol plus actual extracted macOS ARM64 cd5 package with real Python/TypeScript servers at 80×24. Final candidate receipts recorded separately."
     },
     {
       "id": "M12",
@@ -833,7 +846,7 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+        "Real-server stdio/core workflows and native ARM packaged completion/import/definition/back/diagnostic display verified. Packaged mixed-server Problems selection and Intel/Linux real-LSP UI remain unqualified."
       ],
       "baseline_evidence": "Partial; baseline src/lsp.rs",
       "source_evidence": [
@@ -1612,7 +1625,8 @@
       ],
       "commits": [
         "ff6eb860caaaef74fc34d2a3480690f9ea50c89e",
-        "917238f93ec19a7036bfd7fba777a514c8032bbf"
+        "917238f93ec19a7036bfd7fba777a514c8032bbf",
+        "53b67363adba30f7892f3550a59a147ea75f03aa"
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
@@ -1637,7 +1651,7 @@
       "name": "Safe configuration change",
       "priority": "Stage D",
       "current_evidence": "Small JSON/YAML structural-change review refuses ambiguous parsing, redacts secret values, records recovery/history, and explicitly reviews optional trusted argv validators. Only successful current validation offers Save.",
-      "required_change": "Small first version. Start with JSON/YAML validation and user-configured shell/format checks. Add Terraform and Kubernetes integrations only with explicit context and command visibility. Some validators can execute code or contact services; do not label all validation \u201cread-only.\u201d",
+      "required_change": "Small first version. Start with JSON/YAML validation and user-configured shell/format checks. Add Terraform and Kubernetes integrations only with explicit context and command visibility. Some validators can execute code or contact services; do not label all validation “read-only.”",
       "acceptance": "Proof of value. A user can see exactly which keys changed and recover the pre-edit file; a failed or cancelled validator never silently saves or deploys.",
       "status": "verified",
       "dependencies": [
@@ -1679,7 +1693,7 @@
       "priority": "Stage D",
       "current_evidence": "Small Terminal Doctor shows terminal/color/key/paste/mouse/clipboard route facts and decoded event recorder. Redacted report is copied only by explicit action; pasted contents are omitted.",
       "required_change": "Small first version. Detect legacy/enhanced keys, color tier, paste protocol, clipboard route and mouse mode. Produce a redacted diagnostic bundle with user consent.",
-      "acceptance": "Proof of value. Users can resolve a shortcut/clipboard issue without guessing their terminal\u2019s behavior; test on Terminal.app, iTerm2, Ghostty, Windows Terminal/WSL and SSH/tmux.",
+      "acceptance": "Proof of value. Users can resolve a shortcut/clipboard issue without guessing their terminal’s behavior; test on Terminal.app, iTerm2, Ghostty, Windows Terminal/WSL and SSH/tmux.",
       "status": "blocked",
       "dependencies": [
         "Stage A/B/C foundation",
@@ -1737,7 +1751,7 @@
       "id": "I04",
       "name": "AI request receipt",
       "priority": "Later",
-      "current_evidence": "M29\u2013M31 implement deny policies, budgets, provider usage and cancellation; durable request IDs/receipts and price accounting remain Later.",
+      "current_evidence": "M29–M31 implement deny policies, budgets, provider usage and cancellation; durable request IDs/receipts and price accounting remain Later.",
       "required_change": "Small first version. Use the existing provider adapters. Add request IDs, output caps, context allow/deny rules and per-session budgets. Label estimated prices and absent usage honestly.",
       "acceptance": "Proof of value. A user can explain what was sent and why a request cost something; cancelling cannot be misrepresented as a refund or guaranteed server-side cancellation.",
       "status": "deferred",
@@ -1810,18 +1824,18 @@
   ],
   "final_source_gates": {
     "macOS_ARM64": {
-      "unit_passed": 528,
+      "unit_passed": 531,
       "ignored": 3,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/jenkins-switch-native-verify.log"
+      "log": "evidence/native-verify-regression-final.log"
     },
     "Linux_ARM64_VM": {
-      "unit_passed": 525,
+      "unit_passed": 528,
       "ignored": 4,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/jenkins-switch-linux-verify.log"
+      "log": "evidence/linux-vm-verify-regression-final.log"
     },
     "explicit_optional_gates": {
       "real_language_servers": "3 passed; 0 failed/ignored",
@@ -1839,5 +1853,6 @@
     "passed": 6,
     "evidence": "evidence/jenkins-preflight-regressions.json",
     "scope": "Synthetic preflight only; cannot establish product acceptance"
-  }
+  },
+  "workflow_corrections_commit": "cd5e74754db95abfd622a3ab7608588e424102b1"
 }

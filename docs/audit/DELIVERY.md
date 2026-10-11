@@ -5,6 +5,7 @@ Branch: `audit/mellow-20261011`. Starting main:
 Implementation commit: `e324b7f0e64080f8c911ae41230e99ebb40313a9`.
 PR: [#11](https://github.com/ritru-labs/mellow/pull/11), authored by `binnukyadari`.
 Packaging commit: `ff6eb86`; static Linux/provenance fix: `917238f`.
+Jenkins migration: `53b6736`; final workflow corrections: `cd5e747`.
 Jenkins job: [mellow-audit-acceptance](http://127.0.0.1:8082/job/mellow-audit-acceptance/).
 The build receipt identifies its exact accepted source SHA; PR #11 links the
 executed result. A configured job or validated Jenkinsfile alone is not a pass.
@@ -20,9 +21,9 @@ Later/Defer capabilities and expanded multi-file replacement remain deferred.
 | Gate | Result | Scope |
 | --- | --- | --- |
 | Pinned Rust formatting, check and all-target/all-feature Clippy with warnings denied | Passed | Native macOS ARM64 and Linux ARM64 Docker VM |
-| Native source tests | 528 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
+| Native source tests | 531 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
 | Native real-PTY suite | 24 passed, 0 failed/ignored | Cargo executable, 80×24/120×34, synthetic files/providers |
-| Linux source tests | 525 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
+| Linux source tests | 528 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
 | Linux real-PTY suite | 24 passed, 0 failed/ignored | Linux VM Cargo executable, separate from macOS |
 | Explicit real-language gates | 3 passed, 0 failed/ignored | Pyright 1.1.414 and TS language server 6.0.2/TypeScript 5.9.3 over stdio/core buffers |
 | Explicit actual Linux bind mount | 1 passed, 0 failed/ignored | Observed EBUSY→in-place save; mounted VirtioFS xattrs unsupported |
@@ -99,7 +100,7 @@ controller has an online ARM64 macOS agent, with no Intel/native Linux agent.
 Docker Linux VM evidence is separately labeled.
 Apple signing identity/notarization and executed provenance publication are absent.
 VoiceOver/braille, participant usability, actual terminal/font/system clipboard,
-SSH/tmux, packaged interactive real-LSP panels, and live AI provider behavior are
+SSH/tmux, Intel/Linux packaged real-LSP UI, and live AI provider behavior are
 not claimed by source tests, parsed PTYs, mocks or Linux VM results. Linux VM POSIX ACL and cross-owner refusal were exercised; the mounted
 filesystem’s unsupported xattr branch remains unqualified. Safe save does not serialize an uncooperative
 writer across its final check/rename window; trusted tools are not OS-sandboxed.
@@ -109,3 +110,32 @@ metadata/hard-link save policy, indentation, paste/occurrences, Save All, local
 history/trash, snippets/navigation/search, language services, CLI integration,
 Safe Configuration Change and Terminal Doctor. No IDE, autonomous agent or
 extension-marketplace expansion was undertaken.
+
+## Corrections found through actual workflows
+
+Jenkins #1 at `53b6736` failed the foreground Ctrl+C test (527 passed, one
+failed, three ignored); this was preserved rather than rerun blindly. Isolated
+REDs reproduced ignored INT/QUIT dispositions and a blocked signal mask. PTY
+children now reset their interrupt dispositions and mask before exec using
+async-signal-safe calls, preserving the parent. Native/GNU focused tests passed
+11/11; final source gates passed 531 native and 528 Linux VM tests, plus 24 PTYs
+on each. The CI receipt also records actual launcher signal state.
+
+Actual packaged Python/TypeScript auto-imports at `757d8b0` exposed an app-level
+validation gap that real-server core-buffer tests had missed: an import insertion
+at the primary replacement start was falsely called overlap. The corrected app
+guard permits that boundary, preserves refusal of true overlaps and duplicate
+point insertions, and checks Unicode, caret placement and one-step undo/redo.
+Clean `cd5e747` macOS ARM archive SHA-256
+`c7480db9003ba2f470c7158fe529748455440d262103e413ee623279a6540ee0`,
+binary `f9d1699a7d75d62a6a444b1bbfdbf4ac5f1b805a4865c3bede73da8ddb765d2f`,
+passed all 24 extracted-archive PTY regressions. The final real-server packaged
+workflow record and Jenkins result are linked in PR #11.
+
+The corrected extracted macOS ARM64 `cd5e747` package also passed actual 80×24
+keyboard workflows with real Python and TypeScript servers: trust, completion with
+import, atomic undo/redo, definition and navigation back, Problems diagnostics, save
+and clean exit. Both editor children exited with status 0. Retained
+[evidence](evidence/real-lsp-cd5/verification.md) identifies the exact executable.
+This closes the previously unqualified native ARM packaged real-LSP UI gate;
+Intel/Linux real-LSP UI, native accessibility and remote terminal gates remain open.

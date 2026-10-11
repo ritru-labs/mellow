@@ -73,7 +73,9 @@ Create a manual Pipeline using the reviewed `Jenkinsfile`, without SCM polling.
 absolute agent-local checkout for `SOURCE_REPOSITORY`. The default agent is the
 existing `vidhur-mac && darwin-arm64`, with command-scoped Rust 1.90.0. The job
 does not change global toolchains, credentials, other jobs or installed Mellow.
-It runs formatting/lint/source tests, release/crate, isolated installation, and
+When the controller root URL is unset, `JENKINS_BASE_URL` supplies the evidence
+URL without changing controller settings. It runs formatting/lint/source tests,
+release/crate, isolated installation, and
 all PTY tests against the extracted native archive. Optional Linux VM packages
 are labeled separately and include deb/rpm install/test/uninstall. Failure logs
 and source/archive/binary receipts are always archived.

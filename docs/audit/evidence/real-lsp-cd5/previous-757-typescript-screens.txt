@@ -1,0 +1,311 @@
+=== startup ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │ audit_sy╭ ✦ Welcome to Mellow · crafted by Ritru Labs ─────────╮
+            │                                                      │
+            │  Just start typing. There are no modes to learn.     │
+            │                                                      │
+            │  Ctrl+S   Save                                       │
+            │  Ctrl+O   Open a file                                │
+            │  Ctrl+F   Find (press twice: all files)              │
+            │  Ctrl+P   Every command                              │
+            │  Ctrl+B   Show or hide files                         │
+            │  Ctrl+T   Terminal (again: back)                     │
+            │  Ctrl+K   Ask AI                                     │
+            │  Ctrl+Z   Undo                                       │
+            │  Ctrl+W   Close file                                 │
+            │  Ctrl+Q   Quit                                       │
+            │                                                      │
+            │  F1 shows this again. The mouse works too.           │
+            │  Start typing, or press Enter                        │
+            │                                                      │
+            ╰──────────────────────────────────────────────────────╯
+
+
+        Ln 1, Col 1   Spaces: 4   TypeScript   ✦ Set up AI   Terminal   F1 Help
+
+=== editing ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │ audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Tip: F1 shows the everyday k…   Ln 1, Col 1   Spaces: 4   TypeScript   F1 Help
+
+=== palette ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │ audit_sy
+
+        ╭ ● Commands ──────────────────────────────────────────────────╮
+        │ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+        Ln 1, Col 1   Spaces: 4   TypeScript   ✦ Set up AI   Terminal   F1 Help
+
+=== trust review ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 ┌Trust workspace execution─────────────────────────────────────────────────┐
+  │> Language servers, formatters and tasks may execute code and contact     │
+  │services.                                                                 │
+  │  Trust applies to this session and workspace only; core editing works    │
+  │without it.                                                               │
+  │  Press Enter to explicitly trust this workspace, or Escape to cancel.    │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+        Ln 1, Col 1   Spaces: 4   TypeScript   ✦ Set up AI   Terminal   F1 Help
+
+=== trusted ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │ audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ TypeScript language server r…   Ln 1, Col 1   Spaces: 4   TypeScript   F1 Help
+
+=== helper picker ===
+ ✦ typescript-workspa │ main.ts ×                              Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+    ╭ ● Open file ─────────────────────────────────────────────────────────╮
+    │ > Type a filename or relative/absolute path…                         │
+    │ ──────────────────────────────────────────────────────────────────── │
+    │ ▸ config/mellow/settings.conf                                        │
+    │   helper.ts                                                          │
+    │   main.ts                                                            │
+    │   pyrightconfig.json                                                 │
+    │   state/mellow/onboarding-v1.seen                                    │
+    │   tsconfig.json                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │ ↑↓ choose · Tab complete · Enter open · Esc close                    │
+    ╰──────────────────────────────────────────────────────────────────────╯
+
+
+
+          1 problem   Ln 1, Col 1   Spaces: 4   TypeScript   Terminal   F1 Help
+
+=== helper opened ===
+ ✦ typescript-workspa │ main.ts    helper.ts ×                 Open  Save  Quit
+ helper.ts                                                              ✓ Saved
+1 │ export function audit_symbol(): number { return 42; }
+2 │
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Opened helper.ts                1 problem   Ln 1, Col 1   TypeScript   F1 Help
+
+=== main selected ===
+ ✦ typescript-workspa │ main.ts ×  helper.ts                   Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Switched to main.ts             1 problem   Ln 1, Col 1   TypeScript   F1 Help
+
+=== palette ===
+ ✦ typescript-workspa │ main.ts ×  helper.ts                   Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+
+        ╭ ● Commands ──────────────────────────────────────────────────╮
+        │ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+          1 problem   Ln 1, Col 9   Spaces: 4   TypeScript   Terminal   F1 Help
+
+=== actual autoimport popup ===
+ ✦ typescript-workspa │ main.ts ×  helper.ts                   Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+            ╭ Suggestions ───────────────────────────────────────╮
+            │▸ audit_symbol                     ./helper         │
+            │                                                    │
+            │↑↓ choose · Tab/Enter apply · Esc                   │
+            ╰────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Ctrl+P every command            1 problem   Ln 1, Col 9   TypeScript   F1 Help
+
+=== FAILED completion applied to editor ===
+ ✦ typescript-workspa │ main.ts ×  helper.ts                   Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+            ╭ Suggestions ───────────────────────────────────────╮
+            │▸ audit_symbol                     ./helper         │
+            │                                                    │
+            │↑↓ choose · Tab/Enter apply · Esc                   │
+            ╰────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Completion refused; nothing …   1 problem   Ln 1, Col 9   TypeScript   F1 Help
+
+=== failure final screen ===
+ ✦ typescript-workspa │ main.ts ×  helper.ts                   Open  Save  Quit
+ main.ts                                                                ✓ Saved
+1 │●audit_sy
+            ╭ Suggestions ───────────────────────────────────────╮
+            │▸ audit_symbol                     ./helper         │
+            │                                                    │
+            │↑↓ choose · Tab/Enter apply · Esc                   │
+            ╰────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Completion refused; nothing …   1 problem   Ln 1, Col 9   TypeScript   F1 Help

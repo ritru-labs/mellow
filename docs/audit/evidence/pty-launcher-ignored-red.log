@@ -1,0 +1,34 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.39s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 1 test
+
+thread 'pty::tests::terminal_children_restore_signals_without_changing_the_parent' panicked at src/pty.rs:1089:13:
+isolated ignored profile failed: stdout=
+running 1 test
+test pty::tests::terminal_children_restore_signals_without_changing_the_parent ... FAILED
+
+failures:
+
+failures:
+    pty::tests::terminal_children_restore_signals_without_changing_the_parent
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 531 filtered out; finished in 3.40s
+
+ stderr=
+thread 'pty::tests::terminal_children_restore_signals_without_changing_the_parent' panicked at src/pty.rs:1020:13:
+Ctrl+C did not return foreground ownership to the shell
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pty::tests::terminal_children_restore_signals_without_changing_the_parent ... FAILED
+
+failures:
+
+failures:
+    pty::tests::terminal_children_restore_signals_without_changing_the_parent
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 531 filtered out; finished in 3.42s
+
+error: test failed, to rerun pass `--bin mellow`

@@ -124,3 +124,14 @@ claim full PTY coverage of those workflows. AI transport tests here are mocks,
 not live-provider qualification. Native macOS Intel, Linux target archives,
 package installation/uninstallation, signing/notarization and provenance
 require the distribution gates in the release verification record.
+
+## Launcher signal boundary
+
+The first actual Jenkins run failed foreground Ctrl+C. Isolated tests reproduced
+ignored INT/QUIT inheritance and a blocked signal mask before the fix. PTY
+children now reset these dispositions and clear their mask before exec using
+async-signal-safe calls; the editor process is unchanged. The regression verifies
+foreground ownership, disables input echo, checks an actual recovery file marker
+and split output, verifies shell survival and preserves the parent signal state.
+Native macOS and Linux GNU focused suites passed 11/11; the old echoed-input
+marker test alone would not establish recovery. RED/GREEN logs are retained.

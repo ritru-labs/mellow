@@ -1,0 +1,957 @@
+Started by user unknown or anonymous
+[Pipeline] Start of Pipeline
+[Pipeline] timestamps
+[Pipeline] {
+[Pipeline] timeout
+[2026-10-11T12:34:08.498Z] Timeout set to expire in 4 hr 0 min
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Exact-source candidate acceptance)
+[Pipeline] script
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (mac-arm64)
+[Pipeline] catchError
+[Pipeline] {
+[Pipeline] timeout
+[2026-10-11T12:34:08.602Z] Timeout set to expire in 1 hr 30 min
+[Pipeline] {
+[Pipeline] node
+[2026-10-11T12:34:08.639Z] Running on vidhur-mac in /Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance
+[Pipeline] {
+[Pipeline] ws
+[2026-10-11T12:34:08.660Z] Running in /Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance/mellow-candidate-1-mac-arm64
+[Pipeline] {
+[Pipeline] withEnv
+[Pipeline] {
+[Pipeline] sh
+[2026-10-11T12:34:10.304Z] Initialized empty Git repository in /Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance/mellow-candidate-1-mac-arm64/source/.git/
+[2026-10-11T12:34:11.263Z] From https://github.com/ritru-labs/mellow
+[2026-10-11T12:34:11.263Z]  * branch            53b67363adba30f7892f3550a59a147ea75f03aa -> FETCH_HEAD
+[2026-10-11T12:34:11.263Z] HEAD is now at 53b6736 Use local Jenkins for exact-source audit acceptance
+[2026-10-11T12:34:11.263Z] source_commit=53b67363adba30f7892f3550a59a147ea75f03aa
+[2026-10-11T12:34:11.263Z] target=aarch64-apple-darwin
+[2026-10-11T12:34:11.263Z] execution_kind=native
+[2026-10-11T12:34:11.263Z] build_url=local
+[2026-10-11T12:34:11.263Z] Darwin arm64
+[2026-10-11T12:34:11.263Z] rustc 1.90.0 (1159e78c4 2025-09-14)
+[2026-10-11T12:34:11.263Z] binary: rustc
+[2026-10-11T12:34:11.263Z] commit-hash: 1159e78c4747b02ef996e55082b704c09b970588
+[2026-10-11T12:34:11.263Z] commit-date: 2025-09-14
+[2026-10-11T12:34:11.263Z] host: aarch64-apple-darwin
+[2026-10-11T12:34:11.263Z] release: 1.90.0
+[2026-10-11T12:34:11.263Z] LLVM version: 20.1.8
+[2026-10-11T12:34:11.524Z] jenkinsfile_sha256=a8815c0a8e82d48c82148e31ad233446115241712f4bc42775104609d58d9514
+[2026-10-11T12:34:11.524Z] helper_sha256=4e471e3b498c3fc2bb2055d912ebfa239bfde234361e236feeeaa5856d7369d5
+[2026-10-11T12:34:12.094Z] 6 synthetic Jenkins preflight boundary cases passed; no product acceptance claimed
+[2026-10-11T12:34:12.395Z] macOS SDK: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+[2026-10-11T12:34:12.395Z] Release documentation labels agree with Cargo.toml 0.3.0
+[2026-10-11T12:34:13.383Z]    Compiling proc-macro2 v1.0.107
+[2026-10-11T12:34:13.384Z]    Compiling quote v1.0.47
+[2026-10-11T12:34:13.384Z]    Compiling unicode-ident v1.0.26
+[2026-10-11T12:34:13.384Z]    Compiling shlex v2.0.1
+[2026-10-11T12:34:13.384Z]    Compiling find-msvc-tools v0.1.14
+[2026-10-11T12:34:13.384Z]    Compiling libc v0.2.189
+[2026-10-11T12:34:13.385Z]     Checking cfg-if v1.0.5
+[2026-10-11T12:34:13.385Z]     Checking itoa v1.0.18
+[2026-10-11T12:34:13.385Z]    Compiling tree-sitter-language v0.1.8
+[2026-10-11T12:34:13.385Z]     Checking smallvec v1.16.2
+[2026-10-11T12:34:13.385Z]     Checking stable_deref_trait v1.2.1
+[2026-10-11T12:34:13.385Z]     Checking memchr v2.8.3
+[2026-10-11T12:34:13.385Z]     Checking log v0.4.34
+[2026-10-11T12:34:13.385Z]     Checking pin-project-lite v0.2.17
+[2026-10-11T12:34:13.385Z]    Compiling cc v1.5.1
+[2026-10-11T12:34:13.668Z]     Checking bytes v1.12.1
+[2026-10-11T12:34:13.668Z]     Checking futures-core v0.3.34
+[2026-10-11T12:34:13.668Z]     Checking bitflags v2.13.2
+[2026-10-11T12:34:13.668Z]    Compiling zmij v1.0.23
+[2026-10-11T12:34:13.668Z]     Checking writeable v0.6.4
+[2026-10-11T12:34:13.668Z]     Checking litemap v0.8.3
+[2026-10-11T12:34:13.936Z]    Compiling icu_properties_data v2.3.0
+[2026-10-11T12:34:13.937Z]     Checking futures-sink v0.3.34
+[2026-10-11T12:34:13.937Z]     Checking once_cell v1.21.4
+[2026-10-11T12:34:13.937Z]     Checking equivalent v1.0.2
+[2026-10-11T12:34:13.937Z]    Compiling icu_normalizer_data v2.3.0
+[2026-10-11T12:34:13.937Z]     Checking allocator-api2 v0.2.21
+[2026-10-11T12:34:13.937Z]     Checking utf8_iter v1.0.4
+[2026-10-11T12:34:13.937Z]    Compiling rustversion v1.0.23
+[2026-10-11T12:34:13.937Z]     Checking foldhash v0.2.0
+[2026-10-11T12:34:13.937Z]    Compiling heck v0.5.0
+[2026-10-11T12:34:13.937Z]     Checking http v1.5.0
+[2026-10-11T12:34:14.202Z]    Compiling strsim v0.11.1
+[2026-10-11T12:34:14.202Z]    Compiling thiserror v2.0.21
+[2026-10-11T12:34:14.202Z]     Checking zeroize v1.9.0
+[2026-10-11T12:34:14.202Z]     Checking ryu v1.0.23
+[2026-10-11T12:34:14.466Z]    Compiling ident_case v1.0.1
+[2026-10-11T12:34:14.466Z]     Checking percent-encoding v2.3.2
+[2026-10-11T12:34:14.466Z]     Checking rustls-pki-types v1.15.1
+[2026-10-11T12:34:14.466Z]     Checking http-body v1.1.0
+[2026-10-11T12:34:14.466Z]    Compiling ring v0.17.14
+[2026-10-11T12:34:14.466Z]     Checking slab v0.4.12
+[2026-10-11T12:34:14.466Z]     Checking futures-io v0.3.34
+[2026-10-11T12:34:14.466Z]     Checking futures-task v0.3.34
+[2026-10-11T12:34:14.466Z]     Checking either v1.18.0
+[2026-10-11T12:34:14.466Z]    Compiling unicode-segmentation v1.13.3
+[2026-10-11T12:34:14.724Z]    Compiling httparse v1.10.1
+[2026-10-11T12:34:14.724Z]    Compiling signal-hook v0.3.18
+[2026-10-11T12:34:14.724Z]    Compiling parking_lot_core v0.9.12
+[2026-10-11T12:34:14.724Z]    Compiling rustix v1.1.5
+[2026-10-11T12:34:14.724Z]     Checking unicode-width v0.2.2
+[2026-10-11T12:34:14.987Z]    Compiling serde_core v1.0.229
+[2026-10-11T12:34:14.987Z]     Checking untrusted v0.9.0
+[2026-10-11T12:34:15.250Z]    Compiling syn v3.0.6
+[2026-10-11T12:34:15.511Z]     Checking mio v1.2.3
+[2026-10-11T12:34:15.511Z]    Compiling syn v2.0.119
+[2026-10-11T12:34:15.770Z]     Checking errno v0.3.14
+[2026-10-11T12:34:15.770Z]     Checking socket2 v0.6.5
+[2026-10-11T12:34:15.770Z]     Checking tokio v1.53.1
+[2026-10-11T12:34:16.033Z]     Checking getrandom v0.2.17
+[2026-10-11T12:34:16.033Z]     Checking signal-hook-registry v1.4.8
+[2026-10-11T12:34:16.603Z]    Compiling synstructure v0.14.0
+[2026-10-11T12:34:16.603Z]    Compiling darling_core v0.24.1
+[2026-10-11T12:34:16.860Z]    Compiling strum_macros v0.28.0
+[2026-10-11T12:34:17.120Z]     Checking castaway v0.2.4
+[2026-10-11T12:34:17.120Z]    Compiling zerofrom-derive v0.1.8
+[2026-10-11T12:34:17.382Z]    Compiling yoke-derive v0.8.4
+[2026-10-11T12:34:17.646Z]    Compiling zerovec-derive v0.11.6
+[2026-10-11T12:34:17.646Z]     Checking zerofrom v0.1.8
+[2026-10-11T12:34:17.910Z]    Compiling displaydoc v0.2.7
+[2026-10-11T12:34:18.169Z]    Compiling thiserror-impl v2.0.21
+[2026-10-11T12:34:18.169Z]    Compiling darling_macro v0.24.1
+[2026-10-11T12:34:18.169Z]    Compiling convert_case v0.10.0
+[2026-10-11T12:34:18.427Z]     Checking itertools v0.14.0
+[2026-10-11T12:34:18.687Z]     Checking futures-util v0.3.34
+[2026-10-11T12:34:18.951Z]     Checking hashbrown v0.17.1
+[2026-10-11T12:34:18.952Z]     Checking hashbrown v0.16.1
+[2026-10-11T12:34:19.214Z]     Checking try-lock v0.2.5
+[2026-10-11T12:34:19.214Z]    Compiling rustls v0.23.45
+[2026-10-11T12:34:19.214Z]    Compiling serde_json v1.0.151
+[2026-10-11T12:34:19.475Z]     Checking scopeguard v1.2.0
+[2026-10-11T12:34:19.475Z]     Checking static_assertions v1.1.0
+[2026-10-11T12:34:19.475Z]     Checking tower-service v0.3.3
+[2026-10-11T12:34:19.475Z]     Checking lock_api v0.4.14
+[2026-10-11T12:34:19.475Z]    Compiling indexmap v2.14.2
+[2026-10-11T12:34:19.736Z]     Checking unicode-truncate v2.0.1
+[2026-10-11T12:34:19.736Z]     Checking want v0.3.1
+[2026-10-11T12:34:19.736Z]     Checking compact_str v0.9.1
+[2026-10-11T12:34:19.736Z]     Checking rustls-webpki v0.103.15
+[2026-10-11T12:34:19.736Z]     Checking lru v0.18.5
+[2026-10-11T12:34:19.999Z]    Compiling derive_more-impl v2.1.1
+[2026-10-11T12:34:19.999Z]    Compiling darling v0.24.1
+[2026-10-11T12:34:20.263Z]     Checking yoke v0.8.3
+[2026-10-11T12:34:20.525Z]     Checking strum v0.28.0
+[2026-10-11T12:34:20.788Z]     Checking form_urlencoded v1.2.2
+[2026-10-11T12:34:20.788Z]     Checking tracing-core v0.1.36
+[2026-10-11T12:34:21.051Z]     Checking futures-channel v0.3.34
+[2026-10-11T12:34:21.051Z]     Checking utf8parse v0.2.2
+[2026-10-11T12:34:21.051Z]     Checking atomic-waker v1.1.2
+[2026-10-11T12:34:21.051Z]    Compiling indoc v2.0.7
+[2026-10-11T12:34:21.051Z]     Checking subtle v2.6.1
+[2026-10-11T12:34:21.051Z]    Compiling litrs v1.0.0
+[2026-10-11T12:34:21.313Z]    Compiling serde v1.0.229
+[2026-10-11T12:34:21.576Z]     Checking hyper v1.11.1
+[2026-10-11T12:34:21.576Z]    Compiling document-features v0.2.12
+[2026-10-11T12:34:21.576Z]     Checking anstyle-parse v1.0.0
+[2026-10-11T12:34:21.576Z]     Checking kasuari v0.4.12
+[2026-10-11T12:34:21.576Z]     Checking tracing v0.1.44
+[2026-10-11T12:34:21.576Z]     Checking signal-hook-mio v0.2.5
+[2026-10-11T12:34:21.576Z]     Checking derive_more v2.1.1
+[2026-10-11T12:34:21.576Z]     Checking parking_lot v0.12.5
+[2026-10-11T12:34:21.840Z]     Checking aho-corasick v1.1.5
+[2026-10-11T12:34:21.840Z]     Checking sync_wrapper v1.0.2
+[2026-10-11T12:34:21.840Z]     Checking anstyle v1.0.14
+[2026-10-11T12:34:21.840Z]     Checking is_terminal_polyfill v1.70.2
+[2026-10-11T12:34:21.840Z]     Checking ipnet v2.12.2
+[2026-10-11T12:34:21.840Z]     Checking base64 v0.23.1
+[2026-10-11T12:34:21.840Z]     Checking tower-layer v0.3.3
+[2026-10-11T12:34:22.102Z]     Checking regex-syntax v0.8.11
+[2026-10-11T12:34:22.102Z]     Checking colorchoice v1.0.5
+[2026-10-11T12:34:22.102Z]     Checking anstyle-query v1.1.5
+[2026-10-11T12:34:22.102Z]     Checking anstream v1.0.0
+[2026-10-11T12:34:22.360Z]     Checking hyper-util v0.1.21
+[2026-10-11T12:34:22.623Z]    Compiling tree-sitter v0.25.10
+[2026-10-11T12:34:22.624Z]     Checking tower v0.5.3
+[2026-10-11T12:34:22.882Z]    Compiling instability v0.3.14
+[2026-10-11T12:34:22.882Z]     Checking regex-automata v0.4.18
+[2026-10-11T12:34:22.882Z]     Checking webpki-roots v1.0.9
+[2026-10-11T12:34:22.882Z]    Compiling tree-sitter-json v0.24.8
+[2026-10-11T12:34:22.882Z]    Compiling tree-sitter-bash v0.25.1
+[2026-10-11T12:34:23.141Z]    Compiling tree-sitter-yaml v0.7.2
+[2026-10-11T12:34:23.141Z]    Compiling tree-sitter-hcl v1.1.0
+[2026-10-11T12:34:23.141Z]    Compiling tree-sitter-python v0.25.0
+[2026-10-11T12:34:23.141Z]    Compiling tree-sitter-rust v0.24.2
+[2026-10-11T12:34:23.407Z]     Checking zerovec v0.11.8
+[2026-10-11T12:34:23.407Z]     Checking zerotrie v0.2.5
+[2026-10-11T12:34:23.407Z]     Checking line-clipping v0.3.8
+[2026-10-11T12:34:23.407Z]    Compiling getrandom v0.4.3
+[2026-10-11T12:34:23.670Z]     Checking arrayvec v0.7.8
+[2026-10-11T12:34:23.670Z]     Checking clap_lex v1.1.1
+[2026-10-11T12:34:23.670Z]     Checking ratatui-core v0.1.2
+[2026-10-11T12:34:23.670Z]    Compiling anyhow v1.0.104
+[2026-10-11T12:34:23.670Z]     Checking tokio-rustls v0.26.6
+[2026-10-11T12:34:23.670Z]     Checking regex v1.13.1
+[2026-10-11T12:34:23.929Z]     Checking hyper-rustls v0.27.10
+[2026-10-11T12:34:23.929Z]     Checking clap_builder v4.6.7
+[2026-10-11T12:34:23.929Z]     Checking vte v0.15.0
+[2026-10-11T12:34:24.499Z]     Checking serde_urlencoded v0.7.1
+[2026-10-11T12:34:24.499Z]     Checking crossterm v0.29.0
+[2026-10-11T12:34:25.878Z]     Checking ratatui-widgets v0.3.2
+[2026-10-11T12:34:26.139Z]     Checking tinystr v0.8.4
+[2026-10-11T12:34:26.400Z]     Checking icu_locale_core v2.3.0
+[2026-10-11T12:34:26.400Z]     Checking potential_utf v0.1.6
+[2026-10-11T12:34:26.400Z]     Checking icu_collections v2.3.0
+[2026-10-11T12:34:26.662Z]     Checking icu_provider v2.3.1
+[2026-10-11T12:34:26.662Z]     Checking icu_properties v2.3.0
+[2026-10-11T12:34:26.662Z]     Checking icu_normalizer v2.3.0
+[2026-10-11T12:34:27.230Z]     Checking idna_adapter v1.2.2
+[2026-10-11T12:34:27.230Z]     Checking idna v1.1.0
+[2026-10-11T12:34:27.230Z]     Checking url v2.5.8
+[2026-10-11T12:34:27.230Z]     Checking tower-http v0.6.11
+[2026-10-11T12:34:27.488Z]    Compiling clap_derive v4.6.7
+[2026-10-11T12:34:28.057Z]     Checking http-body-util v0.1.5
+[2026-10-11T12:34:28.057Z]     Checking str_indices v0.4.4
+[2026-10-11T12:34:28.057Z]     Checking streaming-iterator v0.1.9
+[2026-10-11T12:34:28.057Z]     Checking base64 v0.22.1
+[2026-10-11T12:34:28.057Z]     Checking clap v4.6.7
+[2026-10-11T12:34:28.057Z]     Checking reqwest v0.12.28
+[2026-10-11T12:34:28.320Z]     Checking ropey v1.6.1
+[2026-10-11T12:34:28.578Z]     Checking vt100 v0.16.2
+[2026-10-11T12:34:28.578Z]     Checking ratatui-crossterm v0.1.2
+[2026-10-11T12:34:28.578Z]     Checking fastrand v2.5.0
+[2026-10-11T12:34:28.578Z]     Checking tempfile v3.27.0
+[2026-10-11T12:34:29.957Z]     Checking ratatui v0.30.2
+[2026-10-11T12:34:31.346Z]     Checking mellow v0.3.0 (/Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance/mellow-candidate-1-mac-arm64/source)
+[2026-10-11T12:34:34.897Z]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.54s
+[2026-10-11T12:34:34.898Z]     Checking mellow v0.3.0 (/Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance/mellow-candidate-1-mac-arm64/source)
+[2026-10-11T12:34:38.226Z]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.48s
+[2026-10-11T12:34:38.229Z]    Compiling itoa v1.0.18
+[2026-10-11T12:34:38.229Z]    Compiling cfg-if v1.0.5
+[2026-10-11T12:34:38.229Z]    Compiling stable_deref_trait v1.2.1
+[2026-10-11T12:34:38.229Z]    Compiling smallvec v1.16.2
+[2026-10-11T12:34:38.229Z]    Compiling memchr v2.8.3
+[2026-10-11T12:34:38.229Z]    Compiling libc v0.2.189
+[2026-10-11T12:34:38.229Z]    Compiling log v0.4.34
+[2026-10-11T12:34:38.229Z]    Compiling equivalent v1.0.2
+[2026-10-11T12:34:38.229Z]    Compiling bytes v1.12.1
+[2026-10-11T12:34:38.229Z]    Compiling zerofrom v0.1.8
+[2026-10-11T12:34:38.229Z]    Compiling pin-project-lite v0.2.17
+[2026-10-11T12:34:38.229Z]    Compiling futures-core v0.3.34
+[2026-10-11T12:34:38.229Z]    Compiling bitflags v2.13.2
+[2026-10-11T12:34:38.229Z]    Compiling yoke v0.8.3
+[2026-10-11T12:34:38.229Z]    Compiling strsim v0.11.1
+[2026-10-11T12:34:38.229Z]    Compiling unicode-segmentation v1.13.3
+[2026-10-11T12:34:38.229Z]    Compiling litemap v0.8.3
+[2026-10-11T12:34:38.229Z]    Compiling writeable v0.6.4
+[2026-10-11T12:34:38.229Z]    Compiling once_cell v1.21.4
+[2026-10-11T12:34:38.497Z]    Compiling zerovec v0.11.8
+[2026-10-11T12:34:38.497Z]    Compiling zerotrie v0.2.5
+[2026-10-11T12:34:38.497Z]    Compiling foldhash v0.2.0
+[2026-10-11T12:34:38.497Z]    Compiling allocator-api2 v0.2.21
+[2026-10-11T12:34:38.497Z]    Compiling futures-sink v0.3.34
+[2026-10-11T12:34:38.497Z]    Compiling utf8_iter v1.0.4
+[2026-10-11T12:34:38.497Z]    Compiling tree-sitter-language v0.1.8
+[2026-10-11T12:34:38.497Z]    Compiling percent-encoding v2.3.2
+[2026-10-11T12:34:38.497Z]    Compiling ryu v1.0.23
+[2026-10-11T12:34:38.497Z]    Compiling http v1.5.0
+[2026-10-11T12:34:38.497Z]    Compiling zeroize v1.9.0
+[2026-10-11T12:34:38.497Z]    Compiling darling_core v0.24.1
+[2026-10-11T12:34:38.497Z]    Compiling zmij v1.0.23
+[2026-10-11T12:34:38.497Z]    Compiling icu_properties_data v2.3.0
+[2026-10-11T12:34:38.497Z]    Compiling icu_normalizer_data v2.3.0
+[2026-10-11T12:34:38.775Z]    Compiling mio v1.2.3
+[2026-10-11T12:34:38.775Z]    Compiling errno v0.3.14
+[2026-10-11T12:34:38.775Z]    Compiling socket2 v0.6.5
+[2026-10-11T12:34:38.775Z]    Compiling rustls-pki-types v1.15.1
+[2026-10-11T12:34:38.775Z]    Compiling getrandom v0.2.17
+[2026-10-11T12:34:38.775Z]    Compiling either v1.18.0
+[2026-10-11T12:34:38.775Z]    Compiling futures-task v0.3.34
+[2026-10-11T12:34:38.775Z]    Compiling slab v0.4.12
+[2026-10-11T12:34:38.775Z]    Compiling unicode-width v0.2.2
+[2026-10-11T12:34:38.775Z]    Compiling tinystr v0.8.4
+[2026-10-11T12:34:38.775Z]    Compiling potential_utf v0.1.6
+[2026-10-11T12:34:38.775Z]    Compiling untrusted v0.9.0
+[2026-10-11T12:34:38.775Z]    Compiling futures-io v0.3.34
+[2026-10-11T12:34:39.054Z]    Compiling icu_locale_core v2.3.0
+[2026-10-11T12:34:39.054Z]    Compiling tokio v1.53.1
+[2026-10-11T12:34:39.054Z]    Compiling icu_collections v2.3.0
+[2026-10-11T12:34:39.054Z]    Compiling futures-util v0.3.34
+[2026-10-11T12:34:39.054Z]    Compiling ring v0.17.14
+[2026-10-11T12:34:39.054Z]    Compiling itertools v0.14.0
+[2026-10-11T12:34:39.054Z]    Compiling thiserror v2.0.21
+[2026-10-11T12:34:39.054Z]    Compiling signal-hook-registry v1.4.8
+[2026-10-11T12:34:39.328Z]    Compiling http-body v1.1.0
+[2026-10-11T12:34:39.328Z]    Compiling castaway v0.2.4
+[2026-10-11T12:34:39.328Z]    Compiling hashbrown v0.17.1
+[2026-10-11T12:34:39.328Z]    Compiling hashbrown v0.16.1
+[2026-10-11T12:34:39.328Z]    Compiling convert_case v0.10.0
+[2026-10-11T12:34:39.609Z]    Compiling try-lock v0.2.5
+[2026-10-11T12:34:39.609Z]    Compiling tower-service v0.3.3
+[2026-10-11T12:34:39.609Z]    Compiling static_assertions v1.1.0
+[2026-10-11T12:34:39.609Z]    Compiling scopeguard v1.2.0
+[2026-10-11T12:34:39.609Z]    Compiling icu_provider v2.3.1
+[2026-10-11T12:34:39.883Z]    Compiling indexmap v2.14.2
+[2026-10-11T12:34:39.883Z]    Compiling lru v0.18.5
+[2026-10-11T12:34:39.883Z]    Compiling kasuari v0.4.12
+[2026-10-11T12:34:39.883Z]    Compiling lock_api v0.4.14
+[2026-10-11T12:34:40.159Z]    Compiling icu_properties v2.3.0
+[2026-10-11T12:34:40.159Z]    Compiling icu_normalizer v2.3.0
+[2026-10-11T12:34:40.159Z]    Compiling rustls-webpki v0.103.15
+[2026-10-11T12:34:40.159Z]    Compiling unicode-truncate v2.0.1
+[2026-10-11T12:34:40.159Z]    Compiling compact_str v0.9.1
+[2026-10-11T12:34:40.429Z]    Compiling derive_more-impl v2.1.1
+[2026-10-11T12:34:40.429Z]    Compiling want v0.3.1
+[2026-10-11T12:34:40.429Z]    Compiling strum v0.28.0
+[2026-10-11T12:34:40.429Z]    Compiling signal-hook v0.3.18
+[2026-10-11T12:34:40.697Z]    Compiling httparse v1.10.1
+[2026-10-11T12:34:40.697Z]    Compiling serde_core v1.0.229
+[2026-10-11T12:34:40.697Z]    Compiling rustix v1.1.5
+[2026-10-11T12:34:40.982Z]    Compiling parking_lot_core v0.9.12
+[2026-10-11T12:34:40.983Z]    Compiling idna_adapter v1.2.2
+[2026-10-11T12:34:41.269Z]    Compiling form_urlencoded v1.2.2
+[2026-10-11T12:34:41.269Z]    Compiling futures-channel v0.3.34
+[2026-10-11T12:34:41.269Z]    Compiling tracing-core v0.1.36
+[2026-10-11T12:34:41.269Z]    Compiling utf8parse v0.2.2
+[2026-10-11T12:34:41.269Z]    Compiling subtle v2.6.1
+[2026-10-11T12:34:41.269Z]    Compiling atomic-waker v1.1.2
+[2026-10-11T12:34:41.269Z]    Compiling anstyle-parse v1.0.0
+[2026-10-11T12:34:41.269Z]    Compiling rustls v0.23.45
+[2026-10-11T12:34:41.269Z]    Compiling serde_json v1.0.151
+[2026-10-11T12:34:41.269Z]    Compiling idna v1.1.0
+[2026-10-11T12:34:41.269Z]    Compiling parking_lot v0.12.5
+[2026-10-11T12:34:41.553Z]    Compiling derive_more v2.1.1
+[2026-10-11T12:34:41.553Z]    Compiling darling_macro v0.24.1
+[2026-10-11T12:34:41.825Z]    Compiling tracing v0.1.44
+[2026-10-11T12:34:41.825Z]    Compiling signal-hook-mio v0.2.5
+[2026-10-11T12:34:41.825Z]    Compiling darling v0.24.1
+[2026-10-11T12:34:41.825Z]    Compiling ratatui-core v0.1.2
+[2026-10-11T12:34:41.825Z]    Compiling aho-corasick v1.1.5
+[2026-10-11T12:34:41.825Z]    Compiling sync_wrapper v1.0.2
+[2026-10-11T12:34:42.098Z]    Compiling tower-layer v0.3.3
+[2026-10-11T12:34:42.098Z]    Compiling colorchoice v1.0.5
+[2026-10-11T12:34:42.098Z]    Compiling ipnet v2.12.2
+[2026-10-11T12:34:42.412Z]    Compiling base64 v0.23.1
+[2026-10-11T12:34:42.412Z]    Compiling instability v0.3.14
+[2026-10-11T12:34:42.412Z]    Compiling hyper v1.11.1
+[2026-10-11T12:34:43.028Z]    Compiling regex-syntax v0.8.11
+[2026-10-11T12:34:43.028Z]    Compiling anstyle-query v1.1.5
+[2026-10-11T12:34:43.028Z]    Compiling is_terminal_polyfill v1.70.2
+[2026-10-11T12:34:43.028Z]    Compiling anstyle v1.0.14
+[2026-10-11T12:34:43.028Z]    Compiling tree-sitter v0.25.10
+[2026-10-11T12:34:43.028Z]    Compiling tower v0.5.3
+[2026-10-11T12:34:43.028Z]    Compiling anstream v1.0.0
+[2026-10-11T12:34:43.358Z]    Compiling serde v1.0.229
+[2026-10-11T12:34:43.358Z]    Compiling crossterm v0.29.0
+[2026-10-11T12:34:43.643Z]    Compiling hyper-util v0.1.21
+[2026-10-11T12:34:43.643Z]    Compiling url v2.5.8
+[2026-10-11T12:34:43.923Z]    Compiling webpki-roots v1.0.9
+[2026-10-11T12:34:44.208Z]    Compiling line-clipping v0.3.8
+[2026-10-11T12:34:44.604Z]    Compiling arrayvec v0.7.8
+[2026-10-11T12:34:44.604Z]    Compiling clap_lex v1.1.1
+[2026-10-11T12:34:44.604Z]    Compiling tower-http v0.6.11
+[2026-10-11T12:34:44.604Z]    Compiling vte v0.15.0
+[2026-10-11T12:34:44.604Z]    Compiling clap_builder v4.6.7
+[2026-10-11T12:34:44.604Z]    Compiling ratatui-widgets v0.3.2
+[2026-10-11T12:34:44.907Z]    Compiling ratatui-crossterm v0.1.2
+[2026-10-11T12:34:44.907Z]    Compiling serde_urlencoded v0.7.1
+[2026-10-11T12:34:44.907Z]    Compiling http-body-util v0.1.5
+[2026-10-11T12:34:45.295Z]    Compiling streaming-iterator v0.1.9
+[2026-10-11T12:34:45.295Z]    Compiling regex-automata v0.4.18
+[2026-10-11T12:34:45.295Z]    Compiling tokio-rustls v0.26.6
+[2026-10-11T12:34:45.637Z]    Compiling str_indices v0.4.4
+[2026-10-11T12:34:45.637Z]    Compiling base64 v0.22.1
+[2026-10-11T12:34:45.637Z]    Compiling hyper-rustls v0.27.10
+[2026-10-11T12:34:45.637Z]    Compiling ropey v1.6.1
+[2026-10-11T12:34:45.923Z]    Compiling reqwest v0.12.28
+[2026-10-11T12:34:46.205Z]    Compiling vt100 v0.16.2
+[2026-10-11T12:34:46.490Z]    Compiling tree-sitter-bash v0.25.1
+[2026-10-11T12:34:46.490Z]    Compiling tree-sitter-hcl v1.1.0
+[2026-10-11T12:34:46.490Z]    Compiling tree-sitter-yaml v0.7.2
+[2026-10-11T12:34:46.490Z]    Compiling tree-sitter-python v0.25.0
+[2026-10-11T12:34:46.490Z]    Compiling tree-sitter-json v0.24.8
+[2026-10-11T12:34:46.764Z]    Compiling ratatui v0.30.2
+[2026-10-11T12:34:46.764Z]    Compiling tree-sitter-rust v0.24.2
+[2026-10-11T12:34:46.764Z]    Compiling getrandom v0.4.3
+[2026-10-11T12:34:46.764Z]    Compiling anyhow v1.0.104
+[2026-10-11T12:34:47.036Z]    Compiling fastrand v2.5.0
+[2026-10-11T12:34:47.036Z]    Compiling clap v4.6.7
+[2026-10-11T12:34:47.036Z]    Compiling tempfile v3.27.0
+[2026-10-11T12:34:47.721Z]    Compiling regex v1.13.1
+[2026-10-11T12:34:49.143Z]    Compiling mellow v0.3.0 (/Users/rukmini/.jenkins-agent/vidhur/workspace/mellow-audit-acceptance/mellow-candidate-1-mac-arm64/source)
+[2026-10-11T12:34:58.068Z]     Finished `test` profile [unoptimized + debuginfo] target(s) in 20.15s
+[2026-10-11T12:34:58.069Z]      Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+[2026-10-11T12:34:58.650Z]
+[2026-10-11T12:34:58.650Z] running 531 tests
+[2026-10-11T12:34:58.650Z] test ai::tests::endpoint_host_names_where_the_key_goes ... ok
+[2026-10-11T12:34:58.650Z] test ai::shell_command_tests::keeps_one_command_and_drops_fences_and_prompts ... ok
+[2026-10-11T12:34:58.650Z] test ai::shell_command_tests::shell_commands_reject_every_terminal_control_before_cleaning ... ok
+[2026-10-11T12:34:58.650Z] test ai::commit_message_tests::strips_fences_and_quotes_from_a_drafted_message ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::debug_output_never_shows_the_api_key ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::inline_suggestions_drop_fences_and_stay_short ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::additive_deny_globs_match_paths_and_defaults_cannot_be_removed ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::oversized_selection_is_refused_before_anything_is_sent ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::instruction_and_http_envelopes_have_hard_limits ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::errors_never_echo_provider_credentials_or_terminal_controls ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::privacy_policy_denies_an_innocuous_alias_to_an_excluded_file ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::json_usage_and_inline_output_follow_the_same_bounded_transport ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::ai_requests_do_not_follow_redirects_to_another_host ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::openai_compatible_request_round_trip_uses_bounded_adapter_contract ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::proposal_parser_accepts_json_and_never_edits_without_permission ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::remote_plain_http_is_refused_but_localhost_is_allowed ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::streaming_claude_merges_usage_and_refuses_cut_off_text ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::oversized_or_cut_off_replacements_change_nothing ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::streaming_missing_completion_marker_never_accepts_partial_proposals ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::privacy_policy_denies_secret_files_and_credentials_before_network ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::streaming_openai_reports_provider_usage_and_preserves_unicode_deltas ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::staged_alias_privacy_uses_the_repository_root_not_process_cwd ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::saved_setup_round_trips_and_is_private ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::saving_setup_replaces_the_file_atomically_and_privately ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::a_click_dismisses_the_welcome_screen ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::ai_setup_cycles_providers_and_keeps_settings_reachable ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::stream_errors_and_limits_withhold_credentials_and_reject_hostile_shell_controls ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::an_accepted_ai_edit_can_be_undone_while_it_is_the_latest_change ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::ai_undo_refuses_when_other_edits_came_after_it ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::asking_for_a_shell_command_without_ai_opens_setup ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::audit_ai_budgets_count_failed_attempts_unknown_usage_and_ignore_stale_progress ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::audit_clipboard_late_result_never_edits_a_background_or_changed_selection ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::audit_close_others_cancel_keeps_dirty_tabs_and_close_all_does_not_lose_text ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::abandoned_lsp_interactions_cannot_navigate_reopen_or_replace_new_ui ... ok
+[2026-10-11T12:34:58.650Z] test app::tests::audit_disabled_history_does_not_create_checkpoints_and_pending_usage_closes_budget ... ok
+[2026-10-11T12:34:58.650Z] test ai::tests::user_local_policy_is_bounded_and_resolves_file_aliases_fail_closed ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::ask_ai_without_a_provider_opens_setup_and_continues_to_the_question ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_disk_comparison_does_not_hide_final_newline_differences ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_explicit_validator_cannot_inherit_another_workspaces_execution_trust ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::a_normal_save_says_saved ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_navigation_back_forward_returns_to_exact_file_and_cursor ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_config_validator_failed_cancelled_or_stale_never_offers_save ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_occurrence_selection_replaces_unicode_once_and_undo_restores_every_match ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::ai_proposal_expires_for_a_reopened_buffer_with_matching_path_and_revision ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_quick_open_never_opens_stale_candidates_while_query_is_pending ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_task_locations_recognize_existing_unicode_paths_after_tool_prefixes ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_terminal_doctor_omits_pasted_secrets_and_records_delivered_key ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_f2_workbench_shortcuts_work_while_files_has_focus ... ok
+[2026-10-11T12:34:58.915Z] test ai::tests::cancellation_aborts_waiting_for_response_headers ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::backspace_deletes_active_selection ... ok
+[2026-10-11T12:34:58.915Z] test ai::tests::cancellation_aborts_the_inflight_transport_and_closes_its_socket ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_validator_config_error_or_oversize_never_offers_implicit_structural_save ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::blank_drafts_are_removed_instead_of_offered ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_task_failure_preserves_stderr_links_without_save_and_trust_is_required ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_save_all_reviews_dirty_tabs_stops_at_conflicts_and_keeps_other_work ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_a_palette_row_runs_that_command ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::audit_f1_two_unnamed_drafts_each_keep_and_recover_their_journal ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_a_quick_open_row_opens_that_file ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_accept_applies_the_ai_suggestion ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_an_ai_setup_field_focuses_it_without_saving ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_discard_in_the_recovery_dialog_discards_and_misses_do_nothing ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::breadcrumb_ends_with_the_definition_under_the_cursor ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::completion_without_a_language_helper_offers_words_from_the_file ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_a_problem_jumps_to_its_line ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::conflict_marker_detection_requires_standard_marker_lines ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::ctrl_arrows_backspace_and_home_edit_by_word_and_line ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::confirmation_dialogs_have_clickable_safe_choices ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::ctrl_d_in_ai_setup_turns_ai_off_and_deletes_the_saved_key ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::ctrl_space_goes_to_the_shell_and_ctrl_t_leaves_the_terminal ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::clicking_restore_in_the_recovery_dialog_restores_the_draft ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::current_lsp_reference_intent_opens_its_results ... ok
+[2026-10-11T12:34:58.915Z] test app::tests::cut_copies_and_removes_selection ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_clipboard_feedback_distinguishes_confirmed_and_unconfirmed_delivery ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_copy_on_select_off_preserves_clipboard_but_explicit_copy_works ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_copy_preference_is_mouse_reachable_without_global_writes ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_empty_system_clipboard_does_not_paste_stale_internal_text ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_failed_quit_save_as_mouse_hit_follows_resized_dialog ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_failed_quit_save_keeps_text_and_offers_save_as ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_directory_launch_reveals_its_own_project_without_opening_a_directory_buffer ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_header_quit_reaches_existing_dirty_guard ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_mouse_copy_uses_visible_intent_action ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::discard_all_clears_every_waiting_draft_and_its_blank_tab ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::discard_all_is_offered_only_for_more_than_one_draft ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::dismissing_ai_drops_late_shell_response_and_reports_transport_limit ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::clicking_a_blame_row_selects_it_first ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::design_lock_open_editors_click_preserves_dirty_buffer ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::a_failing_or_missing_formatter_saves_the_text_unchanged_and_says_why ... ok
+[2026-10-11T12:34:58.916Z] test app::tests::enter_indents_with_tabs_in_a_tab_indented_file ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::empty_workspace_symbols_do_not_fall_back_to_current_file_outline ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::enter_only_closes_onboarding_and_paste_goes_into_the_file ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::escape_defers_an_unnamed_draft_and_keeps_its_journal ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::escape_on_a_named_files_draft_keeps_the_dialog_open ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::enter_between_brackets_puts_the_closer_on_its_own_line ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::audit_f5_periodic_git_refresh_runs_in_background_and_applies_later ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::execution_trust_refuses_unresolved_and_component_prefix_paths ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::enter_keeps_the_indentation_of_the_line_in_every_file_type ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::enter_after_a_block_opener_indents_one_more_level ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::explorer_click_opens_the_row_under_the_pointer ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::f09_plain_completion_replaces_the_identifier_prefix ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::ctrl_g_says_when_ai_is_not_set_up_and_keeps_the_message ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::f09_overlapping_completion_import_applies_neither_edit ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::f09_stale_completion_import_applies_neither_edit ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::fix_problem_says_when_the_line_has_no_problem ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::final_core_stacked_split_toggles_maps_mouse_rows_and_persists ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::clicking_a_branch_selects_it_first_and_switches_on_the_second_click ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::format_on_save_is_off_unless_chosen ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::fix_problem_without_ai_opens_setup_instead_of_guessing ... ok
+[2026-10-11T12:34:59.181Z] test app::tests::final_core_multifile_lsp_atomic_undo_refuses_after_member_changes ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::execution_trust_does_not_follow_outside_files_or_symlink_aliases ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::ghost_suggestion_accepts_with_tab_and_disappears_on_other_keys ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::forced_git_refresh_supersedes_an_in_flight_background_refresh ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::final_core_multifile_lsp_undo_and_redo_are_all_or_nothing ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::cancelling_a_git_commit_kills_its_hook_and_keeps_the_message ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::go_to_symbol_explains_when_a_file_has_none ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::format_on_save_with_rustfmt_tidies_rust ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::background_formatter_keeps_input_responsive_discards_stale_and_cancels ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::go_to_symbol_filters_by_name_and_jumps_to_the_definition ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal14_explorer_blocks_escape_and_open_file_mutation ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::execution_trust_allows_new_save_as_inside_the_canonical_root ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal14_split_resize_clamps_and_changes_pane_geometry ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal14_breadcrumbs_are_workspace_relative_and_unicode_safe ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal15_alt_shift_mouse_drag_creates_rectangular_selection_and_cut_is_undoable ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal15_multi_cursor_backspace_and_delete_edit_all_locations ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal15_multi_cursor_insert_and_newline_are_single_undo_transactions ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal16_lsp_edit_rejects_overlapping_or_stale_ranges ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal15_clipboard_reader_accepts_bounded_utf8_process_output ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal13_single_file_lsp_edits_apply_as_one_undo_transaction ... ok
+[2026-10-11T12:34:59.445Z] test app::tests::goal14_explorer_create_rename_move_delete_are_guarded ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal16_multifile_lsp_edit_blocks_dirty_other_buffer_before_any_mutation ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal19_ai_proposal_expires_when_target_buffer_changes ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal19_ai_selection_proposal_is_explicit_and_undoable ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal16_multifile_lsp_edit_opens_and_updates_all_buffers_without_disk_write ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal21_external_change_auto_reloads_clean_buffer_but_preserves_dirty_work ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal17_branch_switch_blocks_dirty_mellow_buffers ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::format_on_save_keeps_windows_line_endings ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_code_intel_completion_text_edit_is_utf16_aware_and_undoable ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_code_intel_definition_jump_opens_target_and_maps_utf16_column ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_code_intel_tree_sitter_updates_incrementally_and_feeds_problems ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_file_lifecycle_quit_save_untitled_finishes_after_save_as ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_editing_bracket_pairing_and_line_commands_are_semantic ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_explorer_loads_project_files_and_opens_selected_entry ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_file_lifecycle_save_on_untitled_opens_save_as_and_persists ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_overlay_find_paste_and_unicode_backspace_do_not_touch_buffer ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_overlay_goto_paste_filters_invalid_text_and_edits_in_place ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_overlay_palette_supports_mid_string_editing ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_pointer_double_and_triple_click_select_word_and_line ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::goal_pointer_drag_beyond_editor_autoscrolls_selection ... ok
+[2026-10-11T12:34:59.708Z] test app::tests::format_on_save_runs_the_formatter_and_one_undo_restores_the_typed_text ... ok
+[2026-10-11T12:35:00.101Z] test app::tests::goal17_clean_branch_switch_reloads_open_file_from_target_branch ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_quit_walks_to_inactive_dirty_tab_instead_of_losing_it ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_recovery_dirty_edit_writes_journal_and_save_clears_it ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_recovery_startup_can_restore_unsaved_journal ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_replace_literal_dollar_and_whole_word_preview_are_safe ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_replace_preview_and_replace_all_are_one_undo_transaction ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_safety_save_conflict_preserves_disk_and_offers_resolution ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_session_restore_recovers_tabs_views_split_and_preferences ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_split_close_and_tab_close_repair_pane_assignments ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_split_editor_shows_two_tabs_and_f6_moves_real_edit_focus ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_git_revert_requires_confirmation_and_reloads_clean_buffer ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_git_changes_review_jumps_to_exact_hunk_and_blocks_dirty_stage ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_visual_theme_and_whitespace_controls_change_real_state ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_workspace_dirty_close_requires_explicit_confirmation ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_workspace_opening_same_file_reuses_existing_tab ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_terminal_multiple_sessions_switch_and_close_independently ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_workspace_switching_preserves_each_buffer_view_and_dirty_state ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_wrap_mouse_click_on_continuation_maps_back_to_source ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_wrap_toggle_preserves_source_and_disables_horizontal_scroll ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_wrap_vertical_navigation_moves_through_visual_rows ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_project_search_regex_opens_and_selects_exact_unicode_match ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::git_pull_stops_when_a_buffer_was_edited_during_the_fetch ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::indentation_follows_the_file_and_can_be_switched ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::inline_suggestion_reply_only_lands_in_its_own_buffer_and_settings ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::keep_both_puts_ours_first_and_outside_a_conflict_says_so ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::keeping_a_conflict_side_is_one_undoable_edit ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::keeping_an_empty_side_removes_the_marker_lines ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::large_copies_say_they_stayed_in_mellow ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::launch_banner_welcomes_then_clears_on_first_key ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::inferred_and_editorconfig_indentation_reaches_enter_tab_and_outdent ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::goal_workspace_quick_open_filters_and_opens_selected_file ... ok
+[2026-10-11T12:35:00.102Z] test app::tests::live_shell_command_is_suggested_and_never_run ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::goal_project_search_option_shortcuts_recalculate_results ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_e07_indent_undo_restores_text_and_selection ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_e07_paste_over_selection_restores_selection_on_undo ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_e07_selection_replacement_is_one_undo_transaction ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux02_mouse_scroll_does_not_relocate_cursor ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux03_preferred_column_retained_across_short_lines ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux04_mouse_click_handles_quit_confirmation ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux12_find_in_file_and_navigation ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux12_goto_line_and_column ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux13_mouse_drag_creates_active_selection ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux16_tab_and_outdent_lines_with_selection ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::myn_ux17_move_left_right_collapses_selection ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::goal_terminal_focus_isolates_normal_typing_from_editor_buffer ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::opening_a_file_moves_it_to_the_front_of_recents ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::lsp_edit_preview_shows_before_and_after_lines ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::paste_prefers_system_clipboard_and_falls_back_when_unavailable ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::palette_closes_on_an_outside_click_but_not_a_stray_inside_click ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::polish_quit_dialog_supports_focus_navigation_and_enter_activation ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::live_fix_problem_returns_a_reviewable_diff_that_applies_on_accept ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::quick_open_lists_recently_opened_files_first ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::quick_open_enter_on_directory_lists_contents_instead_of_opening_a_buffer ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::recent_files_break_ties_in_fuzzy_matches ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::quick_open_pasted_parent_paths_list_and_open_files_outside_workspace ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::save_conflict_cancel_works_by_click_and_outside_clicks_are_ignored ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::polish_completion_filters_sorts_and_rejects_stale_request_state ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::save_on_untitled_suggests_free_project_name_and_enter_saves ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::saving_a_read_only_file_asks_first_and_overwrite_is_explicit ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::select_copy_and_paste_flow ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::shell_suggestion_arrives_in_read_only_review_without_pty_input ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::live_commit_message_is_drafted_into_the_box_for_review ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::saving_one_draft_leaves_other_drafts_journaled ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::name_dialogs_close_on_click_of_cancel ... ok
+[2026-10-11T12:35:00.376Z] test app::tests::terminal_and_clipboard_paste_share_multicursor_unicode_undo ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::terminal_focus_always_returns_to_editor_from_the_keyboard ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::release_readiness_quick_open_tab_completes_workspace_paths ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::staged_diff_is_read_only_and_shows_only_staged_changes ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::the_first_key_typed_during_onboarding_is_kept ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::the_mouse_wheel_moves_through_a_list_overlay ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::shift_arrows_scroll_the_diff_and_choosing_another_change_resets_it ... ok
+[2026-10-11T12:35:00.636Z] test app::tests::typing_replaces_active_selection ... ok
+[2026-10-11T12:35:00.899Z] test app::tests::terminal_resizes_and_asks_before_closing_a_running_job ... ok
+[2026-10-11T12:35:00.899Z] test app::tests::workspace_directory_create_move_and_empty_delete_are_safe ... ok
+[2026-10-11T12:35:00.899Z] test app::tests::welcome_line_shows_the_full_credit_at_80_columns ... ok
+[2026-10-11T12:35:00.900Z] test app::tests::workspace_symbol_query_widening_discards_the_previous_result_subset ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::a_pause_or_moving_the_cursor_starts_a_new_undo_step ... ok
+[2026-10-11T12:35:00.900Z] test app::tests::the_commit_box_has_clickable_commit_and_cancel ... ok
+[2026-10-11T12:35:00.900Z] test app::tests::hostile_ai_shell_responses_cannot_execute_in_a_visible_real_pty ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::atomic_save_preserves_extended_attributes_owner_group_and_mode ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::bracket_matching_is_bounded_for_large_files ... ok
+[2026-10-11T12:35:00.900Z] test app::tests::workspace_directory_mutation_blocks_nonempty_delete_and_open_descendants ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::detects_language_from_extension ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::gets_and_deletes_text_range ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal15_matching_brackets_tracks_nested_pairs_from_either_side ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_editing_comment_move_duplicate_are_undoable_transactions ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_editing_word_range_handles_unicode_graphemes ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_safety_detects_atomic_external_replace_even_with_same_bytes ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::atomic_save_preserves_native_acl_and_nondefault_group ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_safety_detects_destination_created_after_open ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_safety_detects_same_size_external_content_change ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::detects_crlf_and_preserves_it_for_new_lines ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::lsp_utf16_columns_round_trip_across_emoji_and_combining_text ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::maps_terminal_cells_back_to_grapheme_columns ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::moves_over_a_combined_grapheme_as_one_editor_column ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::myn_e02_pasting_trailing_newline_keeps_cursor_at_col_zero ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::in_place_fallback_refuses_a_replaced_file_or_new_symlink_before_truncation ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::myn_e07_undo_and_redo_restore_caret_position ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::myn_e08_open_rejects_directories_and_special_files ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::myn_e10_detects_and_preserves_cr_and_unicode_line_endings ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::goal_safety_force_save_requires_explicit_call_and_refreshes_snapshot ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::open_errors_explain_the_limit_without_an_old_version_number ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::polling_trusts_settled_metadata_but_saving_checks_content ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::normalizes_pasted_line_endings_to_the_open_file ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::a_typing_run_undoes_as_one_step_and_breaks_at_spaces ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::read_only_files_are_reported_before_saving ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::publishing_a_new_file_never_replaces_one_that_appeared_meanwhile ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::replace_ranges_is_one_undo_transaction_and_preserves_unicode_positions ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::replace_ranges_supports_zero_width_insertions ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::refuses_to_open_a_broken_symlink_as_a_new_file ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::preserves_utf8_bom ... ok
+[2026-10-11T12:35:00.900Z] test buffer::tests::save_as_refuses_existing_destination_without_overwrite ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::save_as_creates_the_file_and_leaves_no_temporary_file ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::save_as_persists_untitled_buffer_and_updates_identity ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::save_baseline_cannot_adopt_a_writer_after_the_conflict_check ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::saved_snapshot_is_bound_to_the_written_inode_not_a_later_path ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::undo_and_redo_restore_dirty_state_correctly ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::saving_a_hard_link_refuses_without_mutating_either_name ... ok
+[2026-10-11T12:35:01.162Z] test claude::tests::parse_response_reads_text_blocks_and_reports_refusals ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::word_motion_stops_at_word_and_punctuation_runs ... ok
+[2026-10-11T12:35:01.162Z] test claude::tests::request_body_gates_effort_and_fallbacks_by_model ... ok
+[2026-10-11T12:35:01.162Z] test claude::tests::redirects_never_receive_the_claude_key ... ok
+[2026-10-11T12:35:01.162Z] test claude::tests::send_uses_messages_headers_and_returns_text ... ok
+[2026-10-11T12:35:01.162Z] test command::tests::binding_labels_are_readable ... ok
+[2026-10-11T12:35:01.162Z] test command::tests::command_registry_exposes_core_actions ... ok
+[2026-10-11T12:35:01.162Z] test command::tests::command_registry_has_unique_ids ... ok
+[2026-10-11T12:35:01.162Z] test command::tests::everyday_navigation_works_without_enhanced_keyboard ... ok
+[2026-10-11T12:35:01.162Z] test cli_tests::cli_supports_multiple_paths_goto_wait_stdin_and_explicit_trust ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::added_secret_objects_are_redacted ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::duplicate_and_escaped_duplicate_json_keys_are_rejected ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::empty_keys_have_explicit_paths_and_nondecimal_yaml_is_not_guessed ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::json_review_tracks_keys_arrays_and_redacts_secrets ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::unchanged_object_key_order_is_not_a_change ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::yaml_ambiguous_constructs_stop_semantic_review ... ok
+[2026-10-11T12:35:01.162Z] test conflict::tests::a_lone_separator_is_not_a_conflict ... ok
+[2026-10-11T12:35:01.162Z] test config_change::tests::yaml_nested_maps_sequences_and_quotes_are_reviewed ... ok
+[2026-10-11T12:35:01.162Z] test conflict::tests::an_empty_side_resolves_to_no_lines ... ok
+[2026-10-11T12:35:01.162Z] test conflict::tests::finds_the_block_from_any_row_inside_it ... ok
+[2026-10-11T12:35:01.162Z] test conflict::tests::keeps_each_side_or_both ... ok
+[2026-10-11T12:35:01.162Z] test conflict::tests::rows_outside_a_block_have_no_block ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::exclusive_rename_never_replaces_a_directory_or_dangling_symlink ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::exclusive_rename_preserves_existing_regular_file_and_moves_to_new_path ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::saving_an_opened_symlink_updates_target_without_replacing_link ... ok
+[2026-10-11T12:35:01.162Z] test buffer::tests::myn_e06_save_detects_external_file_conflict ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::restore_refuses_changed_manifest_or_item_after_review ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::restore_refuses_a_replaced_original_parent ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_refuses_nonprivate_or_symlink_root ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_manifest_never_follows_symlinks_or_reads_unbounded_data ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_rejects_acl_access_even_when_mode_bits_are_private ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_moves_symlink_without_touching_target ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_refuses_symlink_root_and_nonprivate_entries ... ok
+[2026-10-11T12:35:01.162Z] test file_ops::tests::trash_survives_restart_and_restore_never_overwrites_new_work ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::a_failing_formatter_reports_its_first_error_line ... ok
+[2026-10-11T12:35:01.162Z] test app::tests::stage_and_unstage_active_file_from_the_editor ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::empty_output_for_real_text_is_refused ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::formatter_error_never_injects_terminal_control_characters ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::bounded_tool_runner_preserves_failed_task_output_and_empty_clipboards ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::formatter_output_replaces_the_text ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::line_endings_follow_the_buffer ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::missing_formatters_are_named ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::output_is_bounded_before_acceptance ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::overrides_win_and_fill_in_the_path ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::large_input_does_not_deadlock ... ok
+[2026-10-11T12:35:01.162Z] test format::tests::input_backpressure_obeys_one_deadline ... ok
+[2026-10-11T12:35:01.421Z] test git::tests::conflict_scan_and_mark_resolved_follow_real_unmerged_index_state ... ok
+[2026-10-11T12:35:01.421Z] test git::tests::git_runs_outside_the_editors_terminal_session ... ok
+[2026-10-11T12:35:01.421Z] test git::tests::ahead_behind_counts_commits_against_upstream ... ok
+[2026-10-11T12:35:01.686Z] test git::tests::goal17_branch_rename_delete_and_blame_are_real_git_operations ... ok
+[2026-10-11T12:35:01.686Z] test git::tests::goal17_commit_branch_and_history_workflows_use_system_git_safely ... ok
+[2026-10-11T12:35:01.950Z] test app::tests::typing_never_waits_for_the_recovery_journal ... ok
+[2026-10-11T12:35:01.950Z] test git::tests::hunk_target_row_skips_context_to_first_real_change ... ok
+[2026-10-11T12:35:01.951Z] test git::tests::network_failures_that_wanted_a_prompt_say_how_to_proceed ... ok
+[2026-10-11T12:35:01.951Z] test git::tests::parses_multiple_zero_context_hunks_and_exact_target_rows ... ok
+[2026-10-11T12:35:01.951Z] test git::tests::goal17_rejects_invalid_branch_names_and_empty_commit_messages ... ok
+[2026-10-11T12:35:01.951Z] test git::tests::file_states_follow_stage_and_unstage_of_whole_files ... ok
+[2026-10-11T12:35:01.951Z] test app::tests::git_commit_runs_hooks_in_the_background_and_the_editor_stays_usable ... ok
+[2026-10-11T12:35:02.287Z] test git::tests::refresh_never_rewrites_the_index ... ok
+[2026-10-11T12:35:02.287Z] test app::tests::git_push_runs_in_the_background ... ok
+[2026-10-11T12:35:02.287Z] test git::tests::refresh_tracks_status_hunks_and_gutter_lines ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::aliases_to_excluded_credentials_are_not_recorded ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::checkpoints_survive_restart_and_keep_order ... ok
+[2026-10-11T12:35:02.287Z] test git::tests::revert_selected_hunk_is_bounded_and_does_not_touch_other_change ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::forgetting_one_file_preserves_unrelated_checkpoints ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::forgetting_refuses_unsafe_or_mismatched_records_without_partial_removal ... ok
+[2026-10-11T12:35:02.287Z] test format::tests::cancellation_kills_the_formatter_and_its_descendant ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::macos_system_temp_alias_works_but_user_aliases_are_rejected ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::private_modes_and_symlink_rejection ... ok
+[2026-10-11T12:35:02.287Z] test history::tests::secret_paths_content_and_oversized_files_are_excluded ... ok
+[2026-10-11T12:35:02.287Z] test input::tests::combining_grapheme_backspaces_as_one_unit ... ok
+[2026-10-11T12:35:02.287Z] test input::tests::edits_in_the_middle_by_grapheme ... ok
+[2026-10-11T12:35:02.287Z] test input::tests::pasted_text_stays_single_line ... ok
+[2026-10-11T12:35:02.287Z] test input::tests::visible_window_keeps_caret_visible ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::f1_opens_help ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::advertised_shortcuts_match_terminal_capabilities ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::familiar_shortcuts_resolve_to_commands ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::goal15_user_keymap_overrides_defaults_and_can_unbind_commands ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::goal15_user_keymap_rejects_conflicts_and_unknown_commands ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::punctuation_chords_survive_legacy_terminal_encoding ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::nano_preset_uses_nano_keys_and_loads_without_conflicts ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::user_lines_override_a_preset_and_unknown_presets_are_rejected ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::vscode_preset_keeps_the_palette_on_a_key_every_terminal_can_send ... ok
+[2026-10-11T12:35:02.287Z] test keymap::tests::vscode_preset_moves_file_open_and_commands ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::audit_f3_late_formatting_reply_only_applies_to_its_unchanged_document ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::completion_parser_honors_text_edit_range_and_plain_insert_text ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::definition_parser_accepts_location_links_and_unicode_file_uris ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::diagnostics_parser_preserves_severity_source_and_range ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::edits_for_an_older_version_of_the_open_document_are_refused ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f09_completion_keeps_supporting_import_and_opaque_resolve_data ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f09_malformed_supporting_edit_refuses_the_whole_completion ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f09_primary_completion_requires_text_and_an_ordered_range ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f09_resolve_preserves_import_and_rejects_stale_document ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_close_and_reopen_cannot_resurrect_pending_completion ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_documents_opened_before_initialize_are_all_delivered ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_late_navigation_replies_cannot_change_the_new_document ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_malformed_workspace_edit_containers_never_apply_a_partial_set ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_two_services_stay_warm_and_sync_inactive_unsaved_documents ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_unsolicited_server_edits_receive_an_explicit_refusal ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::f10_workspace_edits_refuse_changed_inactive_documents_and_stale_versions ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::file_uri_round_trip_preserves_spaces_and_unicode ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::formatting_null_result_means_no_edits ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::goal12_formatting_edits_are_tied_to_active_document ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::goal12_hover_signature_and_references_are_bounded_and_parsed ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::goal12_workspace_edits_and_code_actions_never_hide_commands ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::goal16_diagnostics_are_retained_per_open_document ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::goal16_document_changes_text_edits_are_supported_but_resource_ops_are_flagged ... ok
+[2026-10-11T12:35:02.287Z] test git::tests::goal17_fetch_fast_forward_and_push_work_against_configured_remote ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::health_reports_capabilities_install_state_and_setup_hints ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::interaction_cancellation_drops_responses_without_cancelling_symbol_panels ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::language_server_specs_cover_primary_mellow_languages ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::late_rename_and_code_action_replies_are_discarded_after_a_switch ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::latest_requests_win_when_same_document_replies_arrive_in_reverse ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::lsp_framing_round_trip_decodes_json_rpc_message ... ok
+[2026-10-11T12:35:02.287Z] test lsp::tests::oversized_incoming_frames_are_refused_without_allocating ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::oversized_or_malformed_edit_sets_are_refused_whole ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::pending_changes_coalesce_and_a_full_queue_stops_the_server ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::goal16_same_server_keeps_multiple_documents_open_without_restart ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::real_mixed_language_pool_preserves_unsaved_diagnostics_and_processes ... ignored, requires real Pyright and TypeScript server paths via MELLOW_TEST_PYRIGHT and MELLOW_TEST_TYPESCRIPT_LSP
+[2026-10-11T12:35:02.548Z] test lsp::tests::real_pyright_completion_resolves_workspace_auto_import ... ignored, requires an installed real Pyright executable via MELLOW_TEST_PYRIGHT
+[2026-10-11T12:35:02.548Z] test lsp::tests::real_stdio_lsp_lifecycle_reaches_initialized_state ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::real_typescript_completion_resolves_workspace_auto_import ... ignored, requires an installed real TypeScript language server via MELLOW_TEST_TYPESCRIPT_LSP
+[2026-10-11T12:35:02.548Z] test lsp::tests::switching_symbol_scope_invalidates_the_previous_panel_request ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::symbols_keep_hierarchy_and_workspace_file_identity ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::unchanged_inactive_document_sync_is_idempotent ... ok
+[2026-10-11T12:35:02.548Z] test history::tests::retention_limits_versions ... ok
+[2026-10-11T12:35:02.548Z] test lsp::tests::polish_completion_uses_server_trigger_characters_and_request_ids ... ok
+[2026-10-11T12:35:02.811Z] test git::tests::stage_and_unstage_selected_hunk_leave_other_hunk_unstaged ... ok
+[2026-10-11T12:35:02.811Z] test git::tests::untracked_file_can_be_staged_but_is_never_deleted_by_revert ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::real_pty_shell_keeps_working_directory_and_resizes ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::sgr_mouse_encoder_respects_terminal_mode_and_coordinates ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::terminal_key_encoding_keeps_ctrl_c_as_sigint_byte ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::ctrl_c_interrupts_foreground_process_without_killing_shell_session ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::the_shell_is_told_an_honest_terminal_type ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::scrolled_view_reads_back_through_history_then_follows_output ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::vt_screen_tracks_cursor_color_and_terminal_modes ... ok
+[2026-10-11T12:35:02.811Z] test app::tests::audit_clipboard_deadline_covers_blocked_input_and_inherited_output ... ok
+[2026-10-11T12:35:02.811Z] test pty::tests::terminals_do_not_leak_into_other_programs_and_set_term ... ok
+[2026-10-11T12:35:02.811Z] test recovery::tests::each_draft_has_its_own_journal ... ok
+[2026-10-11T12:35:02.811Z] test recovery::tests::recovery_journal_is_owner_only ... ok
+[2026-10-11T12:35:02.811Z] test recovery::tests::queued_journal_work_keeps_only_the_newest_job_per_journal ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::case_regex_and_unicode_whole_word_options_are_independent ... ok
+[2026-10-11T12:35:02.811Z] test recovery::tests::recovery_round_trip_and_clear ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_project_search_configuration_is_bounded_and_validated ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_long_line_previews_are_bounded_without_changing_match_positions ... ok
+[2026-10-11T12:35:02.811Z] test recovery::tests::orphan_drafts_are_this_workspace_and_dead_processes_only ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_search_merges_new_unsaved_documents_into_discovery ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_project_search_does_not_read_symlinks_outside_its_scope ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_unsaved_documents_obey_the_same_file_limits ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::f08_search_scope_filters_limits_and_prioritizes_unsaved_files ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::invalid_regex_is_reported_without_panicking ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::line_cursor_matches_a_full_rescan ... ok
+[2026-10-11T12:35:02.811Z] test search::tests::literal_search_is_case_insensitive_by_default_and_grapheme_aware ... ok
+[2026-10-11T12:35:03.071Z] test search::tests::f08_worker_reports_effective_configured_scope_and_skips ... ok
+[2026-10-11T12:35:03.071Z] test search::tests::project_search_is_bounded_skips_binary_and_returns_exact_locations ... ok
+[2026-10-11T12:35:03.071Z] test search::tests::project_search_uses_unsaved_text_and_counts_skipped_files ... ok
+[2026-10-11T12:35:03.071Z] test search::tests::regex_replacement_expands_capture_groups_but_literal_dollar_is_literal ... ok
+[2026-10-11T12:35:03.071Z] test session::tests::corrupt_or_oversized_session_is_rejected ... ok
+[2026-10-11T12:35:03.071Z] test session::tests::legacy_v1_session_defaults_split_ratio_without_losing_state ... ok
+[2026-10-11T12:35:03.071Z] test session::tests::session_binary_round_trip_preserves_workspace_state ... ok
+[2026-10-11T12:35:03.071Z] test session::tests::session_path_is_stable_per_workspace_identity ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::design_lock_copy_on_select_setting_is_optional_and_explicit ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::every_theme_is_accepted_by_name ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::format_on_save_is_off_by_default_and_read_from_the_file ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::settings_reject_unknown_keys_and_invalid_values ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::settings_round_trip_parser_supports_documented_values ... ok
+[2026-10-11T12:35:03.071Z] test settings::tests::unit_tests_keep_state_and_config_out_of_the_real_home_folder ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::buffer_linked_edit_is_one_undoable_change_and_stale_sessions_stop ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::escaped_shell_dollars_and_every_builtin_work ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::external_edits_invalidate_ranges_and_tab_traversal ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::invalid_or_unsupported_syntax_is_actionable ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::linked_defaults_expand_even_before_the_definition ... ok
+[2026-10-11T12:35:03.071Z] test recovery::tests::clear_now_is_never_overtaken_by_a_queued_write ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::linked_replacements_remap_unicode_stops_and_final_caret ... ok
+[2026-10-11T12:35:03.071Z] test syntax::tests::myn_e01_tokenizer_progress_guarantee_and_special_cases ... ok
+[2026-10-11T12:35:03.071Z] test syntax::tests::tokenizes_python_code ... ok
+[2026-10-11T12:35:03.071Z] test syntax::tests::tokenizes_rust_code_accurately ... ok
+[2026-10-11T12:35:03.071Z] test snippets::tests::linked_multiline_paste_preserves_crlf_and_cannot_split_graphemes ... ok
+[2026-10-11T12:35:03.071Z] test git::tests::refresh_reuses_unchanged_files_and_notices_every_change ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::goal16_semantic_highlights_follow_incremental_reparse_and_unicode_columns ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::json_has_key_outline_even_without_function_definitions ... ok
+[2026-10-11T12:35:03.071Z] test pty::tests::continuously_writing_terminal_job_yields_to_editor_input ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::line_index_matches_str_lines_exactly ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::line_index_points_match_counting_from_the_top ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::goal16_query_highlighting_classifies_rust_semantics ... ok
+[2026-10-11T12:35:03.071Z] test syntax_tree::tests::outline_lists_python_and_shell_definitions ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::language_change_reconfigures_parser_without_incremental_claim ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::release_readiness_terraform_uses_semantic_hcl_highlighting ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::highlighting_deep_rows_matches_highlighting_the_row_alone ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::outline_lists_rust_definitions_with_their_rows ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::supported_languages_cover_core_config_and_code_files ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::unicode_edit_diff_keeps_tree_valid_and_positions_safe ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::yaml_and_terraform_have_local_key_and_block_outlines ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::basic_light_text_is_readable_with_the_standard_palette ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::community_themes_are_readable_in_truecolor_and_256_colours ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::diff_text_is_readable_on_diff_backgrounds_in_every_theme ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::empty_locale_variables_count_as_unset ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::fit_to_tier_keeps_every_colour_within_what_the_terminal_shows ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::nearest_ansi256_hits_exact_palette_entries ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::theme_names_and_numbers_round_trip ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::theme_preset_cycle_visits_every_theme_once ... ok
+[2026-10-11T12:35:03.331Z] test theme::tests::themes_have_distinct_primary_text_and_canvas ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::ai_review_reads_as_an_agent_result_with_a_change_count ... ok
+[2026-10-11T12:35:03.331Z] test syntax_tree::tests::reparses_incrementally_after_source_change ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::ai_surfaces_keep_their_actions_at_80_by_24 ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::close_tab_prompt_keeps_its_sentence_for_long_file_names ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::compact_header_keeps_actions_and_unsaved_state_visible ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::ascii_mode_draws_no_unicode_in_the_interface ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::expands_tabs_at_terminal_tab_stops ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::design_lock_failed_quit_choices_render_at_supported_sizes ... ok
+[2026-10-11T12:35:03.331Z] test ui::tests::goal_code_intel_completion_overlay_renders_real_items ... ok
+[2026-10-11T12:35:03.593Z] test syntax_tree::tests::pruned_error_walk_finds_everything_a_full_walk_finds ... ok
+[2026-10-11T12:35:03.593Z] test syntax_tree::tests::rust_parser_reports_real_syntax_errors ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_file_lifecycle_named_missing_path_shows_new_indicator ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_git_changes_overlay_renders_stage_path_line_and_preview ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_project_search_overlay_renders_exact_result_context_and_bounds ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_safety_conflict_overlay_explains_safe_choices ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_replace_overlay_renders_preview_options_and_replace_all_action ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_visual_whitespace_and_indent_guides_are_real_rendering ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_terminal_pane_renders_focus_and_shell_surface ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_workspace_tabs_render_open_files_and_dirty_marker ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_wrap_renders_continuation_rows_without_mutating_source ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::horizontal_scroll_does_not_render_half_a_wide_character ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::language_status_view_explains_the_current_file ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::list_overlay_titles_open_with_the_agent_marker ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::header_clicks_match_rendered_labels ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::myn_e03_clipping_wide_char_does_not_render_later_tokens ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::long_git_diffs_scroll_and_say_how_much_is_hidden ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::myn_ux08_palette_renders_without_panic_on_small_and_standard_terminal ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::myn_ux18_selection_does_not_paint_trailing_eol_on_single_line ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::myn_ux15_untitled_buffer_shows_new_indicator ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::project_search_configured_scope_and_filtered_counts_are_visible_at_80_by_24 ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::go_to_symbol_overlay_fits_at_80_by_24 ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::respects_wide_characters ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::shorten_middle_keeps_both_ends_within_the_width ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::status_colour_follows_what_the_app_reports_not_the_words ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::quick_open_pending_discovery_shows_searching_at_80_by_24 ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::the_status_line_names_the_conflict_keys_inside_a_conflict ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::working_spinner_has_an_ascii_fallback ... ok
+[2026-10-11T12:35:03.593Z] test visual::tests::no_wrap_layout_preserves_one_visual_row_per_source_line ... ok
+[2026-10-11T12:35:03.593Z] test visual::tests::resize_reflows_visual_rows_without_changing_source_cursor ... ok
+[2026-10-11T12:35:03.593Z] test visual::tests::source_visual_round_trip_is_stable_at_every_grapheme_boundary ... ok
+[2026-10-11T12:35:03.593Z] test visual::tests::wide_unicode_and_tabs_never_stall_or_drop_graphemes ... ok
+[2026-10-11T12:35:03.593Z] test visual::tests::wrap_prefers_word_boundary_without_losing_source_columns ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::recovery_buttons_are_drawn_where_clicks_are_tested ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::explorer_tree_only_descends_into_expanded_directories ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::goal_code_intel_problems_overlay_renders_tree_sitter_diagnostic ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::discovers_project_files_but_skips_heavy_internal_directories ... ok
+[2026-10-11T12:35:03.593Z] test ui::tests::status_line_never_overlaps_and_keeps_help_visible ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::fuzzy_quick_open_ranks_file_name_and_word_start_matches_first ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::f08_quick_open_worker_drops_old_queries_and_completes_explicit_paths ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::intentional_path_completion_supports_parent_absolute_and_home_paths ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::quick_open_query_matches_all_tokens_case_insensitively ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::release_readiness_path_completion_is_bounded_and_skips_internal_directories ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::f08_file_discovery_is_cancelled_before_any_work_and_reports_truncation ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::unreadable_subdirectory_is_skipped_not_fatal ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::git_file_list_honours_gitignore_and_skips_deleted_files ... ok
+[2026-10-11T12:35:03.593Z] test search::tests::f08_worker_only_returns_the_current_generation_and_cancels_without_waiting ... ok
+[2026-10-11T12:35:03.593Z] test workspace::tests::f08_discovery_deadline_covers_descendant_inherited_stdout ... ok
+[2026-10-11T12:35:04.166Z] test app::tests::goal21_large_files_remain_editable_with_reduced_intelligence ... ok
+[2026-10-11T12:35:04.764Z] test search::tests::many_matches_in_a_large_file_are_located_in_one_pass ... ok
+[2026-10-11T12:35:05.538Z] test lsp::tests::a_server_that_stops_reading_never_blocks_the_editor ... ok
+[2026-10-11T12:35:10.979Z] test format::tests::exited_formatter_with_inherited_output_pipe_obeys_deadline ... ok
+[2026-10-11T12:35:19.207Z] test pty::tests::a_foreground_job_is_detected_until_it_ends ... FAILED
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] failures:
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] ---- pty::tests::a_foreground_job_is_detected_until_it_ends stdout ----
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] thread 'pty::tests::a_foreground_job_is_detected_until_it_ends' panicked at src/pty.rs:806:9:
+[2026-10-11T12:35:19.207Z] back at the prompt
+[2026-10-11T12:35:19.207Z] note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] failures:
+[2026-10-11T12:35:19.207Z]     pty::tests::a_foreground_job_is_detected_until_it_ends
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] test result: FAILED. 527 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 19.06s
+[2026-10-11T12:35:19.207Z]
+[2026-10-11T12:35:19.207Z] error: test failed, to rerun pass `--bin mellow`
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] archiveArtifacts
+[2026-10-11T12:35:19.287Z] Archiving artifacts
+[2026-10-11T12:35:19.351Z] Recording fingerprints
+[Pipeline] }
+[Pipeline] // ws
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] }
+[Pipeline] // timeout
+[Pipeline] }
+[2026-10-11T12:35:19.438Z] ERROR: script returned exit code 101
+[2026-10-11T12:35:19.438Z] Setting overall build result to FAILURE
+[Pipeline] // catchError
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // timeout
+[Pipeline] }
+[Pipeline] // timestamps
+[Pipeline] End of Pipeline
+Finished: FAILURE

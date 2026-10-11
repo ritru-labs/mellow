@@ -1,0 +1,441 @@
+=== startup ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ audit_sy╭ ✦ Welcome to Mellow · crafted by Ritru Labs ─────────╮
+            │                                                      │
+            │  Just start typing. There are no modes to learn.     │
+            │                                                      │
+            │  Ctrl+S   Save                                       │
+            │  Ctrl+O   Open a file                                │
+            │  Ctrl+F   Find (press twice: all files)              │
+            │  Ctrl+P   Every command                              │
+            │  Ctrl+B   Show or hide files                         │
+            │  Ctrl+T   Terminal (again: back)                     │
+            │  Ctrl+K   Ask AI                                     │
+            │  Ctrl+Z   Undo                                       │
+            │  Ctrl+W   Close file                                 │
+            │  Ctrl+Q   Quit                                       │
+            │                                                      │
+            │  F1 shows this again. The mouse works too.           │
+            │  Start typing, or press Enter                        │
+            │                                                      │
+            ╰──────────────────────────────────────────────────────╯
+
+
+            Ln 1, Col 1   Spaces: 4   Python   ✦ Set up AI   Terminal   F1 Help
+
+=== editing ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Tip: F1 shows the everyday keys …   Ln 1, Col 1   Spaces: 4   Python   F1 Help
+
+=== palette ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ audit_sy
+
+        ╭ ● Commands ──────────────────────────────────────────────────╮
+        │ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+            Ln 1, Col 1   Spaces: 4   Python   ✦ Set up AI   Terminal   F1 Help
+
+=== trust review ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 ┌Trust workspace execution─────────────────────────────────────────────────┐
+  │> Language servers, formatters and tasks may execute code and contact     │
+  │services.                                                                 │
+  │  Trust applies to this session and workspace only; core editing works    │
+  │without it.                                                               │
+  │  Press Enter to explicitly trust this workspace, or Escape to cancel.    │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+            Ln 1, Col 1   Spaces: 4   Python   ✦ Set up AI   Terminal   F1 Help
+
+=== trusted ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Workspace trusted for this sessi…   Ln 1, Col 1   Spaces: 4   Python   F1 Help
+
+=== helper picker ===
+ ✦ python-workspace │ main.py ×                                Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │●audit_sy
+    ╭ ● Open file ─────────────────────────────────────────────────────────╮
+    │ > Type a filename or relative/absolute path…                         │
+    │ ──────────────────────────────────────────────────────────────────── │
+    │ ▸ config/mellow/settings.conf                                        │
+    │   helper.py                                                          │
+    │   main.py                                                            │
+    │   pyrightconfig.json                                                 │
+    │   state/mellow/onboarding-v1.seen                                    │
+    │   tsconfig.json                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │ ↑↓ choose · Tab complete · Enter open · Esc close                    │
+    ╰──────────────────────────────────────────────────────────────────────╯
+
+
+
+             2 problems   Ln 1, Col 1   Spaces: 4   Python   Terminal   F1 Help
+
+=== helper opened ===
+ ✦ python-workspace │ main.py    helper.py ×                   Open  Save  Quit
+ helper.py › audit_symbol                                               ✓ Saved
+1 │ def audit_symbol() -> int:
+2 │ │   return 42
+3 │
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Opened helper.py       2 problems   Ln 1, Col 1   Spaces: 4   Python   F1 Help
+
+=== main selected ===
+ ✦ python-workspace │ main.py ×  helper.py                     Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │●audit_sy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Switched to main.py                2 problems   Ln 1, Col 1   Python   F1 Help
+
+=== palette ===
+ ✦ python-workspace │ main.py ×  helper.py                     Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │●audit_sy
+
+        ╭ ● Commands ──────────────────────────────────────────────────╮
+        │ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+             2 problems   Ln 1, Col 9   Spaces: 4   Python   Terminal   F1 Help
+
+=== actual autoimport popup ===
+ ✦ python-workspace │ main.py ×  helper.py                     Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │●audit_sy
+            ╭ Suggestions ───────────────────────────────────────╮
+            │▸ audit_symbol                     Auto-import      │
+            │                                                    │
+            │↑↓ choose · Tab/Enter apply · Esc                   │
+            ╰────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Ctrl+P every command               2 problems   Ln 1, Col 9   Python   F1 Help
+
+=== completion applied to editor ===
+ ✦ python-workspace │ main.py ●  helper.py                     Open  Save  Quit
+ main.py                                                              ● Unsaved
+1 │●from helper import audit_symbol
+2 │
+3 │
+4 │ audit_symbol
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Inserted audit_symbol             2 problems   Ln 4, Col 13   Python   F1 Help
+
+=== palette ===
+ ✦ python-workspace │ main.py ×  helper.py                     Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ from helper import audit_symbol
+2 │
+3 │     ╭ ● Commands ──────────────────────────────────────────────────╮
+4 │●audi│ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+             1 problem   Ln 4, Col 12   Spaces: 4   Python   Terminal   F1 Help
+
+=== helper definition opened ===
+ ✦ python-workspace │ main.py    helper.py ×                   Open  Save  Quit
+ helper.py › audit_symbol                                               ✓ Saved
+1 │ def audit_symbol() -> int:
+2 │ │   return 42
+3 │
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Definition · Ln 1, Col 5            1 problem   Ln 1, Col 5   Python   F1 Help
+
+=== palette ===
+ ✦ python-workspace │ main.py    helper.py ×                   Open  Save  Quit
+ helper.py › audit_symbol                                               ✓ Saved
+1 │ def audit_symbol() -> int:
+2 │ │   return 42
+3 │     ╭ ● Commands ──────────────────────────────────────────────────╮
+        │ > Type a command…                                            │
+        │ ──────────────────────────────────────────────────────────── │
+        │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+              1 problem   Ln 1, Col 5   Spaces: 4   Python   Terminal   F1 Help
+
+=== return main ===
+ ✦ python-workspace │ main.py ×  helper.py                     Open  Save  Quit
+ main.py                                                                ✓ Saved
+1 │ from helper import audit_symbol
+2 │
+3 │
+4 │●audit_symbol
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Switched to main.py                1 problem   Ln 4, Col 12   Python   F1 Help
+
+=== palette ===
+ ✦ python-workspace │ main.py ●  helper.py                     Open  Save  Quit
+ main.py                                                              ● Unsaved
+1 │ from helper import audit_symbol
+2 │
+3 │     ╭ ● Commands ──────────────────────────────────────────────────╮
+4 │●audi│ > Type a command…                                            │
+5 │●audi│ ──────────────────────────────────────────────────────────── │
+6 │     │ ▸ AI request usage and limits                                │
+        │   Keyboard bindings / edit keys                              │
+        │   Restore deleted file / trash                               │
+        │   Save All files                                             │
+        │   Close all files                                            │
+        │   Close other files                                          │
+        │   Create file in explorer                                    │
+        │   New folder / directory                                     │
+        │   Rename file / move                                         │
+        │   Delete file / directory                                    │
+        │ ⎿ Show provider-reported tokens, unknown cost and session bu │
+        ╰──────────────────────────────────────────────────────────────╯
+
+
+
+
+             3 problems   Ln 6, Col 1   Spaces: 4   Python   Terminal   F1 Help
+
+=== undefined diagnostic in Problems ===
+ ✦ python-workspace │ main.py ●  helper.py                     Open  Save  Quit
+ main.py                                                              ● Unsaved
+1 ╭ ● Problems · 3 ──────────────────────────────────────────────────────────╮
+2 │ ●    5:1   main.py · Pyright        "audit_missing_name" is not defin    │
+3 │ ▲    4:1   main.py · Pyright        Expression value is unused           │
+4 │ ▲    5:1   main.py · Pyright        Expression value is unused           │
+5 │                                                                          │
+6 │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │ ↑↓ choose · Enter go to problem · Esc close                              │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+
+             3 problems   Ln 6, Col 1   Spaces: 4   Python   Terminal   F1 Help
