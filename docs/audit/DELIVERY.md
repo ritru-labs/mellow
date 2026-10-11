@@ -21,9 +21,9 @@ Later/Defer capabilities and expanded multi-file replacement remain deferred.
 | Gate | Result | Scope |
 | --- | --- | --- |
 | Pinned Rust formatting, check and all-target/all-feature Clippy with warnings denied | Passed | Native macOS ARM64 and Linux ARM64 Docker VM |
-| Native source tests | 531 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
+| Native source tests | 535 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
 | Native real-PTY suite | 24 passed, 0 failed/ignored | Cargo executable, 80×24/120×34, synthetic files/providers |
-| Linux source tests | 528 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
+| Linux source tests | 532 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
 | Linux real-PTY suite | 24 passed, 0 failed/ignored | Linux VM Cargo executable, separate from macOS |
 | Explicit real-language gates | 3 passed, 0 failed/ignored | Pyright 1.1.414 and TS language server 6.0.2/TypeScript 5.9.3 over stdio/core buffers |
 | Explicit actual Linux bind mount | 1 passed, 0 failed/ignored | Observed EBUSY→in-place save; mounted VirtioFS xattrs unsupported |
@@ -139,3 +139,21 @@ and clean exit. Both editor children exited with status 0. Retained
 [evidence](evidence/real-lsp-cd5/verification.md) identifies the exact executable.
 This closes the previously unqualified native ARM packaged real-LSP UI gate;
 Intel/Linux real-LSP UI, native accessibility and remote terminal gates remain open.
+
+Jenkins #2 at `8cfc546` passed native source, release, Cargo package, isolated
+install and extracted macOS archive gates, but its overall result was FAILURE:
+Linux packaging expanded an empty optional mount array under macOS Bash 3.2
+when the checkout was a normal clone. The preserved run is not a passing Linux
+or final candidate result. The package entrypoint now safely omits an empty array;
+two regressions execute that entrypoint in clean normal clones and linked
+worktrees with spaces using synthetic Docker argument capture, passing under
+native Bash 3.2 and Linux GNU Bash. These are shell/checkout regressions, not
+product or container acceptance. Jenkins Linux package receipts now retain the
+build URL. Final exact-source execution is linked in PR #11.
+
+The final independent security review found a supporting no-op completion caret
+misalignment and related empty-primary/history cases. Four regressions preserve
+three REDs plus the overlap refusal control; all 14 F09 tests pass after the
+app-only correction. Child signal reset was independently reviewed with no
+remaining blocker found. The final candidate still requires its own full source
+and actual package run; earlier `cd5e747`/`8cfc546` receipts are checkpoints.

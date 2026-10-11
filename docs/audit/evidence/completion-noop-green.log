@@ -1,0 +1,21 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.10s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 14 tests
+test app::tests::f09_completion_noop_only_preserves_revision_and_existing_history_caret ... ok
+test app::tests::f09_plain_completion_replaces_the_identifier_prefix ... ok
+test app::tests::f09_completion_noop_primary_follows_supporting_import_and_history ... ok
+test app::tests::f09_completion_noop_supporting_edits_preserve_primary_caret_and_history ... ok
+test app::tests::f09_completion_noop_overlap_is_rejected_before_filtering ... ok
+test lsp::tests::f09_completion_keeps_supporting_import_and_opaque_resolve_data ... ok
+test lsp::tests::f09_malformed_supporting_edit_refuses_the_whole_completion ... ok
+test lsp::tests::f09_primary_completion_requires_text_and_an_ordered_range ... ok
+test lsp::tests::f09_resolve_preserves_import_and_rejects_stale_document ... ok
+test app::tests::f09_overlapping_completion_import_applies_neither_edit ... ok
+test app::tests::f09_stale_completion_import_applies_neither_edit ... ok
+test app::tests::f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command ... ok
+test app::tests::f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points ... ok
+test app::tests::f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.06s

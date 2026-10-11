@@ -1,0 +1,36 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.55s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 4 tests
+
+thread 'app::tests::f09_completion_noop_only_preserves_revision_and_existing_history_caret' panicked at src/app.rs:15195:9:
+assertion `left == right` failed
+  left: Cursor { row: 0, col: 4 }
+ right: Cursor { row: 0, col: 12 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'app::tests::f09_completion_noop_supporting_edits_preserve_primary_caret_and_history' panicked at src/app.rs:15130:13:
+assertion `left == right` failed
+  left: Cursor { row: 0, col: 9 }
+ right: Cursor { row: 0, col: 13 }
+
+thread 'app::tests::f09_completion_noop_primary_follows_supporting_import_and_history' panicked at src/app.rs:15162:9:
+assertion `left == right` failed
+  left: Cursor { row: 0, col: 13 }
+ right: Cursor { row: 1, col: 13 }
+test app::tests::f09_completion_noop_overlap_is_rejected_before_filtering ... ok
+test app::tests::f09_completion_noop_only_preserves_revision_and_existing_history_caret ... FAILED
+test app::tests::f09_completion_noop_primary_follows_supporting_import_and_history ... FAILED
+test app::tests::f09_completion_noop_supporting_edits_preserve_primary_caret_and_history ... FAILED
+
+failures:
+
+failures:
+    app::tests::f09_completion_noop_only_preserves_revision_and_existing_history_caret
+    app::tests::f09_completion_noop_primary_follows_supporting_import_and_history
+    app::tests::f09_completion_noop_supporting_edits_preserve_primary_caret_and_history
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 534 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin mellow`

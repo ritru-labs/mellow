@@ -16,6 +16,7 @@ read -r -a archs <<<"${archs[*]}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
 # Linked worktrees reference their common Git directory by an absolute path.
 # Expose only that metadata read-only; builds never mutate repository refs.
+# Bash 3.2 treats an empty array as unset under nounset; expand it only if populated.
 git_mount=()
 if [[ -f "$root/.git" ]]; then
   git_common=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
@@ -43,13 +44,14 @@ for arch in "${archs[@]}"; do
 
   docker run --rm --platform "$platform" \
     -v "$root:/workspace" \
-    "${git_mount[@]}" \
+    ${git_mount[@]+"${git_mount[@]}"} \
     -v "mellow-package-target-$arch:/target" \
     -v "mellow-package-cargo-$arch:/usr/local/cargo/registry" \
     -e CARGO_TARGET_DIR=/target \
     -e ARCH="$arch" -e DEB_ARCH="$deb_arch" -e VERSION="$version" \
     -e MELLOW_PACKAGE_SOURCE_COMMIT="$source_commit" \
     -e MELLOW_EXECUTION_KIND="$execution_kind" \
+    -e BUILD_URL="${BUILD_URL:-local}" \
     "$image" bash -euo pipefail -c '
       target="$ARCH-unknown-linux-musl"
       rustup target add "$target" >/dev/null
@@ -139,6 +141,7 @@ SPEC
         echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
         echo "execution_kind=$MELLOW_EXECUTION_KIND"
         echo "install_pty=passed"
+        echo "build_url=$BUILD_URL"
       } > "$out/mellow_${VERSION}_${DEB_ARCH}.deb.acceptance.txt"
       dpkg --remove mellow
       test ! -e /usr/bin/mellow
@@ -153,6 +156,7 @@ SPEC
         echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
         echo "execution_kind=$MELLOW_EXECUTION_KIND"
         echo "install_pty=passed"
+        echo "build_url=$BUILD_URL"
       } > "$rpm_package.acceptance.txt"
       rpm --erase mellow
       test ! -e /usr/bin/mellow

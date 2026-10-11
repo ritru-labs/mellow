@@ -194,3 +194,17 @@ separate actual packaged UI evidence from earlier real-server core tests.
 The probe retains the preceding packaged completion refusal and safely reaps owned
 children. This establishes native macOS ARM64 PTY keyboard behavior, not native
 screen-reader/Terminal-app, Intel/Linux real-LSP UI, SSH or live AI validation.
+
+## Independent no-op completion review
+
+Independent review found that empty supporting insertions were omitted from
+Buffer's returned caret list, leaving the app's primary index misaligned. An
+empty primary with a preceding import also needed its caret mapped, and an
+all-no-op completion incorrectly rewrote the previous history caret. Four
+regressions retained three original failures and one overlap-refusal control.
+All 14 focused F09 tests pass after the narrow app correction: validate the whole
+edit array first, align effective caret indices, map an empty primary from actual
+preceding edit endpoints (including normalized CRLF), and update history/services
+only for applied edits. Provider commands remain unexecuted and disclosed.
+[RED](evidence/completion-noop-red.log) and [GREEN](evidence/completion-noop-green.log)
+identify this source regression separately from packaged real-server workflows.

@@ -1,0 +1,15 @@
+[
+  {
+    "case": "normal-clone",
+    "shell": "/bin/bash",
+    "passed": true,
+    "docker_execution": "synthetic argument capture only"
+  },
+  {
+    "case": "linked-worktree",
+    "shell": "/bin/bash",
+    "passed": true,
+    "docker_execution": "synthetic argument capture only"
+  }
+]
+2 package invocation regressions passed; no container/product acceptance claimed

@@ -1,0 +1,73 @@
+{
+  "_class": "org.jenkinsci.plugins.workflow.job.WorkflowRun",
+  "artifacts": [
+    {
+      "fileName": "bootstrap.log",
+      "relativePath": "evidence/bootstrap.log"
+    },
+    {
+      "fileName": "checkout.log",
+      "relativePath": "evidence/checkout.log"
+    },
+    {
+      "fileName": "console.log",
+      "relativePath": "source/dist/jenkins-evidence/console.log"
+    },
+    {
+      "fileName": "crate.log",
+      "relativePath": "source/dist/jenkins-evidence/crate.log"
+    },
+    {
+      "fileName": "extracted-archive-pty.log",
+      "relativePath": "source/dist/jenkins-evidence/extracted-archive-pty.log"
+    },
+    {
+      "fileName": "gates.txt",
+      "relativePath": "source/dist/jenkins-evidence/gates.txt"
+    },
+    {
+      "fileName": "host.txt",
+      "relativePath": "source/dist/jenkins-evidence/host.txt"
+    },
+    {
+      "fileName": "isolated-install.log",
+      "relativePath": "source/dist/jenkins-evidence/isolated-install.log"
+    },
+    {
+      "fileName": "linux-vm-packages.log",
+      "relativePath": "source/dist/jenkins-evidence/linux-vm-packages.log"
+    },
+    {
+      "fileName": "package.log",
+      "relativePath": "source/dist/jenkins-evidence/package.log"
+    },
+    {
+      "fileName": "preflight-regressions.log",
+      "relativePath": "source/dist/jenkins-evidence/preflight-regressions.log"
+    },
+    {
+      "fileName": "release.log",
+      "relativePath": "source/dist/jenkins-evidence/release.log"
+    },
+    {
+      "fileName": "result.txt",
+      "relativePath": "source/dist/jenkins-evidence/result.txt"
+    },
+    {
+      "fileName": "verify.log",
+      "relativePath": "source/dist/jenkins-evidence/verify.log"
+    },
+    {
+      "fileName": "mellow-0.3.0-aarch64-apple-darwin.tar.gz",
+      "relativePath": "source/dist/macos/mellow-0.3.0-aarch64-apple-darwin.tar.gz"
+    },
+    {
+      "fileName": "mellow-0.3.0-aarch64-apple-darwin.tar.gz.acceptance.txt",
+      "relativePath": "source/dist/macos/mellow-0.3.0-aarch64-apple-darwin.tar.gz.acceptance.txt"
+    }
+  ],
+  "building": false,
+  "number": 2,
+  "result": "FAILURE",
+  "url": "http://127.0.0.1:8082/job/mellow-audit-acceptance/2/"
+}

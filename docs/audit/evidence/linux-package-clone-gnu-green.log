@@ -1,0 +1,17 @@
+ Container mellow-audit-20261011-mellow-dev-run-509ca98216b8 Creating
+ Container mellow-audit-20261011-mellow-dev-run-509ca98216b8 Created
+[
+  {
+    "case": "normal-clone",
+    "shell": "/usr/bin/bash",
+    "passed": true,
+    "docker_execution": "synthetic argument capture only"
+  },
+  {
+    "case": "linked-worktree",
+    "shell": "/usr/bin/bash",
+    "passed": true,
+    "docker_execution": "synthetic argument capture only"
+  }
+]
+2 package invocation regressions passed; no container/product acceptance claimed

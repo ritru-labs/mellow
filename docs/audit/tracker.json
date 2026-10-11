@@ -302,7 +302,7 @@
       "id": "F09",
       "name": "Completion drops supporting edits such as imports",
       "priority": "F09 Medium · Source-confirmed missing LSP handling · live server impact untested",
-      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0.",
+      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions.",
       "required_change": "Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false.",
       "acceptance": "Acceptance. A fixture completion that inserts a symbol and adds an import applies both in one undo group. Stale or conflicting edits apply neither. Validate with at least one real Python and TypeScript server.",
       "status": "verified",
@@ -316,7 +316,11 @@
         "actual Pyright and TypeScript workflows",
         "f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable",
         "f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points",
-        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed"
+        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed",
+        "f09_completion_noop_supporting_edits_preserve_primary_caret_and_history",
+        "f09_completion_noop_primary_follows_supporting_import_and_history",
+        "f09_completion_noop_only_preserves_revision_and_existing_history_caret",
+        "f09_completion_noop_overlap_is_rejected_before_filtering"
       ],
       "commits": [
         "e324b7f0e64080f8c911ae41230e99ebb40313a9",
@@ -414,7 +418,7 @@
       "id": "F12",
       "name": "Published archives lack a complete native artifact acceptance gate",
       "priority": "F12 Medium · Coverage gap · not a demonstrated broken package",
-      "current_evidence": "Exact-SHA extracted-archive and package gates implemented for four native targets. Historical757 GitHub jobs passed ARM macOS and ARM/x64 Linux; owner switched to local Jenkins and cancelled unfinished Intel gate. Manual-only candidate workflow; automatic audit jobs allocate no Actions runners.",
+      "current_evidence": "Exact-SHA extracted-archive and package gates implemented for four native targets. Historical757 GitHub jobs passed ARM macOS and ARM/x64 Linux; owner switched to local Jenkins and cancelled unfinished Intel gate. Manual-only candidate workflow; automatic audit jobs allocate no Actions runners. Jenkins #2 passed native source/crate/install/extracted archive, then failed Linux packaging at an empty array under Bash 3.2 in a normal clone. Narrow optional-array correction and native/GNU shell/checkout regressions precede the final Jenkins rerun; prior run remains failed.",
       "required_change": "Recommended change. Run the existing PTY smoke suite against each extracted release archive on its native target. Add install/uninstall checks for .deb/.rpm and a documented Intel macOS gate, plus release provenance and signing/notarization work.",
       "acceptance": "Acceptance. Release evidence records the archive digest and exact executable under test for every claimed platform. Publication depends on the artifact gates, not only source tests and --version.",
       "status": "blocked",
@@ -428,7 +432,8 @@
         "actionlint and Bash validation",
         "scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused",
         "All 24 PTY tests against extracted native macOS archive, Linux musl archive, installed deb and rpm; uninstall verified",
-        "Jenkins exact-SHA native gate with actual platform validation and always-archived evidence"
+        "Jenkins exact-SHA native gate with actual platform validation and always-archived evidence",
+        "test-linux-package-invocation.sh: normal clone/linked worktree with spaces, actual script with synthetic Docker capture, Darwin Bash 3.2 and GNU Bash"
       ],
       "commits": [
         "ff6eb860caaaef74fc34d2a3480690f9ea50c89e",
@@ -790,7 +795,7 @@
       "id": "M11",
       "name": "Completion imports and resolution",
       "priority": "Next",
-      "current_evidence": "F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0.",
+      "current_evidence": "F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions.",
       "required_change": "Complete the LSP edit lifecycle; add snippet support separately.",
       "acceptance": "Complete the LSP edit lifecycle; add snippet support separately.",
       "status": "verified",
@@ -801,7 +806,11 @@
         "F09 synthetic and actual Python/TypeScript tests",
         "f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable",
         "f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points",
-        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed"
+        "evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed",
+        "f09_completion_noop_supporting_edits_preserve_primary_caret_and_history",
+        "f09_completion_noop_primary_follows_supporting_import_and_history",
+        "f09_completion_noop_only_preserves_revision_and_existing_history_caret",
+        "f09_completion_noop_overlap_is_rejected_before_filtering"
       ],
       "commits": [
         "e324b7f0e64080f8c911ae41230e99ebb40313a9",
@@ -1824,18 +1833,18 @@
   ],
   "final_source_gates": {
     "macOS_ARM64": {
-      "unit_passed": 531,
+      "unit_passed": 535,
       "ignored": 3,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/native-verify-regression-final.log"
+      "log": "evidence/native-review-closure.log"
     },
     "Linux_ARM64_VM": {
-      "unit_passed": 528,
+      "unit_passed": 532,
       "ignored": 4,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/linux-vm-verify-regression-final.log"
+      "log": "evidence/linux-vm-review-closure.log"
     },
     "explicit_optional_gates": {
       "real_language_servers": "3 passed; 0 failed/ignored",

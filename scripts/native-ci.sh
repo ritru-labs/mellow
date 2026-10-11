@@ -55,6 +55,7 @@ case "$mode" in
     ;;
   release)
     cargo build --locked --release
+    bash scripts/test-linux-package-invocation.sh
     bash scripts/test-artifact-provenance.sh
     ;;
   crate) cargo package --locked ;;

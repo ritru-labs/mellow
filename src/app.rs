@@ -4924,7 +4924,7 @@ impl App {
                     new_text: edit.new_text,
                 }),
         );
-        let replacements = match Self::lsp_replacements_for_buffer(&self.buffer, &edits) {
+        let mut replacements = match Self::lsp_replacements_for_buffer(&self.buffer, &edits) {
             Ok(edits) => edits,
             Err(error) => {
                 self.fail(format!("Completion refused; nothing changed: {error}"));
@@ -4947,21 +4947,62 @@ impl App {
             .iter()
             .position(|(a, b, _)| *a == primary_start && *b == primary_end)
             .unwrap_or(0);
+        let is_noop =
+            |(start, end, text): &(Cursor, Cursor, String)| start == end && text.is_empty();
+        let primary_is_noop = is_noop(&replacements[primary_index]);
+        let applied_primary_index = replacements[..primary_index]
+            .iter()
+            .filter(|edit| !is_noop(edit))
+            .count();
+        // Buffer omits empty insertions from its returned carets. Keep the
+        // primary's index aligned, after validating the complete edit set.
+        // An empty primary still moves with earlier supporting edits: map it
+        // from their actual endpoint, respecting Buffer's newline convention.
+        let primary_char_index = self.buffer.char_index(primary_start.row, primary_start.col);
+        let preceding_end = replacements[..primary_index]
+            .iter()
+            .rev()
+            .find(|edit| !is_noop(edit))
+            .map(|(_, end, _)| self.buffer.char_index(end.row, end.col));
+        replacements.retain(|edit| !is_noop(edit));
         let cursors = self
             .buffer
             .replace_ranges_with_cursors(&replacements, self.cursor);
-        self.cursor = cursors.get(primary_index).copied().unwrap_or(before);
+        self.cursor = if primary_is_noop {
+            let final_index = preceding_end
+                .zip(applied_primary_index.checked_sub(1))
+                .and_then(|(end, index)| cursors.get(index).map(|cursor| (end, cursor)))
+                .map_or(primary_char_index, |(end, cursor)| {
+                    self.buffer.char_index(cursor.row, cursor.col) + primary_char_index - end
+                });
+            self.buffer.cursor_from_char_index(final_index)
+        } else {
+            cursors
+                .get(applied_primary_index)
+                .copied()
+                .unwrap_or(before)
+        };
         self.clamp_cursor();
         self.selection_anchor = None;
-        self.buffer
-            .set_last_history_state(before, anchor, self.cursor, None);
+        if !cursors.is_empty() {
+            self.buffer
+                .set_last_history_state(before, anchor, self.cursor, None);
+        }
         self.dismiss_completion();
-        self.notify(if item.command.is_some() {
+        self.notify(if cursors.is_empty() {
+            if item.command.is_some() {
+                "Completion required no changes; provider command was not run".to_owned()
+            } else {
+                "Completion required no changes".to_owned()
+            }
+        } else if item.command.is_some() {
             format!("Inserted {}; provider command was not run", item.label)
         } else {
             format!("Inserted {}", item.label)
         });
-        self.sync_code_intelligence_after_edit();
+        if !cursors.is_empty() {
+            self.sync_code_intelligence_after_edit();
+        }
     }
 
     fn handle_completion_key(&mut self, key: KeyEvent) {
@@ -15103,6 +15144,172 @@ mod tests {
         let before = app.buffer.contents();
         app.apply_completion_item(item);
         assert_eq!(app.buffer.contents(), before);
+        assert!(app.status.as_deref().unwrap().contains("overlapping"));
+    }
+
+    #[test]
+    fn f09_completion_noop_supporting_edits_preserve_primary_caret_and_history() {
+        let range = |start, end| crate::lsp::LspRange {
+            start: LspPosition {
+                line: 0,
+                character: start,
+            },
+            end: LspPosition {
+                line: 0,
+                character: end,
+            },
+        };
+        for supporting_col in [0, 10] {
+            let mut app = App::new(Buffer::empty(None));
+            app.handle_paste("🦀audit_sy");
+            let original_cursor = app.cursor;
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(range(2, 10)),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: range(supporting_col, supporting_col),
+                    new_text: String::new(),
+                }],
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+            assert_eq!(app.cursor, Cursor::new(0, 13));
+            app.execute(Command::Undo);
+            assert_eq!(app.buffer.contents(), "🦀audit_sy");
+            assert_eq!(app.cursor, original_cursor);
+            app.execute(Command::Redo);
+            assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+            assert_eq!(app.cursor, Cursor::new(0, 13));
+        }
+    }
+
+    #[test]
+    fn f09_completion_noop_primary_follows_supporting_import_and_history() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("🦀audit_symbol");
+        let original_cursor = app.cursor;
+        app.apply_completion_item(CompletionItem {
+            label: "audit_symbol".to_owned(),
+            insert_text: String::new(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 14,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 14,
+                },
+            }),
+            additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                range: crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                new_text: "from helper import audit_symbol\r\n".to_owned(),
+            }],
+            ..CompletionItem::default()
+        });
+        assert_eq!(
+            app.buffer.contents(),
+            "from helper import audit_symbol\n🦀audit_symbol"
+        );
+        assert_eq!(app.cursor, Cursor::new(1, 13));
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+        assert_eq!(app.cursor, original_cursor);
+        app.execute(Command::Redo);
+        assert_eq!(
+            app.buffer.contents(),
+            "from helper import audit_symbol\n🦀audit_symbol"
+        );
+        assert_eq!(app.cursor, Cursor::new(1, 13));
+    }
+
+    #[test]
+    fn f09_completion_noop_only_preserves_revision_and_existing_history_caret() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("audit_symbol");
+        let original_cursor = app.cursor;
+        app.cursor = Cursor::new(0, 4);
+        let revision = app.buffer.revision();
+        app.apply_completion_item(CompletionItem {
+            label: "no change".to_owned(),
+            insert_text: String::new(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 4,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 4,
+                },
+            }),
+            command: Some(serde_json::json!({"command": "fixture.neverExecute"})),
+            ..CompletionItem::default()
+        });
+        assert_eq!(app.buffer.contents(), "audit_symbol");
+        assert_eq!(app.buffer.revision(), revision);
+        assert_eq!(app.cursor, Cursor::new(0, 4));
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("provider command was not run")
+        );
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "");
+        assert_eq!(app.cursor, Cursor::new(0, 0));
+        app.execute(Command::Redo);
+        assert_eq!(app.buffer.contents(), "audit_symbol");
+        assert_eq!(app.cursor, original_cursor);
+    }
+
+    #[test]
+    fn f09_completion_noop_overlap_is_rejected_before_filtering() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("audit_sy");
+        let before = app.cursor;
+        let revision = app.buffer.revision();
+        app.apply_completion_item(CompletionItem {
+            label: "audit_symbol".to_owned(),
+            insert_text: "audit_symbol".to_owned(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 8,
+                },
+            }),
+            additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                range: crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 4,
+                    },
+                },
+                new_text: String::new(),
+            }],
+            ..CompletionItem::default()
+        });
+        assert_eq!(app.buffer.contents(), "audit_sy");
+        assert_eq!(app.buffer.revision(), revision);
+        assert_eq!(app.cursor, before);
         assert!(app.status.as_deref().unwrap().contains("overlapping"));
     }
 
