@@ -54,6 +54,16 @@ unset MELLOW_MACOS_SIGN_IDENTITY MELLOW_REQUIRE_SIGNING
   rustc -vV
   echo "jenkinsfile_sha256=$(shasum -a 256 Jenkinsfile | awk '{print $1}')"
   echo "helper_sha256=$(shasum -a 256 scripts/jenkins-candidate.sh | awk '{print $1}')"
+  # Python preserves an inherited ignored SIGINT/SIGQUIT. Record the launcher
+  # boundary without changing the editor's or controller's signal state.
+  python3 - <<'PY'
+import signal
+blocked = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+for name in ('SIGINT', 'SIGQUIT'):
+    sig = getattr(signal, name)
+    disposition = 'ignored' if signal.getsignal(sig) == signal.SIG_IGN else 'not-ignored'
+    print(f'launcher_{name}={disposition}; blocked={sig in blocked}')
+PY
 } | tee "$evidence/host.txt"
 if [[ "$mode" == preflight ]]; then exit 0; fi
 if [[ -n "${TARGET_CACHE_BASE:-}" ]]; then

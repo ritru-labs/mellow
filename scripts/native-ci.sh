@@ -112,7 +112,7 @@ case "$mode" in
       echo "platform=$platform"
       echo "host=$host"
       echo "execution_kind=${MELLOW_EXECUTION_KIND:-native}"
-      echo "build_url=${GITHUB_SERVER_URL:-local}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-local}"
+      echo "build_url=${BUILD_URL:-${GITHUB_SERVER_URL:-local}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-local}}"
       pty_smoke "$binary"
       echo 'acceptance=passed'
     } | tee "$report"

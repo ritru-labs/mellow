@@ -11,6 +11,7 @@ pipeline {
   parameters {
     string(name: 'SOURCE_SHA', defaultValue: '', trim: true, description: 'Required immutable 40-character commit ID; never a branch or tag')
     string(name: 'SOURCE_REPOSITORY', defaultValue: 'https://github.com/ritru-labs/mellow.git', description: 'Public Mellow repository or absolute agent-local repository path')
+    string(name: 'JENKINS_BASE_URL', defaultValue: 'http://127.0.0.1:8082/', description: 'Evidence URL fallback when this controller has no configured root URL; include the trailing slash')
     string(name: 'MAC_ARM_LABEL', defaultValue: 'vidhur-mac && darwin-arm64', description: 'Existing native macOS ARM64 agent')
     booleanParam(name: 'RUN_MAC_INTEL', defaultValue: false, description: 'Require an existing native Intel Mac agent; unavailable agent fails within the platform timeout')
     string(name: 'MAC_INTEL_LABEL', defaultValue: 'darwin-x64', description: 'Existing native Intel Mac label; no cross-build acceptance')
@@ -30,6 +31,7 @@ pipeline {
           if (!(params.SOURCE_SHA ==~ /[0-9a-f]{40}/)) {
             error('SOURCE_SHA must be a full immutable lowercase commit ID')
           }
+          def evidenceUrl = env.BUILD_URL ?: "${params.JENKINS_BASE_URL}job/${env.JOB_NAME.replace('/', '/job/')}/${env.BUILD_NUMBER}/"
           def platforms = [[name: 'mac-arm64', target: 'aarch64-apple-darwin', label: params.MAC_ARM_LABEL, rust: params.MAC_ARM_RUST_BIN]]
           if (params.RUN_MAC_INTEL) {
             platforms.add([name: 'mac-intel', target: 'x86_64-apple-darwin', label: params.MAC_INTEL_LABEL, rust: params.MAC_INTEL_RUST_BIN])
@@ -45,7 +47,7 @@ pipeline {
                   node(platform.label) {
                     ws("${env.WORKSPACE}/mellow-candidate-${env.BUILD_NUMBER}-${platform.name}") {
                       try {
-                        withEnv(["SOURCE_SHA=${params.SOURCE_SHA}", "SOURCE_REPOSITORY=${params.SOURCE_REPOSITORY}", "EXPECTED_TARGET=${platform.target}", "RUST_TOOLCHAIN_BIN=${platform.rust}", "TARGET_CACHE_BASE=${params.TARGET_CACHE_BASE}", "RUN_LINUX_VM_PACKAGES=${platform.name == 'mac-arm64' && params.RUN_LINUX_VM_PACKAGES}", 'GIT_TERMINAL_PROMPT=0']) {
+                        withEnv(["SOURCE_SHA=${params.SOURCE_SHA}", "SOURCE_REPOSITORY=${params.SOURCE_REPOSITORY}", "BUILD_URL=${evidenceUrl}", "EXPECTED_TARGET=${platform.target}", "RUST_TOOLCHAIN_BIN=${platform.rust}", "TARGET_CACHE_BASE=${params.TARGET_CACHE_BASE}", "RUN_LINUX_VM_PACKAGES=${platform.name == 'mac-arm64' && params.RUN_LINUX_VM_PACKAGES}", 'GIT_TERMINAL_PROMPT=0']) {
                           sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p evidence

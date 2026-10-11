@@ -5192,7 +5192,7 @@ impl App {
             }
             if let Some((previous_start, previous_end)) = previous
                 && (start < previous_end
-                    || (previous_start == previous_end && start == previous_start))
+                    || (previous_start == previous_end && start == end && start == previous_start))
             {
                 return Err("language server returned overlapping text edits".to_owned());
             }
@@ -15107,6 +15107,108 @@ mod tests {
     }
 
     #[test]
+    fn f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable() {
+        for (source, primary_start, primary_end, supporting_col, supporting_text, expected) in [
+            (
+                "audit_sy",
+                0,
+                8,
+                0,
+                "from helper import audit_symbol\n",
+                "from helper import audit_symbol\naudit_symbol",
+            ),
+            ("🦀audit_sy", 2, 10, 2, "界", "🦀界audit_symbol"),
+            (
+                "audit_sy",
+                0,
+                8,
+                8,
+                " # boundary",
+                "audit_symbol # boundary",
+            ),
+        ] {
+            let path = PathBuf::from("/tmp/mellow-f09-boundary.py");
+            let mut app = App::new(Buffer::empty(Some(path.clone())));
+            app.handle_paste(source);
+            let original_cursor = app.cursor;
+            let range = |start, end| crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: start,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: end,
+                },
+            };
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(range(primary_start, primary_end)),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: range(supporting_col, supporting_col),
+                    new_text: supporting_text.to_owned(),
+                }],
+                origin: Some((path, i32::try_from(app.buffer.revision()).unwrap())),
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), expected);
+            let expected_cursor = match supporting_col {
+                0 => Cursor::new(1, 12),
+                2 => Cursor::new(0, 14),
+                8 => Cursor::new(0, 12),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                app.cursor, expected_cursor,
+                "caret must follow the primary completion, not its supporting edit"
+            );
+            app.execute(Command::Undo);
+            assert_eq!(app.buffer.contents(), source);
+            assert_eq!(app.cursor, original_cursor);
+            app.execute(Command::Redo);
+            assert_eq!(app.buffer.contents(), expected);
+            assert_eq!(app.cursor, expected_cursor);
+        }
+    }
+
+    #[test]
+    fn f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points() {
+        let path = PathBuf::from("/tmp/mellow-f09-boundary-refuse.py");
+        let range = |start, end| crate::lsp::LspRange {
+            start: LspPosition {
+                line: 0,
+                character: start,
+            },
+            end: LspPosition {
+                line: 0,
+                character: end,
+            },
+        };
+        for (primary, supporting) in [
+            (range(0, 8), range(4, 4)),
+            (range(0, 0), range(0, 0)),
+            (range(0, 8), range(4, 8)),
+        ] {
+            let mut app = App::new(Buffer::empty(Some(path.clone())));
+            app.handle_paste("audit_sy");
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(primary),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: supporting,
+                    new_text: "ambiguous".to_owned(),
+                }],
+                origin: Some((path.clone(), i32::try_from(app.buffer.revision()).unwrap())),
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), "audit_sy");
+            assert!(app.status.as_deref().unwrap().contains("overlapping"));
+        }
+    }
+
+    #[test]
     fn f09_plain_completion_replaces_the_identifier_prefix() {
         let mut app = App::new(Buffer::empty(None));
         app.handle_paste("pri");
@@ -18448,7 +18550,7 @@ mod tests {
                     },
                     end: LspPosition {
                         line: 0,
-                        character: 1,
+                        character: 2,
                     },
                 },
                 new_text: "a".to_owned(),
@@ -18458,11 +18560,11 @@ mod tests {
                 range: crate::lsp::LspRange {
                     start: LspPosition {
                         line: 0,
-                        character: 0,
+                        character: 1,
                     },
                     end: LspPosition {
                         line: 0,
-                        character: 0,
+                        character: 1,
                     },
                 },
                 new_text: "b".to_owned(),

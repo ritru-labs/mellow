@@ -92,6 +92,16 @@ impl PtySession {
         // process may only call async-signal-safe functions, and setenv
         // (which allocates) is not one of them.
         let env_c = child_environment();
+        // An editor may be launched by a job runner that ignores terminal
+        // signals or blocks delivery. Ignored dispositions and the signal mask
+        // survive exec; prepare the child-only reset without changing Mellow.
+        let mut default_signal: libc::sigaction = unsafe { std::mem::zeroed() };
+        default_signal.sa_sigaction = libc::SIG_DFL;
+        let mut unblocked_signals: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut default_signal.sa_mask);
+            libc::sigemptyset(&mut unblocked_signals);
+        }
 
         let mut master_fd = -1;
         let mut slave_fd = -1;
@@ -180,6 +190,14 @@ impl PtySession {
                     libc::close(slave_fd);
                 }
                 if libc::chdir(cwd_c.as_ptr()) != 0 {
+                    libc::_exit(126);
+                }
+                for signal in [libc::SIGINT, libc::SIGQUIT] {
+                    if libc::sigaction(signal, &default_signal, ptr::null_mut()) != 0 {
+                        libc::_exit(126);
+                    }
+                }
+                if libc::sigprocmask(libc::SIG_SETMASK, &unblocked_signals, ptr::null_mut()) != 0 {
                     libc::_exit(126);
                 }
                 libc::execve(program_c.as_ptr(), argv.as_ptr(), envp.as_ptr());
@@ -925,6 +943,186 @@ mod tests {
             text.contains("AFTER_INTERRUPT"),
             "shell did not recover after Ctrl+C: {text:?}"
         );
+    }
+
+    #[test]
+    fn terminal_children_restore_signals_without_changing_the_parent() {
+        const PROFILE: &str = "MELLOW_TEST_PTY_INHERITED_SIGNALS";
+        if let Ok(profile) = env::var(PROFILE) {
+            let signal_state = || unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                let mut quit_action: libc::sigaction = std::mem::zeroed();
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                assert_eq!(libc::sigaction(libc::SIGINT, ptr::null(), &mut action), 0);
+                assert_eq!(
+                    libc::sigaction(libc::SIGQUIT, ptr::null(), &mut quit_action),
+                    0
+                );
+                assert_eq!(
+                    libc::sigprocmask(libc::SIG_SETMASK, ptr::null(), &mut mask),
+                    0
+                );
+                (
+                    action.sa_sigaction,
+                    quit_action.sa_sigaction,
+                    libc::sigismember(&mask, libc::SIGINT),
+                    libc::sigismember(&mask, libc::SIGQUIT),
+                )
+            };
+            let inherited = signal_state();
+            if profile == "ignored" {
+                assert_eq!((inherited.0, inherited.1), (libc::SIG_IGN, libc::SIG_IGN));
+            } else {
+                assert_eq!((inherited.2, inherited.3), (1, 1));
+                // An ordinary PTY program must receive Ctrl+C even if its
+                // editor's launcher blocked that signal. This isolates mask
+                // inheritance from a shell's own initialization behavior.
+                let dir = tempdir().unwrap();
+                let mut direct = PtySession::spawn_program(
+                    13,
+                    Path::new("/bin/sleep"),
+                    &["30"],
+                    dir.path(),
+                    80,
+                    24,
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while unsafe { libc::tcgetpgrp(direct.master_fd()) } != direct.child_pid
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(
+                    unsafe { libc::tcgetpgrp(direct.master_fd()) },
+                    direct.child_pid
+                );
+                direct.interrupt().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !direct.is_exited() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(
+                    direct.is_exited(),
+                    "blocked launcher mask prevented direct PTY program interruption"
+                );
+            }
+            let dir = tempdir().unwrap();
+            let ready = dir.path().join("ready");
+            let recovered = dir.path().join("recovered");
+            let mut session = PtySession::spawn_test_shell(14, dir.path()).unwrap();
+            session.write_bytes(b"stty -echo; : > ready\n").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !ready.exists() && Instant::now() < deadline {
+                session.read_available().unwrap();
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                ready.exists(),
+                "interactive shell did not disable input echo"
+            );
+            session.write_bytes(b"sleep 30\n").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !session.has_running_job() && Instant::now() < deadline {
+                session.read_available().unwrap();
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                session.has_running_job(),
+                "foreground program never acquired the terminal"
+            );
+            let foreground = unsafe { libc::tcgetpgrp(session.master_fd()) };
+            assert!(foreground > 0 && foreground != session.child_pid);
+            session.interrupt().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while session.has_running_job() && Instant::now() < deadline {
+                session.read_available().unwrap();
+                thread::sleep(Duration::from_millis(10));
+            }
+            let recovered_prompt = !session.has_running_job();
+            if !recovered_prompt {
+                // The foreground job has its own group. Clean it explicitly on
+                // a red run instead of relying on shell teardown to reap it.
+                unsafe {
+                    libc::kill(-foreground, libc::SIGKILL);
+                }
+            }
+            assert!(
+                recovered_prompt,
+                "Ctrl+C did not return foreground ownership to the shell"
+            );
+            assert!(!session.is_exited(), "Ctrl+C killed the interactive shell");
+            session
+                .write_bytes(b"printf '%s%s\\n' REAL_ RECOVERY; : > recovered\n")
+                .unwrap();
+            let text = pump_until(&mut session, "REAL_RECOVERY", Duration::from_secs(3));
+            assert!(
+                text.contains("REAL_RECOVERY") && recovered.exists(),
+                "shell recovery was not executed: {text:?}"
+            );
+            assert!(
+                !text.contains("printf '%s%s"),
+                "input echo could create a false recovery proof"
+            );
+            assert_eq!(
+                signal_state(),
+                inherited,
+                "PTY setup mutated the editor process's signal state"
+            );
+            return;
+        }
+
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        for profile in ["ignored", "blocked"] {
+            let mut command = Command::new(env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "pty::tests::terminal_children_restore_signals_without_changing_the_parent",
+                    "--nocapture",
+                ])
+                .env(PROFILE, profile)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            unsafe {
+                command.pre_exec(move || {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    action.sa_sigaction = libc::SIG_IGN;
+                    libc::sigemptyset(&mut action.sa_mask);
+                    let mut mask: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut mask);
+                    for signal in [libc::SIGINT, libc::SIGQUIT] {
+                        if profile == "ignored" {
+                            if libc::sigaction(signal, &action, ptr::null_mut()) != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        } else {
+                            libc::sigaddset(&mut mask, signal);
+                        }
+                    }
+                    if libc::sigprocmask(libc::SIG_SETMASK, &mask, ptr::null_mut()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            if child.try_wait().unwrap().is_none() {
+                child.kill().unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "isolated {profile} profile failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
