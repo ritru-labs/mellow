@@ -64,6 +64,7 @@ nav:
       - Install: install.md
       - First edit: getting-started.md
       - Everyday workflows: usage.md
+      - Audit candidate workflows: audit-workflows.md
   - Reference:
       - Keyboard shortcuts: keys.md
       - Settings: settings.md
@@ -79,3 +80,11 @@ nav:
       - Testing: TESTING.md
       - Visual QA: VISUAL_QA.md
       - Release checklist: RELEASE_CHECKLIST.md
+      - Audit delivery:
+          - Delivery: audit/DELIVERY.md
+          - Tracker: audit/TRACKER.md
+          - Baseline: audit/BASELINE.md
+          - Security verification: audit/security-verification.md
+          - Language verification: audit/language-verification.md
+          - Terminal verification: audit/terminal-verification.md
+          - Accessibility evidence: audit/accessibility-evidence.md

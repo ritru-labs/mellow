@@ -1,0 +1,21 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running tests/release_native_smoke.rs (target/debug/deps/release_native_smoke-3801462941a0a5cf)
+
+running 1 test
+
+thread 'release_binary_claude_redirect_never_contacts_key_target' panicked at tests/release_native_smoke.rs:2281:5:
+redirect destination received a request; synthetic API key forwarded=true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test release_binary_claude_redirect_never_contacts_key_target ... FAILED
+
+failures:
+
+failures:
+    release_binary_claude_redirect_never_contacts_key_target
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.65s
+
+error: test failed, to rerun pass `--test release_native_smoke`

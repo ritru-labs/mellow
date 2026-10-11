@@ -1,0 +1,50 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.09s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 42 tests
+test lsp::tests::definition_parser_accepts_location_links_and_unicode_file_uris ... ok
+test lsp::tests::diagnostics_parser_preserves_severity_source_and_range ... ok
+test lsp::tests::f09_primary_completion_requires_text_and_an_ordered_range ... ok
+test lsp::tests::completion_parser_honors_text_edit_range_and_plain_insert_text ... ok
+test lsp::tests::f09_completion_keeps_supporting_import_and_opaque_resolve_data ... ok
+test lsp::tests::edits_for_an_older_version_of_the_open_document_are_refused ... ok
+test lsp::tests::f09_malformed_supporting_edit_refuses_the_whole_completion ... ok
+test lsp::tests::f10_malformed_workspace_edit_containers_never_apply_a_partial_set ... ok
+test lsp::tests::file_uri_round_trip_preserves_spaces_and_unicode ... ok
+test lsp::tests::formatting_null_result_means_no_edits ... ok
+test lsp::tests::goal12_formatting_edits_are_tied_to_active_document ... ok
+test lsp::tests::goal12_hover_signature_and_references_are_bounded_and_parsed ... ok
+test lsp::tests::goal12_workspace_edits_and_code_actions_never_hide_commands ... ok
+test lsp::tests::goal16_diagnostics_are_retained_per_open_document ... ok
+test lsp::tests::goal16_document_changes_text_edits_are_supported_but_resource_ops_are_flagged ... ok
+test lsp::tests::f10_documents_opened_before_initialize_are_all_delivered ... ok
+test lsp::tests::f09_resolve_preserves_import_and_rejects_stale_document ... ok
+test lsp::tests::health_reports_capabilities_install_state_and_setup_hints ... ok
+test lsp::tests::language_server_specs_cover_primary_mellow_languages ... ok
+test lsp::tests::f10_two_services_stay_warm_and_sync_inactive_unsaved_documents ... ok
+test lsp::tests::audit_f3_late_formatting_reply_only_applies_to_its_unchanged_document ... ok
+test lsp::tests::f10_close_and_reopen_cannot_resurrect_pending_completion ... ok
+test lsp::tests::lsp_framing_round_trip_decodes_json_rpc_message ... ok
+test lsp::tests::f10_late_navigation_replies_cannot_change_the_new_document ... ok
+test lsp::tests::oversized_incoming_frames_are_refused_without_allocating ... ok
+test lsp::tests::f10_workspace_edits_refuse_changed_inactive_documents_and_stale_versions ... ok
+test lsp::tests::real_mixed_language_pool_preserves_unsaved_diagnostics_and_processes ... ignored, requires real Pyright and TypeScript server paths via MELLOW_TEST_PYRIGHT and MELLOW_TEST_TYPESCRIPT_LSP
+test lsp::tests::real_pyright_completion_resolves_workspace_auto_import ... ignored, requires an installed real Pyright executable via MELLOW_TEST_PYRIGHT
+test lsp::tests::f10_unsolicited_server_edits_receive_an_explicit_refusal ... ok
+test lsp::tests::real_typescript_completion_resolves_workspace_auto_import ... ignored, requires an installed real TypeScript language server via MELLOW_TEST_TYPESCRIPT_LSP
+test lsp::tests::late_rename_and_code_action_replies_are_discarded_after_a_switch ... ok
+test lsp::tests::interaction_cancellation_drops_responses_without_cancelling_symbol_panels ... ok
+test lsp::tests::symbols_keep_hierarchy_and_workspace_file_identity ... ok
+test lsp::tests::switching_symbol_scope_invalidates_the_previous_panel_request ... ok
+test lsp::tests::unchanged_inactive_document_sync_is_idempotent ... ok
+test lsp::tests::latest_requests_win_when_same_document_replies_arrive_in_reverse ... ok
+test lsp::tests::oversized_or_malformed_edit_sets_are_refused_whole ... ok
+test lsp::tests::real_stdio_lsp_lifecycle_reaches_initialized_state ... ok
+test lsp::tests::polish_completion_uses_server_trigger_characters_and_request_ids ... ok
+test lsp::tests::pending_changes_coalesce_and_a_full_queue_stops_the_server ... ok
+test lsp::tests::goal16_same_server_keeps_multiple_documents_open_without_restart ... ok
+test lsp::tests::a_server_that_stops_reading_never_blocks_the_editor ... ok
+
+test result: ok. 39 passed; 0 failed; 3 ignored; 0 measured; 487 filtered out; finished in 1.69s
+

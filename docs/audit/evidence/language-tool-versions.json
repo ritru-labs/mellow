@@ -1,0 +1,57 @@
+[
+  {
+    "command": [
+      "uname",
+      "-m"
+    ],
+    "result": "arm64"
+  },
+  {
+    "command": [
+      "sw_vers"
+    ],
+    "result": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83"
+  },
+  {
+    "command": [
+      "/Users/rukmini/.rustup/toolchains/1.90.0-aarch64-apple-darwin/bin/rustc",
+      "--version"
+    ],
+    "result": "rustc 1.90.0 (1159e78c4 2025-09-14)"
+  },
+  {
+    "command": [
+      "/Users/rukmini/.rustup/toolchains/1.90.0-aarch64-apple-darwin/bin/cargo",
+      "--version"
+    ],
+    "result": "cargo 1.90.0 (840b83a10 2025-07-30)"
+  },
+  {
+    "command": [
+      "node",
+      "--version"
+    ],
+    "result": "v26.8.2"
+  },
+  {
+    "command": [
+      "/private/tmp/mellow-lsp-tools/node_modules/.bin/pyright",
+      "--version"
+    ],
+    "result": "pyright 1.1.414"
+  },
+  {
+    "command": [
+      "/private/tmp/mellow-lsp-tools/node_modules/.bin/typescript-language-server",
+      "--version"
+    ],
+    "result": "6.0.2"
+  },
+  {
+    "command": [
+      "/private/tmp/mellow-lsp-tools/node_modules/.bin/tsc",
+      "--version"
+    ],
+    "result": "Version 5.9.3"
+  }
+]

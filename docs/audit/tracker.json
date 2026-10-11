@@ -1,0 +1,1821 @@
+{
+  "audit_date": "2026-10-11",
+  "audit_sha256": "edb3685901c658107be4e35b7a0146cf6664ef831d9da4b86db5ea94b1269c13",
+  "starting_commit": "9e42e17e8307d0171525bf325efbaf8d85178383",
+  "published_release": "v0.3.0",
+  "release_pr": "https://github.com/ritru-labs/mellow/pull/10",
+  "branch": "audit/mellow-20261011",
+  "status_vocabulary": [
+    "not started",
+    "in progress",
+    "implemented but unverified",
+    "verified",
+    "blocked",
+    "deferred"
+  ],
+  "items": [
+    {
+      "id": "F01",
+      "name": "AI shell suggestions can execute before the user presses Enter",
+      "priority": "F01 Critical · Reproduced · remains in reviewed main",
+      "current_evidence": "Shell suggestions reject C0/DEL/C1 before cleaning and remain in read-only review. Copy is the only transfer action; there is no insertion into an arbitrary PTY.",
+      "required_change": "Recommended change. Reject terminal control characters, including CR, LF, ESC, NUL and C1 controls, in shell suggestions. Keep the result in a read-only review view until an explicit Insert action. Insert only into a verified idle shell prompt; never into an arbitrary foreground program or partially typed command. Treat bracketed paste as transport, not as an execution authorization boundary.",
+      "acceptance": "Acceptance. A synthetic hostile response cannot create a marker or alter terminal state in shells with bracketed paste on/off; ESC terminators and control-byte variants are rejected. Ordinary safe suggestions remain reviewable and require a separate user submission.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "shell_commands_reject_every_terminal_control_before_cleaning",
+        "release_binary_rejects_hostile_ai_shell_before_terminal_input",
+        "ordinary safe shell review PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "The “Ask AI for a shell command” workflow promises to type a suggestion without running it. A lone carriage return embedded inside the returned string survives cleaning. With a visible /bin/sh session, the string is written directly to the PTY and the carriage return submits it.",
+      "source_evidence": [
+        "src/ai.rs",
+        "src/app.rs",
+        "tests/release_native_smoke.rs"
+      ],
+      "acceptance_criteria": [
+        "Control-byte variants cannot execute or alter PTY state; safe suggestions require manual paste and separate shell submission."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F02",
+      "name": "Released Claude transport forwards the key through redirects",
+      "priority": "F02 High · Reproduced in 0.3.0 · fixed in source, awaiting released verification",
+      "current_evidence": "Retains PR #9 no-redirect/redacted Debug protections and applies them to cancellable streaming. Official 0.3.0 RED forwards a dummy key; candidate PTY target receives zero requests.",
+      "required_change": "Recommended change. Publish and verify a patched release containing PR #9, with an explicit upgrade note. Run the redirect regression against the packaged executable. Keep model/provider tests independent of real credentials.",
+      "acceptance": "Acceptance. Redirect targets receive zero key-bearing requests; config Debug output contains no key; all distributed install paths resolve to the patched version.",
+      "status": "blocked",
+      "dependencies": [],
+      "tests": [
+        "redirects_never_receive_the_claude_key",
+        "ai_requests_do_not_follow_redirects_to_another_host",
+        "debug_output_never_shows_the_api_key",
+        "release_binary_claude_redirect_never_contacts_key_target"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9",
+        "ff6eb860caaaef74fc34d2a3480690f9ea50c89e"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Publishing/upgrading latest release and distribution install paths requires explicit user authorization; latest 0.3.0 remains vulnerable until publication."
+      ],
+      "baseline_evidence": "The downloaded release follows redirects. Its Claude adapter sends x-api-key, which can reach a different destination. Main disables redirects and redacts the configuration Debug representation, but users installing the latest published release still receive the older transport.",
+      "source_evidence": [
+        "src/ai.rs",
+        "src/claude.rs",
+        "tests/release_native_smoke.rs"
+      ],
+      "acceptance_criteria": [
+        "No redirected credential-bearing request; upgrade distributed install paths only through an explicitly authorized patched release."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F03",
+      "name": "Save replaces file identity without preserving all metadata",
+      "priority": "F03 High · Reproduced xattr loss and hard-link divergence",
+      "current_evidence": "Atomic save preserves supported xattrs, native ACL, owner/group/mode or refuses. Hard links are refused with independent Save As. Exclusive Save As, inode-bound conflict baseline and no-follow in-place fallback protect competing paths.",
+      "required_change": "Recommended change. Define a save policy for hard links, ownership, ACLs and xattrs. Preserve supported metadata, detect unsupported cases and explain the tradeoff before proceeding. Do not silently switch every save to in-place writing: that introduces partial-write risks.",
+      "acceptance": "Acceptance. Test user xattrs, group ownership, ACLs, hard links, symlinks, bind mounts and concurrent writers on claimed platforms. Either preserve the chosen contract or ask the user before a known destructive metadata transition.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "atomic_save_preserves_extended_attributes_owner_group_and_mode",
+        "atomic_save_preserves_native_acl_and_nondefault_group",
+        "saving_a_hard_link_refuses_without_mutating_either_name",
+        "save_baseline_cannot_adopt_a_writer_after_the_conflict_check",
+        "saving_a_bind_mounted_file_rewrites_it_in_place"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Linux bind-mount VirtioFS user-xattr branch unsupported; normal-filesystem metadata suite separate. Cross-owner denial and uncooperative final-check/rename race limits documented."
+      ],
+      "baseline_evidence": "Atomic replacement creates a new inode and copies permission bits. It does not preserve user extended attributes or the original hard-link relationship. Owner/group and ACL preservation are also not implemented explicitly; those effects were not reproduced here. This is already acknowledged broadly in the FAQ, but matters particularly for an SSH/configuration editor.",
+      "source_evidence": [
+        "src/buffer.rs"
+      ],
+      "acceptance_criteria": [
+        "Native metadata fixtures survive atomic save; linked names and concurrent-writer fixtures retain existing work. Actual Linux EBUSY mount uses verified in-place policy."
+      ],
+      "evidence_documents": [
+        "security-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F04",
+      "name": "Formatter execution freezes the editor and can outlive its timeout",
+      "priority": "F04 High · Reproduced · remains in reviewed main",
+      "current_evidence": "Formatter workers bind identity/revision and cancellation; one bounded deadline covers stdin, process exit and inherited output pipes; process groups are terminated.",
+      "required_change": "Recommended change. Move formatting off the UI thread with progress and cancellation. Bind the result to the original buffer identity/revision. Apply one deadline to process exit, input and output draining; bound output and terminate the formatter process group when cancelled/timed out.",
+      "acceptance": "Acceptance. Typing, Escape and palette navigation respond during formatting. Hung descendants cannot outlive the operation deadline. Late output cannot overwrite edits made while formatting.",
+      "status": "verified",
+      "dependencies": [
+        "F03 safe-save contract",
+        "M28 execution trust"
+      ],
+      "tests": [
+        "exited_formatter_with_inherited_output_pipe_obeys_deadline",
+        "input_backpressure_obeys_one_deadline",
+        "cancellation_kills_the_formatter_and_its_descendant",
+        "responsive/stale/cancel and inherited-pipe PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Format-on-save calls a blocking process runner from the UI path. The runner has a 10-second child wait deadline, then joins pipe-reader threads after the direct child exits. A descendant that retains stdout/stderr can keep those joins blocked after the deadline.",
+      "source_evidence": [
+        "src/format.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Palette stays interactive during formatter execution; stale output never edits; inherited pipes and descendants stop at deadline."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F05",
+      "name": "Terminal paste silently ignores additional cursors",
+      "priority": "F05 Medium · Reproduced · remains in reviewed main",
+      "current_evidence": "Keyboard insertion, clipboard and bracketed paste share selection/multi-cursor/rectangle edit operations with grouped undo and grapheme boundaries. Clipboard workers reject stale selections.",
+      "required_change": "Recommended change. Route bracketed paste and clipboard Paste through a shared edit operation, retaining the existing selection, multi-cursor and rectangle rules. Specify how multiline paste is distributed.",
+      "acceptance": "Acceptance. Typing and each paste transport produce the expected edits at all active cursors; one undo restores the entire operation; test Unicode and rectangular selections too.",
+      "status": "verified",
+      "dependencies": [
+        "Shared buffer edit operations"
+      ],
+      "tests": [
+        "Unicode multiple-cursor, clipboard, bracketed-paste and Alt+Shift rectangle PTY",
+        "audit_clipboard_late_result_never_edits_a_background_or_changed_selection"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "The editor command for Paste supports extra cursors and rectangular selections. The bracketed terminal-paste event uses another path that updates only the ordinary selection or primary cursor. Common terminal paste gestures therefore behave differently from editor Paste.",
+      "source_evidence": [
+        "src/app.rs",
+        "src/buffer.rs",
+        "src/snippets.rs"
+      ],
+      "acceptance_criteria": [
+        "All transports produce exact expected Unicode bytes at each cursor/row; one undo/redo covers the entire edit."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F06",
+      "name": "New indentation blocks always add four spaces",
+      "priority": "F06 Medium · Reproduced · remains in reviewed main",
+      "current_evidence": "Per-buffer width and style use content inference, supported .editorconfig settings and explicit status/palette overrides, shared by Enter, Tab/outdent and LSP formatting options.",
+      "required_change": "Recommended change. Add per-buffer indentation width, content inference, .editorconfig support and an explicit status-bar override. Use that value consistently in insert, outdent, visual columns and formatter requests.",
+      "acceptance": "Acceptance. Two-, four- and eight-space fixtures and tab-indented Makefiles retain their conventions across Enter, Tab, Outdent, paste and formatting.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "buffer indentation and editorconfig regressions",
+        "settings_round_trip_parser_supports_documented_values"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "The buffer detects tabs versus spaces, but the space indentation unit is hard-coded to four. There is no configurable width or .editorconfig integration in the reviewed settings. Preserving a current line’s indentation works; inferring the next block’s width does not.",
+      "source_evidence": [
+        "src/buffer.rs",
+        "src/settings.rs",
+        "src/ui.rs"
+      ],
+      "acceptance_criteria": [
+        "Two/four/eight-space fixtures and tab files retain conventions; explicit override is visible and persisted where configured. Supported editorconfig subset is documented."
+      ],
+      "evidence_documents": [
+        "../audit-workflows.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F07",
+      "name": "The command palette does not contain every action",
+      "priority": "F07 Medium · Reproduced discovery gap",
+      "current_evidence": "Context-aware palette commands expose folder/file creation, rename and recoverable trash with aliases and actionable disabled explanations.",
+      "required_change": "Recommended change. Register context-aware explorer actions in the shared command vocabulary. Show why an unavailable action is disabled and offer the next useful step. Include aliases such as folder/directory and rename/move.",
+      "acceptance": "Acceptance. A first-time user can create a folder and rename a file by searching the palette, without memorizing n, N, F2 or tree focus rules.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "command palette registry/context tests",
+        "palette/mouse native PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "First-time participant/pilot usefulness evaluation unavailable; source and native PTY results cannot establish participant acceptance."
+      ],
+      "baseline_evidence": "Explorer file rename, file/folder creation and deletion are handled by tree-specific keys and controls. They are not all registered as searchable commands. The README and help say every command is searchable, which sets a stronger expectation.",
+      "source_evidence": [
+        "src/command.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Searchable create-folder and rename workflows work without tree-key memorization; unavailable context gives a useful next step."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F08",
+      "name": "Project search and discovery run synchronously while typing",
+      "priority": "F08 Medium · Source-confirmed performance risk · not benchmarked over SSH",
+      "current_evidence": "Debounced generation-tagged workers cancel and bound discovery/search; include/exclude scope and skipped/truncated results are visible; unsaved named buffers overlay disk.",
+      "required_change": "Recommended change. Use a cancellable worker, a short debounce, query generations and incremental results. Show scope, skipped files and truncation. Add include/exclude filters and configurable limits; merge new unsaved buffers into discovery explicitly.",
+      "acceptance": "Acceptance. A slow synthetic filesystem/search worker cannot stall typing or closing the panel. Old query results cannot replace a newer query. A cancelled query stops consuming resources.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "f08_worker_only_returns_the_current_generation_and_cancels_without_waiting",
+        "f08_discovery_deadline_covers_descendant_inherited_stdout",
+        "project_search_configured_scope_and_filtered_counts_are_visible_at_80_by_24",
+        "quick_open_pending_discovery_shows_searching_at_80_by_24"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Slow-storage/SSH performance not measured; local synthetic cancellation/responsiveness evidence only."
+      ],
+      "baseline_evidence": "Changing the project query calls search_project directly; it reads files on the event path. Initial discovery runs git ls-files with blocking output collection. The file/result limits bound much of the work, but do not make slow storage or process execution non-blocking.",
+      "source_evidence": [
+        "src/search.rs",
+        "src/workspace.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Slow synthetic workers do not block input; superseded results cannot publish; cancellation, scope and limit reporting are verified."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F09",
+      "name": "Completion drops supporting edits such as imports",
+      "priority": "F09 Medium · Source-confirmed missing LSP handling · live server impact untested",
+      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed.",
+      "required_change": "Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false.",
+      "acceptance": "Acceptance. A fixture completion that inserts a symbol and adds an import applies both in one undo group. Stale or conflicting edits apply neither. Validate with at least one real Python and TypeScript server.",
+      "status": "verified",
+      "dependencies": [
+        "Shared atomic buffer transactions"
+      ],
+      "tests": [
+        "f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command",
+        "f09_stale_completion_import_applies_neither_edit",
+        "f09_overlapping_completion_import_applies_neither_edit",
+        "actual Pyright and TypeScript workflows"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "Completion parsing retains a label, insertion text and primary range. It does not retain additionalTextEdits or a completion command, and no completion-item resolve path was found. Some servers use those mechanisms to add imports or finish an edit.",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs",
+        "src/buffer.rs"
+      ],
+      "acceptance_criteria": [
+        "Real Python and TypeScript imports plus symbol insertion undo/redo together; stale, overlapping and malformed edits apply neither."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F10",
+      "name": "Switching language families replaces the language-server process",
+      "priority": "F10 Medium · Source-confirmed limitation",
+      "current_evidence": "Bounded workspace/server pool keeps language processes warm, synchronizes all open documents, aggregates file-named Problems and exposes restart/status. Interaction intents prevent abandoned navigation.",
+      "required_change": "Recommended change. Pool clients by workspace and server identity. Keep all open documents synchronized and aggregate Problems across files with explicit scope. Bound idle servers and expose restart/status per language.",
+      "acceptance": "Acceptance. Alternating two supported language families does not repeatedly start their servers. Unsaved open files retain diagnostics and references, and workspace Problems names each file.",
+      "status": "verified",
+      "dependencies": [
+        "F09 validated response handling"
+      ],
+      "tests": [
+        "real mixed Pyright/TypeScript PID reuse, inactive unsaved diagnostics/references and workspace symbols",
+        "lsp_interaction regressions",
+        "switching_symbol_scope_invalidates_the_previous_panel_request; unchanged_inactive_document_sync_is_idempotent"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "LanguageService owns one optional client. When the next document uses another server, it stops the current one and spawns the next. Same-server file switching is reused, which is good. Mixed Rust/Python/YAML/Terraform projects cannot keep each language service warm.",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Four alternating cycles preserve both server PIDs; inactive unsaved diagnostics/references retain correct file identity; closed/reopened requests do not revive."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F11",
+      "name": "Version and testing documentation disagree with the release",
+      "priority": "F11 Medium · Source/release evidence",
+      "current_evidence": "Cargo version generates release labels; docs distinguish unsafe published 0.3.0 from unreleased candidate and describe actual native/source/package gates. No competing PR #10 version bump.",
+      "required_change": "Recommended change. Generate release version labels from one source. Update capability tables and testing/release instructions at the same time as the release. Publish a concise supported-platform and integration validation table.",
+      "acceptance": "Acceptance. Binary version, README, docs homepage, release notes and installation result agree. The checklist names the actual jobs and artifacts that run.",
+      "status": "verified",
+      "dependencies": [],
+      "tests": [
+        "python3 scripts/version-docs.py --check",
+        "native-ci verify and package version checks"
+      ],
+      "commits": [
+        "ff6eb860caaaef74fc34d2a3480690f9ea50c89e"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "README and the docs landing page still say 0.2.1; Cargo and the published release are 0.3.0. TESTING describes PTY work as future work even though PTY tests exist. The release checklist describes publication separation that no longer matches the workflow.",
+      "source_evidence": [
+        "scripts/version-docs.py",
+        "README.md",
+        "docs/TESTING.md",
+        "docs/RELEASE_CHECKLIST.md"
+      ],
+      "acceptance_criteria": [
+        "Cargo, binary and generated release labels agree; actual artifact jobs and validation limits are documented."
+      ],
+      "evidence_documents": [
+        "BASELINE.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "F12",
+      "name": "Published archives lack a complete native artifact acceptance gate",
+      "priority": "F12 Medium · Coverage gap · not a demonstrated broken package",
+      "current_evidence": "Read-only exact-PR-head candidate jobs cover four native targets; each extracted archive runs all real PTY tests, with exact SHA/digests and package install/uninstall gates. Release path adds provenance and optional signing.",
+      "required_change": "Recommended change. Run the existing PTY smoke suite against each extracted release archive on its native target. Add install/uninstall checks for .deb/.rpm and a documented Intel macOS gate, plus release provenance and signing/notarization work.",
+      "acceptance": "Acceptance. Release evidence records the archive digest and exact executable under test for every claimed platform. Publication depends on the artifact gates, not only source tests and --version.",
+      "status": "blocked",
+      "dependencies": [
+        "F01–F11 regressions",
+        "Clean committed source"
+      ],
+      "tests": [
+        "native-ci artifact-install",
+        ".deb/.rpm install/uninstall PTY",
+        "actionlint and Bash validation",
+        "scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused"
+      ],
+      "commits": [
+        "ff6eb860caaaef74fc34d2a3480690f9ea50c89e"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Execute retained candidate jobs on native macOS Intel, Linux x64 and native Linux ARM runner; local ARM Linux VM is recorded separately. No executed CI claim until actual logs."
+      ],
+      "baseline_evidence": "CI contains meaningful unit and PTY tests. However, tagged packaging builds separate musl/macOS target binaries and largely checks architecture and --version. The release publish job tests installer version output. The available archive-install PTY gate is not invoked by release.yml; Intel macOS is cross-built without a native Intel test in that workflow.",
+      "source_evidence": [
+        ".github/workflows/candidate-artifacts.yml",
+        ".github/workflows/release.yml",
+        "scripts/native-ci.sh",
+        "scripts/package-linux.sh",
+        "scripts/package-macos.sh"
+      ],
+      "acceptance_criteria": [
+        "Each claimed archive must pass all PTY tests on its native architecture with recorded source/archive/binary identity; no cross-build or unexecuted workflow substitutes for acceptance."
+      ],
+      "evidence_documents": [
+        "../RELEASE_CHECKLIST.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M01",
+      "name": "Save All / close all / close others",
+      "priority": "Next",
+      "current_evidence": "Save All reviews dirty tabs and stops safely on conflict; Close All/Others require dirty-work decisions.",
+      "required_change": "Essential once multiple files and multi-file edits exist; give a dirty-file summary and per-file conflict handling.",
+      "acceptance": "Essential once multiple files and multi-file edits exist; give a dirty-file summary and per-file conflict handling.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "audit_save_all_reviews_dirty_tabs_stops_at_conflicts_and_keeps_other_work",
+        "audit_close_others_cancel_keeps_dirty_tabs_and_close_all_does_not_lose_text",
+        "two-file Save All PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/command.rs"
+      ],
+      "acceptance_criteria": [
+        "Conflicts stop coordinated saving without losing remaining work; cancelled closure retains dirty tabs."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M02",
+      "name": "Persistent local history",
+      "priority": "Next",
+      "current_evidence": "Private bounded restart-persistent per-file checkpoints around save, accepted AI and file operations; restore is undoable and never silently saves. Optional disable and per-file forget preserve recovery journals.",
+      "required_change": "Restore earlier saved text, accepted AI edits and safe file-operation snapshots across restarts. Distinct from crash journals.",
+      "acceptance": "Restore earlier saved text, accepted AI edits and safe file-operation snapshots across restarts. Distinct from crash journals.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "history::tests (8)",
+        "checkpoint restart/restore PTY",
+        "audit_disabled_history_does_not_create_checkpoints_and_pending_usage_closes_budget"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/recovery.rs",
+      "source_evidence": [
+        "src/history.rs",
+        "src/app.rs",
+        "src/settings.rs"
+      ],
+      "acceptance_criteria": [
+        "Restore pre-save bytes after restart, retain current disk until Save, enforce retention and deny sensitive files/content."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M03",
+      "name": "Multi-cursor + rectangle editing",
+      "priority": "Fix now",
+      "current_evidence": "Select-next/all occurrences plus shared Unicode multi-cursor and rectangle paste.",
+      "required_change": "Already implemented. Unify paste and selection semantics; add select next occurrence / select all occurrences.",
+      "acceptance": "Already implemented. Unify paste and selection semantics; add select next occurrence / select all occurrences.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "audit_occurrence_selection_replaces_unicode_once_and_undo_restores_every_match",
+        "F05 native PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Partial; baseline src/app.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/buffer.rs"
+      ],
+      "acceptance_criteria": [
+        "Each occurrence/cursor/rectangle row updates once; one undo restores all."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M04",
+      "name": "Indent width / .editorconfig",
+      "priority": "Next",
+      "current_evidence": "Same convention-preserving width/style implementation as F06.",
+      "required_change": "Respect project formatting conventions and expose effective settings.",
+      "acceptance": "Respect project formatting conventions and expose effective settings.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "F06 buffer/settings/editorconfig regressions"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing width/policy layer; baseline src/settings.rs",
+      "source_evidence": [
+        "src/buffer.rs",
+        "src/settings.rs",
+        "src/ui.rs"
+      ],
+      "acceptance_criteria": [
+        "One buffer indentation contract governs insertion/outdent/visual columns/formatting."
+      ],
+      "evidence_documents": [
+        "../audit-workflows.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M05",
+      "name": "Snippets with placeholders",
+      "priority": "Next",
+      "current_evidence": "Small local snippet vocabulary with numbered/linked placeholders, Tab traversal, final caret, grouped Unicode edit and stale-session cancellation.",
+      "required_change": "Small templates for shell functions, Terraform resources, YAML structures and ordinary code; tab stops and linked placeholders.",
+      "acceptance": "Small templates for shell functions, Terraform resources, YAML structures and ordinary code; tab stops and linked placeholders.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "snippets::tests (7)",
+        "linked placeholder bracketed paste PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/lsp.rs",
+      "source_evidence": [
+        "src/snippets.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Linked Unicode/multiline edits remap stops and final caret; unsupported syntax or ambiguous multi-cursor sessions refuse safely."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M06",
+      "name": "Code folding",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/command.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Collapse functions and YAML/HCL blocks; start with syntax/LSP ranges and visible fold markers.",
+      "acceptance": "Collapse functions and YAML/HCL blocks; start with syntax/LSP ranges and visible fold markers.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "acceptance_criteria": [
+        "Collapse functions and YAML/HCL blocks; start with syntax/LSP ranges and visible fold markers."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M07",
+      "name": "Navigation back / forward",
+      "priority": "Next",
+      "current_evidence": "Bounded navigation Back/Forward retains exact file/cursor for goto, definitions and related jumps.",
+      "required_change": "Return from definition, references, search and line jumps without losing context.",
+      "acceptance": "Return from definition, references, search and line jumps without losing context.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "audit_navigation_back_forward_returns_to_exact_file_and_cursor",
+        "Save All/navigation PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/command.rs"
+      ],
+      "acceptance_criteria": [
+        "Back/Forward restores the expected file, line and column without overwriting edits."
+      ],
+      "evidence_documents": [
+        "language-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M08",
+      "name": "Document symbols / outline",
+      "priority": "Next",
+      "current_evidence": "Searchable server document outline plus bounded offline local symbols, including JSON/YAML/HCL.",
+      "required_change": "Rust/Python/Shell symbols exist. Add LSP documentSymbol and YAML/HCL/JSON outline fallbacks.",
+      "acceptance": "Rust/Python/Shell symbols exist. Add LSP documentSymbol and YAML/HCL/JSON outline fallbacks.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "syntax_tree::tests (16)",
+        "outline and symbol protocol tests"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Partial; baseline src/syntax_tree.rs",
+      "source_evidence": [
+        "src/syntax_tree.rs",
+        "src/lsp.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Local outline works offline and server result navigation validates file/range and current intent."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M09",
+      "name": "Workspace symbol search",
+      "priority": "Next",
+      "current_evidence": "Workspace-symbol requests are scoped, cancellable and query-generation bound; widened/empty queries do not retain old/local subsets.",
+      "required_change": "Find symbols across files with a clear language-server prerequisite.",
+      "acceptance": "Find symbols across files with a clear language-server prerequisite.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "real Pyright workspace-symbol fixture",
+        "workspace_symbol_query_widening_discards_the_previous_result_subset",
+        "empty_workspace_symbols_do_not_fall_back_to_current_file_outline",
+        "switching_symbol_scope_invalidates_the_previous_panel_request; unchanged_inactive_document_sync_is_idempotent"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "Missing; baseline src/lsp.rs",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Latest query wins and results name workspace files; empty response remains empty."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M10",
+      "name": "Project Problems",
+      "priority": "Next",
+      "current_evidence": "Aggregate Problems retains diagnostics for inactive unsaved open files across pooled servers and names each file.",
+      "required_change": "Current-file problems exist. Add file grouping and aggregate workspace diagnostics.",
+      "acceptance": "Current-file problems exist. Add file grouping and aggregate workspace diagnostics.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "real mixed-language unsaved diagnostics fixture",
+        "stale document protocol tests"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "Partial; baseline src/lsp.rs",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Inactive diagnostics replace correctly, preserve file identity and disappear on relevant close/update."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M11",
+      "name": "Completion imports and resolution",
+      "priority": "Next",
+      "current_evidence": "F09 atomic completion/import/resolve implementation.",
+      "required_change": "Complete the LSP edit lifecycle; add snippet support separately.",
+      "acceptance": "Complete the LSP edit lifecycle; add snippet support separately.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "F09 synthetic and actual Python/TypeScript tests"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "Partial; baseline src/lsp.rs",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs",
+        "src/buffer.rs"
+      ],
+      "acceptance_criteria": [
+        "Primary and supporting edits succeed or refuse as one undo group."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M12",
+      "name": "Warm language services",
+      "priority": "Next",
+      "current_evidence": "F10 bounded warm language-server pool and synchronized open buffers.",
+      "required_change": "Pool per-language clients and retain unsaved document synchronization.",
+      "acceptance": "Pool per-language clients and retain unsaved document synchronization.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "real mixed-language process reuse/diagnostics/references fixture",
+        "switching_symbol_scope_invalidates_the_previous_panel_request; unchanged_inactive_document_sync_is_idempotent"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified."
+      ],
+      "baseline_evidence": "Partial; baseline src/lsp.rs",
+      "source_evidence": [
+        "src/lsp.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Alternating supported languages keeps services warm and unsaved documents synchronized."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M13",
+      "name": "Search include/exclude filters",
+      "priority": "Next",
+      "current_evidence": "Bounded .mellow/search.json include/exclude and limits apply to disk/unsaved overlays; scope and skipped counts render at 80x24.",
+      "required_change": "Filter paths and decide whether ignored files participate; keep scope/truncation visible.",
+      "acceptance": "Filter paths and decide whether ignored files participate; keep scope/truncation visible.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "search::tests",
+        "workspace::tests",
+        "project_search_configured_scope_and_filtered_counts_are_visible_at_80_by_24"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/search.rs",
+      "source_evidence": [
+        "src/search.rs",
+        "src/workspace.rs",
+        "src/ui.rs"
+      ],
+      "acceptance_criteria": [
+        "Filters apply consistently; escaped symlinks are excluded and truncation is visible."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M14",
+      "name": "Asynchronous search and discovery",
+      "priority": "Next",
+      "current_evidence": "F08 asynchronous cancellable search/discovery, plus ready-generation quick-open acceptance.",
+      "required_change": "Debounce, cancel and stream results while keeping input responsive.",
+      "acceptance": "Debounce, cancel and stream results while keeping input responsive.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "F08 workers",
+        "audit_quick_open_never_opens_stale_candidates_while_query_is_pending",
+        "quick_open_pending_discovery_shows_searching_at_80_by_24"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Slow-storage/SSH performance not measured; local synthetic cancellation/responsiveness evidence only."
+      ],
+      "baseline_evidence": "Missing worker path; baseline src/workspace.rs",
+      "source_evidence": [
+        "src/search.rs",
+        "src/workspace.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Old query/discovery results cannot replace or open stale candidates."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M15",
+      "name": "Replacement preview",
+      "priority": "Improve",
+      "current_evidence": "Existing current-buffer replacement preview, literal replacement and one-undo Replace All are preserved. Multi-file preview expansion remains explicitly deferred.",
+      "required_change": "Keep existing preview; expand reviewed multi-file transaction UX and define undo after save.",
+      "acceptance": "Keep existing preview; expand reviewed multi-file transaction UX and define undo after save.",
+      "status": "deferred",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "goal_replace_ regressions (3)"
+      ],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Present / bounded; baseline src/app.rs",
+      "source_evidence": [
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Preserve current-buffer preview; a future multi-file design requires reviewed transactions and undo-after-save policy."
+      ],
+      "evidence_documents": [
+        "language-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M16",
+      "name": "Save-versus-disk comparison",
+      "priority": "Next",
+      "current_evidence": "Read-only save-versus-disk comparison reports changed lines and newline-only differences; ordinary conflict-safe save remains authoritative.",
+      "required_change": "External-change prompt exists; add compare/reload/merge views so users can decide without leaving Mellow.",
+      "acceptance": "External-change prompt exists; add compare/reload/merge views so users can decide without leaving Mellow.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "audit_disk_comparison_does_not_hide_final_newline_differences",
+        "existing save conflict tests"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Partial; baseline src/buffer.rs",
+      "source_evidence": [
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Comparison never reports agreement when final newline/EOL bytes differ and never changes either side."
+      ],
+      "evidence_documents": [
+        "../audit-workflows.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M17",
+      "name": "Two files side-by-side diff",
+      "priority": "Later",
+      "current_evidence": "Partial; baseline src/command.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Git and AI diffs exist. Add arbitrary file comparison and synchronized scrolling.",
+      "acceptance": "Git and AI diffs exist. Add arbitrary file comparison and synchronized scrolling.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Partial; baseline src/command.rs",
+      "acceptance_criteria": [
+        "Git and AI diffs exist. Add arbitrary file comparison and synchronized scrolling."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M18",
+      "name": "Multi-root workspaces",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/app.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Useful for app + infra repositories; first make one root reliable.",
+      "acceptance": "Useful for app + infra repositories; first make one root reliable.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/app.rs",
+      "acceptance_criteria": [
+        "Useful for app + infra repositories; first make one root reliable."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M19",
+      "name": "More than two editor panes",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/app.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Two panes already work. Generalize only after real usage requires it.",
+      "acceptance": "Two panes already work. Generalize only after real usage requires it.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/app.rs",
+      "acceptance_criteria": [
+        "Two panes already work. Generalize only after real usage requires it."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M20",
+      "name": "File operation undo / trash",
+      "priority": "Next",
+      "current_evidence": "Exclusive recoverable same-filesystem trash/restore with private manifests and restart support; existing/new work never overwritten.",
+      "required_change": "Current explorer deletion is confirmed and blocks open files, but removes files directly. Offer recovery for accidental deletion.",
+      "acceptance": "Current explorer deletion is confirmed and blocks open files, but removes files directly. Offer recovery for accidental deletion.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "file_ops::tests (9)"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/app.rs",
+      "source_evidence": [
+        "src/file_ops.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Restore after restart; refuse changed review/parent/manifest or existing destination; cross-device failure leaves source."
+      ],
+      "evidence_documents": [
+        "security-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M21",
+      "name": "Clipboard history",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/command.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Local ring with sensitive-content opt-out, separate from system clipboard.",
+      "acceptance": "Local ring with sensitive-content opt-out, separate from system clipboard.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "acceptance_criteria": [
+        "Local ring with sensitive-content opt-out, separate from system clipboard."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M22",
+      "name": "Keyboard binding UI and key recorder",
+      "priority": "Next",
+      "current_evidence": "Searchable binding view reads the active keymap source, including MELLOW_KEYMAP; Terminal Doctor records decoded delivered key events.",
+      "required_change": "Configurable bindings and VS Code/nano presets already exist. Add a screen that shows the actual key bytes/capabilities received.",
+      "acceptance": "Configurable bindings and VS Code/nano presets already exist. Add a screen that shows the actual key bytes/capabilities received.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "keymap regressions",
+        "audit_terminal_doctor_omits_pasted_secrets_and_records_delivered_key",
+        "Doctor PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/keymap.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/keymap.rs"
+      ],
+      "acceptance_criteria": [
+        "Actual configured bindings are visible and decoded delivered shortcuts can be inspected without secret paste retention."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M23",
+      "name": "Task runner / clickable errors",
+      "priority": "Next",
+      "current_evidence": "Trusted explicit argv tasks execute off-thread with bounded deadlines/output and cancellability; failed output retains clickable existing path:line:column locations.",
+      "required_change": "Shell exists. Add trusted named validate/test/build tasks and file:line links.",
+      "acceptance": "Shell exists. Add trusted named validate/test/build tasks and file:line links.",
+      "status": "verified",
+      "dependencies": [
+        "M28 trust",
+        "F04 bounded subprocess runner"
+      ],
+      "tests": [
+        "audit_task_failure_preserves_stderr_links_without_save_and_trust_is_required",
+        "audit_task_locations_recognize_existing_unicode_paths_after_tool_prefixes"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/format.rs"
+      ],
+      "acceptance_criteria": [
+        "Untrusted tasks cannot launch; failed output remains reviewable and existing Unicode locations navigate correctly; no implicit shell execution."
+      ],
+      "evidence_documents": [
+        "security-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M24",
+      "name": "Test discovery / test results",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/command.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Start with task output/problem matchers, then test adapters if users need them.",
+      "acceptance": "Start with task output/problem matchers, then test adapters if users need them.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/command.rs",
+      "acceptance_criteria": [
+        "Start with task output/problem matchers, then test adapters if users need them."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M25",
+      "name": "Debugger / DAP",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline src/main.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Breakpoints, variables and stepping are a separate substantial product investment.",
+      "acceptance": "Breakpoints, variables and stepping are a separate substantial product investment.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline src/main.rs",
+      "acceptance_criteria": [
+        "Breakpoints, variables and stepping are a separate substantial product investment."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M26",
+      "name": "Git stash / worktrees / richer conflict view",
+      "priority": "Later",
+      "current_evidence": "Partial Git surface; baseline src/git.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Stage/commit/branches/history already work. Add high-value missing workflows progressively.",
+      "acceptance": "Stage/commit/branches/history already work. Add high-value missing workflows progressively.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Partial Git surface; baseline src/git.rs",
+      "acceptance_criteria": [
+        "Stage/commit/branches/history already work. Add high-value missing workflows progressively."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M27",
+      "name": "CLI multi-file, --wait, --goto, stdin",
+      "priority": "Next",
+      "current_evidence": "CLI supports multiple paths, --goto, attached --wait, --trust and bounded UTF-8 stdin drafts. Concrete Darwin tty reopening restores interaction after piped input.",
+      "required_change": "Current CLI accepts one PATH and --no-mouse. These options let Git, scripts and other tools use Mellow as an editor.",
+      "acceptance": "Current CLI accepts one PATH and --no-mouse. These options let Git, scripts and other tools use Mellow as an editor.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "cli_supports_multiple_paths_goto_wait_stdin_and_explicit_trust",
+        "multi-file/goto/wait and piped Unicode stdin PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/main.rs",
+      "source_evidence": [
+        "src/main.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Correct tab/caret saves, wait remains attached, and piped Unicode draft remains editable and recoverable."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M28",
+      "name": "Workspace trust / restricted mode",
+      "priority": "Before richer execution",
+      "current_evidence": "Restricted-by-default session trust gates LSP, formatters, tasks and configured validators; canonical workspace/display-parent boundary excludes outside aliases. Revocation cancels/stops services.",
+      "required_change": "Gate optional LSP, formatter and task execution for untrusted projects. Core editing stays available.",
+      "acceptance": "Gate optional LSP, formatter and task execution for untrusted projects. Core editing stays available.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "execution_trust regressions",
+        "audit_explicit_validator_cannot_inherit_another_workspaces_execution_trust",
+        "outside-file/symlink native PTY positive controls"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/app.rs",
+      "source_evidence": [
+        "src/app.rs",
+        "src/main.rs"
+      ],
+      "acceptance_criteria": [
+        "Core editing works restricted; outside files remain editable but never inherit workspace execution trust."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M29",
+      "name": "AI context exclusions / redaction",
+      "priority": "Next",
+      "current_evidence": "Mandatory secret paths/content exclusions plus bounded private user-owned additive ai-deny.conf. Canonical aliases and repository-root staged paths fail closed. Existing selection disclosure remains required.",
+      "required_change": "Explicit selection disclosure exists; add deny patterns for secrets, staged diff review and opt-in context sources.",
+      "acceptance": "Explicit selection disclosure exists; add deny patterns for secrets, staged diff review and opt-in context sources.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "additive_deny_globs_match_paths_and_defaults_cannot_be_removed",
+        "user_local_policy_is_bounded_and_resolves_file_aliases_fail_closed",
+        "staged_alias_privacy_uses_the_repository_root_not_process_cwd",
+        "ordinary AI disclosure PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing policy layer; baseline src/ai.rs",
+      "source_evidence": [
+        "src/ai.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Denied context never reaches local mock provider; defaults cannot be removed and malformed/insecure policy refuses."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M30",
+      "name": "AI usage, cost and request limits",
+      "priority": "Next",
+      "current_evidence": "Per-session request/output-token/observed-token budgets count failed and cancelled attempts; actual supplied usage survives stale/error results; missing usage stays unknown. No monetary ceiling claim.",
+      "required_change": "Record provider/model/token usage where available, distinguish estimates, cap outputs and expose budget policies.",
+      "acceptance": "Record provider/model/token usage where available, distinguish estimates, cap outputs and expose budget policies.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "audit_ai_budgets_count_failed_attempts_unknown_usage_and_ignore_stale_progress",
+        "audit_disabled_history_does_not_create_checkpoints_and_pending_usage_closes_budget",
+        "streaming usage protocol tests"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/ai.rs",
+      "source_evidence": [
+        "src/ai.rs",
+        "src/settings.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Queued usage is polled before new authorization; output/request caps enforced and unknown/partial usage is honestly displayed."
+      ],
+      "evidence_documents": [
+        "security-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M31",
+      "name": "AI streaming / cancellable transport",
+      "priority": "Next",
+      "current_evidence": "Actual cancellable async HTTP supports bounded SSE and JSON fallback; data-only sanitized preview, completion validation and explicit review gate prevent partial/late application.",
+      "required_change": "Current Escape dismisses the UI response; blocking worker requests can continue. Explain this and add best-effort transport cancellation.",
+      "acceptance": "Current Escape dismisses the UI response; blocking worker requests can continue. Explain this and add best-effort transport cancellation.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "cancellation_aborts_the_inflight_transport_and_closes_its_socket",
+        "streaming_missing_completion_marker_never_accepts_partial_proposals",
+        "actual SSE cancellation PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [],
+      "baseline_evidence": "Missing; baseline src/app.rs",
+      "source_evidence": [
+        "src/ai.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Escape closes fixture transport; valid late proposal cannot overwrite subsequent edits or reopen review; partial streams never apply."
+      ],
+      "evidence_documents": [
+        "security-verification.md",
+        "terminal-verification.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M32",
+      "name": "Persistent AI change history",
+      "priority": "Later",
+      "current_evidence": "Missing; baseline docs/ai.md; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Session summaries exist. Store optional before/after fingerprints and accepted/rejected outcomes without retaining secrets by default.",
+      "acceptance": "Session summaries exist. Store optional before/after fingerprints and accepted/rejected outcomes without retaining secrets by default.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline docs/ai.md",
+      "acceptance_criteria": [
+        "Session summaries exist. Store optional before/after fingerprints and accepted/rejected outcomes without retaining secrets by default."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M33",
+      "name": "AI multi-file proposals",
+      "priority": "Later",
+      "current_evidence": "Missing by current design; baseline docs/ai.md; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Selection edits are single-file. Add only with reviewed transaction boundaries and rollback.",
+      "acceptance": "Selection edits are single-file. Add only with reviewed transaction boundaries and rollback.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing by current design; baseline docs/ai.md",
+      "acceptance_criteria": [
+        "Selection edits are single-file. Add only with reviewed transaction boundaries and rollback."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M34",
+      "name": "Extension ecosystem",
+      "priority": "Defer",
+      "current_evidence": "Missing; baseline Cargo.toml; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "A full marketplace adds compatibility/security costs. Begin with constrained language/task/snippet bundles.",
+      "acceptance": "A full marketplace adds compatibility/security costs. Begin with constrained language/task/snippet bundles.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Missing; baseline Cargo.toml",
+      "acceptance_criteria": [
+        "A full marketplace adds compatibility/security costs. Begin with constrained language/task/snippet bundles."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M35",
+      "name": "Accessibility beyond colors/keyboard",
+      "priority": "Research now",
+      "current_evidence": "Actual host/accessibility inventory and 80x24 keyboard/render evidence recorded; no running VoiceOver or participant evaluation was available.",
+      "required_change": "Evaluate with real screen readers and users; color fallbacks alone do not prove accessibility.",
+      "acceptance": "Evaluate with real screen readers and users; color fallbacks alone do not prove accessibility.",
+      "status": "blocked",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "native keyboard PTY and 80x24 TestBackend renders",
+        "host VoiceOver inventory"
+      ],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Native VoiceOver/braille and real assistive-technology participant evaluation unavailable; Terminal.app/iTerm2/Ghostty, physical fonts/mouse and SSH/tmux not qualified."
+      ],
+      "baseline_evidence": "Unverified / no dedicated screen-reader mode found; baseline src/terminal.rs",
+      "source_evidence": [
+        "docs/audit/accessibility-evidence.md",
+        "src/ui.rs"
+      ],
+      "acceptance_criteria": [
+        "Real assistive-technology/user evidence is required beyond color/keyboard source tests."
+      ],
+      "evidence_documents": [
+        "accessibility-evidence.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "M36",
+      "name": "Windows native / remote orchestration",
+      "priority": "Defer",
+      "current_evidence": "Not supported / absent; baseline src/pty.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Linux through WSL and running Mellow on an SSH host are existing paths. No native ConPTY or VS Code-style remote manager is present.",
+      "acceptance": "Linux through WSL and running Mellow on an SSH host are existing paths. No native ConPTY or VS Code-style remote manager is present.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Not supported / absent; baseline src/pty.rs",
+      "acceptance_criteria": [
+        "Linux through WSL and running Mellow on an SSH host are existing paths. No native ConPTY or VS Code-style remote manager is present."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M37",
+      "name": "Encoding conversion / EOL controls",
+      "priority": "Later",
+      "current_evidence": "Partial; baseline src/buffer.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "UTF-8, BOM and CRLF preservation exist. Other encodings and explicit conversion UI were not found.",
+      "acceptance": "UTF-8, BOM and CRLF preservation exist. Other encodings and explicit conversion UI were not found.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Partial; baseline src/buffer.rs",
+      "acceptance_criteria": [
+        "UTF-8, BOM and CRLF preservation exist. Other encodings and explicit conversion UI were not found."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M38",
+      "name": "Large file / log viewer mode",
+      "priority": "Later",
+      "current_evidence": "Partial; baseline src/buffer.rs; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "100 MiB open limit, reduced intelligence above 5 MiB. Add measured long-line/wrap behavior, read-only/tail workflows if demanded.",
+      "acceptance": "100 MiB open limit, reduced intelligence above 5 MiB. Add measured long-line/wrap behavior, read-only/tail workflows if demanded.",
+      "status": "deferred",
+      "dependencies": [
+        "Future product scope"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Partial; baseline src/buffer.rs",
+      "acceptance_criteria": [
+        "100 MiB open limit, reduced intelligence above 5 MiB. Add measured long-line/wrap behavior, read-only/tail workflows if demanded."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "M39",
+      "name": "Signed releases / repair diagnostics",
+      "priority": "Next",
+      "current_evidence": "Exact source/digest acceptance, release attestation wiring, explicit optional codesign verification/required-signing refusal and Terminal Doctor repair report implemented. Signing credentials/notarization absent.",
+      "required_change": "Checksums and installer exist. Add provenance, macOS signing, and a single diagnostics report for terminal and integrations.",
+      "acceptance": "Checksums and installer exist. Add provenance, macOS signing, and a single diagnostics report for terminal and integrations.",
+      "status": "blocked",
+      "dependencies": [
+        "Stage A foundation"
+      ],
+      "tests": [
+        "workflow actionlint",
+        "package digests and extracted PTY",
+        "codesign hook validation",
+        "Doctor PTY"
+      ],
+      "commits": [
+        "ff6eb860caaaef74fc34d2a3480690f9ea50c89e"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Apple signing identity and notarization credentials unavailable; no signature/notarization/provenance publication executed."
+      ],
+      "baseline_evidence": "Partial; baseline scripts/package-macos.sh",
+      "source_evidence": [
+        ".github/workflows/release.yml",
+        "scripts/package-macos.sh",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Release provenance must execute and native signature/notarization must validate with authorized identity before claiming signed distribution."
+      ],
+      "evidence_documents": [
+        "../RELEASE_CHECKLIST.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "I01",
+      "name": "Safe configuration change",
+      "priority": "Stage D",
+      "current_evidence": "Small JSON/YAML structural-change review refuses ambiguous parsing, redacts secret values, records recovery/history, and explicitly reviews optional trusted argv validators. Only successful current validation offers Save.",
+      "required_change": "Small first version. Start with JSON/YAML validation and user-configured shell/format checks. Add Terraform and Kubernetes integrations only with explicit context and command visibility. Some validators can execute code or contact services; do not label all validation “read-only.”",
+      "acceptance": "Proof of value. A user can see exactly which keys changed and recover the pre-edit file; a failed or cancelled validator never silently saves or deploys.",
+      "status": "verified",
+      "dependencies": [
+        "Stage A/B/C foundation",
+        "M28 trust",
+        "M02 history",
+        "F04 bounded subprocess runner"
+      ],
+      "tests": [
+        "config_change::tests (7)",
+        "audit_config_validator_failed_cancelled_or_stale_never_offers_save",
+        "audit_validator_config_error_or_oversize_never_offers_implicit_structural_save",
+        "JSON review PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "First-time participant/pilot usefulness evaluation unavailable; source and native PTY results cannot establish participant acceptance."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "source_evidence": [
+        "src/config_change.rs",
+        "src/app.rs"
+      ],
+      "acceptance_criteria": [
+        "Review reveals exact changed paths; failed/cancelled/stale validators never save/deploy and malformed validator config never bypasses validation."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md",
+        "../audit-workflows.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "I02",
+      "name": "Terminal Doctor",
+      "priority": "Stage D",
+      "current_evidence": "Small Terminal Doctor shows terminal/color/key/paste/mouse/clipboard route facts and decoded event recorder. Redacted report is copied only by explicit action; pasted contents are omitted.",
+      "required_change": "Small first version. Detect legacy/enhanced keys, color tier, paste protocol, clipboard route and mouse mode. Produce a redacted diagnostic bundle with user consent.",
+      "acceptance": "Proof of value. Users can resolve a shortcut/clipboard issue without guessing their terminal’s behavior; test on Terminal.app, iTerm2, Ghostty, Windows Terminal/WSL and SSH/tmux.",
+      "status": "blocked",
+      "dependencies": [
+        "Stage A/B/C foundation",
+        "Redacted decoded-event handling"
+      ],
+      "tests": [
+        "audit_terminal_doctor_omits_pasted_secrets_and_records_delivered_key",
+        "native Doctor PTY"
+      ],
+      "commits": [
+        "e324b7f0e64080f8c911ae41230e99ebb40313a9"
+      ],
+      "pr": null,
+      "remaining_gates": [
+        "Native Terminal.app, iTerm2, Ghostty, WSL/Windows Terminal and SSH/tmux comparison remains unperformed."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "source_evidence": [
+        "src/app.rs",
+        "src/ui.rs"
+      ],
+      "acceptance_criteria": [
+        "Report contains available protocol facts and decoded events without secret paste text; terminal-family/SSH usability must be separately qualified."
+      ],
+      "evidence_documents": [
+        "terminal-verification.md",
+        "accessibility-evidence.md"
+      ],
+      "verification_scope": "Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately."
+    },
+    {
+      "id": "I03",
+      "name": "Change timeline and checkpoints",
+      "priority": "Later",
+      "current_evidence": "M02 implements per-file checkpoints and explicit save/AI-accept events; a full timeline and multi-file checkpoint consistency remain Later.",
+      "required_change": "Small first version. Begin with per-file checkpoints and explicit save/AI accept events. Use retention/size controls and private permissions. Add multi-file checkpoint consistency later.",
+      "acceptance": "Proof of value. A user restores an earlier state after restart without losing newer work; history does not retain excluded secrets.",
+      "status": "deferred",
+      "dependencies": [
+        "Stages A/B/C verified"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "acceptance_criteria": [
+        "Proof of value. A user restores an earlier state after restart without losing newer work; history does not retain excluded secrets."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "I04",
+      "name": "AI request receipt",
+      "priority": "Later",
+      "current_evidence": "M29–M31 implement deny policies, budgets, provider usage and cancellation; durable request IDs/receipts and price accounting remain Later.",
+      "required_change": "Small first version. Use the existing provider adapters. Add request IDs, output caps, context allow/deny rules and per-session budgets. Label estimated prices and absent usage honestly.",
+      "acceptance": "Proof of value. A user can explain what was sent and why a request cost something; cancelling cannot be misrepresented as a refund or guaranteed server-side cancellation.",
+      "status": "deferred",
+      "dependencies": [
+        "Stages A/B/C verified"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "acceptance_criteria": [
+        "Proof of value. A user can explain what was sent and why a request cost something; cancelling cannot be misrepresented as a refund or guaranteed server-side cancellation."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "I05",
+      "name": "Environment comparison",
+      "priority": "Later",
+      "current_evidence": "Proposal absent at baseline; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Small first version. Start entirely locally with two YAML/JSON files. Show paths such as spec.replicas, before/after values and structural changes; redact secret-like values. Treat arrays/order explicitly.",
+      "acceptance": "Proof of value. The structural view agrees with the textual diff; duplicate keys or ambiguous parsing stop the semantic view instead of hiding a change.",
+      "status": "deferred",
+      "dependencies": [
+        "Stages A/B/C verified"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "acceptance_criteria": [
+        "Proof of value. The structural view agrees with the textual diff; duplicate keys or ambiguous parsing stop the semantic view instead of hiding a change."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    },
+    {
+      "id": "I06",
+      "name": "Runbook capture",
+      "priority": "Later",
+      "current_evidence": "Proposal absent at baseline; no expansion undertaken because the report explicitly labels this Later/Defer.",
+      "required_change": "Small first version. Make capture opt-in. Record exit status, timestamps, command/cwd and user-selected output. Let the user edit before exporting; never replay commands automatically.",
+      "acceptance": "Proof of value. Another engineer can follow the reviewed steps, and the export contains neither credentials nor unselected terminal history.",
+      "status": "deferred",
+      "dependencies": [
+        "Stages A/B/C verified"
+      ],
+      "tests": [],
+      "commits": [],
+      "pr": null,
+      "remaining_gates": [
+        "Requires future product-scope decision; not part of current audit implementation."
+      ],
+      "baseline_evidence": "Proposal absent at baseline",
+      "acceptance_criteria": [
+        "Proof of value. Another engineer can follow the reviewed steps, and the export contains neither credentials nor unselected terminal history."
+      ],
+      "verification_scope": "No new capability acceptance claimed."
+    }
+  ],
+  "release_readiness": "Not ready for publication: pending exact candidate packaging/platform gates and explicitly unauthorized release/signing/native accessibility validation.",
+  "verification_platforms": [
+    "Native macOS 26.6.2 (25G83) ARM64, Rust 1.90.0",
+    "Linux ARM64 Docker VM on macOS ARM64; explicitly separate from native macOS/native Linux host claims"
+  ],
+  "final_source_gates": {
+    "macOS_ARM64": {
+      "unit_passed": 527,
+      "ignored": 3,
+      "pty_passed": 24,
+      "pty_ignored": 0,
+      "log": "evidence/native-verify.log"
+    },
+    "Linux_ARM64_VM": {
+      "unit_passed": 524,
+      "ignored": 4,
+      "pty_passed": 24,
+      "pty_ignored": 0,
+      "log": "evidence/linux-vm-verify.log"
+    },
+    "explicit_optional_gates": {
+      "real_language_servers": "3 passed; 0 failed/ignored",
+      "actual_Linux_bind_mount": "1 passed; 0 failed/ignored"
+    },
+    "note": "Ignores are explicit real-server and Linux-mount gates; separately executed as recorded. Counts differ due to native Darwin-only tests. These source runs precede commits; exact archive acceptance follows."
+  },
+  "implementation_commit": "e324b7f0e64080f8c911ae41230e99ebb40313a9",
+  "packaging_commit": "ff6eb860caaaef74fc34d2a3480690f9ea50c89e"
+}

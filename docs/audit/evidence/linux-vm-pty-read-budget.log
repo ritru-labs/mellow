@@ -1,0 +1,11 @@
+ Container mellow-audit-20261011-mellow-dev-run-3a9103da0e99 Creating 
+ Container mellow-audit-20261011-mellow-dev-run-3a9103da0e99 Created 
+   Compiling mellow v0.3.0 (/workspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.60s
+     Running unittests src/main.rs (/target/debug/deps/mellow-7cc9b69738471da5)
+
+running 1 test
+test pty::tests::continuously_writing_terminal_job_yields_to_editor_input ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 526 filtered out; finished in 0.14s
+
