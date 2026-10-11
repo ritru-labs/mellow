@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -71,6 +71,7 @@ struct FileSnapshot {
     content_hash: u64,
     device: u64,
     inode: u64,
+    metadata_version: (u32, u32, u32, u64, i64, i64),
 }
 
 impl FileSnapshot {
@@ -80,12 +81,23 @@ impl FileSnapshot {
 
     fn from_metadata_and_hash(metadata: &fs::Metadata, content_hash: u64) -> Self {
         #[cfg(unix)]
-        let (device, inode) = {
+        let (device, inode, metadata_version) = {
             use std::os::unix::fs::MetadataExt;
-            (metadata.dev(), metadata.ino())
+            (
+                metadata.dev(),
+                metadata.ino(),
+                (
+                    metadata.uid(),
+                    metadata.gid(),
+                    metadata.mode(),
+                    metadata.nlink(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ),
+            )
         };
         #[cfg(not(unix))]
-        let (device, inode) = (0, 0);
+        let (device, inode, metadata_version) = (0, 0, (0, 0, 0, 0, 0, 0));
 
         Self {
             len: metadata.len(),
@@ -93,6 +105,7 @@ impl FileSnapshot {
             content_hash,
             device,
             inode,
+            metadata_version,
         }
     }
 }
@@ -134,6 +147,7 @@ pub struct Buffer {
     typing_run: Option<(std::time::Instant, Cursor)>,
     /// Indent with tabs: detected from the file when opened, or chosen.
     tab_indent: bool,
+    indent_width: usize,
 }
 
 impl Buffer {
@@ -206,8 +220,10 @@ impl Buffer {
             draft_id: crate::recovery::new_draft_id(),
             typing_run: None,
             tab_indent: false,
+            indent_width: 4,
         };
         buffer.tab_indent = buffer.detect_tab_indent();
+        buffer.configure_indentation();
         Ok(buffer)
     }
 
@@ -229,8 +245,10 @@ impl Buffer {
             draft_id: crate::recovery::new_draft_id(),
             typing_run: None,
             tab_indent: false,
+            indent_width: 4,
         };
         buffer.tab_indent = buffer.detect_tab_indent();
+        buffer.configure_indentation();
         buffer
     }
 
@@ -267,7 +285,50 @@ impl Buffer {
 
     /// One indentation step as text.
     pub fn indent_unit(&self) -> &'static str {
-        if self.tab_indent { "\t" } else { "    " }
+        if self.tab_indent {
+            return "\t";
+        }
+        const SPACES: [&str; 9] = [
+            "", " ", "  ", "   ", "    ", "     ", "      ", "       ", "        ",
+        ];
+        SPACES[self.indent_width.clamp(1, 8)]
+    }
+
+    pub fn indent_width(&self) -> usize {
+        self.indent_width
+    }
+    pub fn set_indent_width(&mut self, width: usize) {
+        self.indent_width = width.clamp(1, 8);
+    }
+
+    fn configure_indentation(&mut self) {
+        let configured = crate::settings::load().unwrap_or_default().indent_width;
+        let mut inferred = 0;
+        for line in self.text.lines().take(1000) {
+            let n = line.chars().take_while(|c| *c == ' ').count();
+            if n == 0 || n > 64 {
+                continue;
+            }
+            inferred = if inferred == 0 {
+                n
+            } else {
+                gcd_indent(inferred, n)
+            };
+        }
+        self.indent_width = if (1..=8).contains(&inferred) {
+            inferred
+        } else {
+            configured
+        };
+        if let Some(path) = &self.path {
+            let policy = crate::settings::project_indentation(path);
+            if let Some(width) = policy.0 {
+                self.indent_width = width;
+            }
+            if let Some(tabs) = policy.1 {
+                self.tab_indent = tabs;
+            }
+        }
     }
 
     pub fn path(&self) -> Option<&PathBuf> {
@@ -297,6 +358,15 @@ impl Buffer {
     pub fn language(&self) -> &'static str {
         language_for_path(self.path.as_deref())
     }
+}
+
+fn gcd_indent(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
 }
 
 /// The language of a file name, as `Buffer::language` reports it.
@@ -891,18 +961,30 @@ impl Buffer {
         if let Some(reason) = self.external_conflict()? {
             bail!("conflict: {reason}");
         }
-        self.force_save()
+        self.save_against_snapshot(self.disk_snapshot.clone())
     }
 
     pub fn force_save(&mut self) -> Result<()> {
         let path = self
             .save_path
+            .as_ref()
+            .context("this buffer has no path yet; use Save As")?;
+        // Explicit overwrite accepts the current version, never a version
+        // that appears later while preparing the replacement.
+        self.save_against_snapshot(capture_file_snapshot(path)?)
+    }
+
+    fn save_against_snapshot(&mut self, expected: Option<FileSnapshot>) -> Result<()> {
+        let path = self
+            .save_path
             .clone()
             .context("this buffer has no path yet; use Save As")?;
 
-        self.last_save_mode = atomic_write(&path, self.has_bom, &self.text, Publish::Replace)?;
+        let (mode, snapshot) =
+            atomic_write(&path, self.has_bom, &self.text, Publish::Replace, expected)?;
+        self.last_save_mode = mode;
         self.saved_revision = self.revision;
-        self.disk_snapshot = capture_file_snapshot(&path)?;
+        self.disk_snapshot = Some(snapshot);
         self.persisted = true;
         Ok(())
     }
@@ -942,12 +1024,14 @@ impl Buffer {
             }
         }
 
-        self.last_save_mode = atomic_write(&path, self.has_bom, &self.text, Publish::NewFileOnly)?;
+        let (mode, snapshot) =
+            atomic_write(&path, self.has_bom, &self.text, Publish::NewFileOnly, None)?;
+        self.last_save_mode = mode;
 
         self.path = Some(path.clone());
         self.save_path = Some(path.clone());
         self.saved_revision = self.revision;
-        self.disk_snapshot = capture_file_snapshot(&path)?;
+        self.disk_snapshot = Some(snapshot);
         self.persisted = true;
         Ok(())
     }
@@ -1362,7 +1446,10 @@ impl Buffer {
             let remove = if line.starts_with('\t') {
                 1
             } else {
-                line.chars().take_while(|&c| c == ' ').take(4).count()
+                line.chars()
+                    .take_while(|&c| c == ' ')
+                    .take(self.indent_width)
+                    .count()
             };
             if remove > 0 {
                 let idx = self.char_index(row, 0);
@@ -1499,30 +1586,41 @@ fn unchanged_snapshot(path: &Path, expected: &FileSnapshot) -> Result<Option<Fil
 }
 
 fn capture_file_snapshot(path: &Path) -> Result<Option<FileSnapshot>> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("failed to read metadata for {}", path.display()));
         }
     };
+    let metadata = file.metadata()?;
 
     if !metadata.is_file() {
         bail!("{} is no longer a regular file", path.display());
     }
 
-    let bytes =
-        fs::read(path).with_context(|| format!("failed to fingerprint {}", path.display()))?;
-    Ok(Some(FileSnapshot::from_metadata_and_bytes(
-        &metadata, &bytes,
-    )))
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("failed to fingerprint {}", path.display()))?;
+    let snapshot = FileSnapshot::from_metadata_and_bytes(&metadata, &bytes);
+    if FileSnapshot::from_metadata_and_bytes(&file.metadata()?, &bytes) != snapshot {
+        bail!(
+            "conflict: file changed while fingerprinting {}",
+            path.display()
+        );
+    }
+    Ok(Some(snapshot))
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
+    fnv1a_iter(bytes.iter().copied())
+}
+
+fn fnv1a_iter(bytes: impl Iterator<Item = u8>) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
-        hash ^= u64::from(*byte);
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
@@ -1546,7 +1644,34 @@ enum Publish {
     NewFileOnly,
 }
 
-fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Result<SaveMode> {
+fn atomic_write(
+    path: &Path,
+    has_bom: bool,
+    text: &Rope,
+    publish: Publish,
+    expected: Option<FileSnapshot>,
+) -> Result<(SaveMode, FileSnapshot)> {
+    let original_snapshot = capture_file_snapshot(path)?;
+    if original_snapshot != expected {
+        bail!("conflict: file changed before preparing save; original file is unchanged");
+    }
+    let original = if original_snapshot.is_some() {
+        let file = fs::File::open(path)
+            .with_context(|| format!("could not inspect save metadata for {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if file.metadata()?.nlink() > 1 {
+                bail!(
+                    "{} has multiple hard links; atomic save would separate their contents. Use Save As to create an independent file, or explicitly manage the links outside Mellow",
+                    path.display()
+                );
+            }
+        }
+        Some(file)
+    } else {
+        None
+    };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -1561,19 +1686,15 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
         std::process::id()
     ));
 
-    let result = (|| -> Result<SaveMode> {
+    let result = (|| -> Result<(SaveMode, FileSnapshot)> {
         #[allow(unused_mut)]
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let initial_mode = if let Ok(metadata) = fs::metadata(path) {
-                metadata.permissions().mode() & 0o777
-            } else {
-                0o600
-            };
-            options.mode(initial_mode);
+            use std::os::unix::fs::OpenOptionsExt;
+            // Keep the unpublished text private until all metadata is copied.
+            options.mode(0o600);
         }
 
         let mut file = options.open(&temp_path).with_context(|| {
@@ -1590,8 +1711,21 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
         file.flush()?;
         file.sync_all()?;
 
-        if let Ok(metadata) = fs::metadata(path) {
-            fs::set_permissions(&temp_path, metadata.permissions())?;
+        if let Some(source) = original.as_ref() {
+            #[cfg(unix)]
+            preserve_save_metadata(source, &file).map_err(|error| anyhow::anyhow!(
+                "cannot preserve owner/group, ACLs or extended attributes for {}: {error:#}. Original file is unchanged; use Save As to create an independent file", path.display()))?;
+            #[cfg(not(unix))]
+            file.set_permissions(source.metadata()?.permissions())?;
+            file.sync_all()?;
+        }
+        // Detect a writer that changed or replaced the target while the save
+        // was being prepared. Never knowingly overwrite that newer version.
+        if capture_file_snapshot(path)? != original_snapshot {
+            bail!("conflict: file changed while preparing save; original file is unchanged");
+        }
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!("conflict: save destination became a symlink; original file is unchanged");
         }
 
         if publish == Publish::NewFileOnly {
@@ -1599,7 +1733,10 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
             if let Ok(directory) = fs::File::open(parent) {
                 let _ = directory.sync_all();
             }
-            return Ok(SaveMode::Atomic);
+            return Ok((
+                SaveMode::Atomic,
+                snapshot_written_file(&file, has_bom, text)?,
+            ));
         }
 
         let mut mode = SaveMode::Atomic;
@@ -1612,9 +1749,10 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
             // place rather than refuse to save.
             #[cfg(unix)]
             Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
-                rewrite_in_place(path, has_bom, text).with_context(|| {
-                    format!("failed to rewrite mounted file {}", path.display())
-                })?;
+                file = rewrite_in_place(path, has_bom, text, original_snapshot.as_ref())
+                    .with_context(|| {
+                        format!("failed to rewrite mounted file {}", path.display())
+                    })?;
                 let _ = fs::remove_file(&temp_path);
                 mode = SaveMode::InPlace;
             }
@@ -1627,13 +1765,173 @@ fn atomic_write(path: &Path, has_bom: bool, text: &Rope, publish: Publish) -> Re
         if let Ok(directory) = fs::File::open(parent) {
             let _ = directory.sync_all();
         }
-        Ok(mode)
+        Ok((mode, snapshot_written_file(&file, has_bom, text)?))
     })();
 
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+// Bind the saved baseline to the inode and bytes we actually wrote. Reading
+// the path after publication could adopt a concurrent writer's new contents
+// and incorrectly treat them as this buffer's saved version.
+fn snapshot_written_file(file: &fs::File, has_bom: bool, text: &Rope) -> Result<FileSnapshot> {
+    let prefix = if has_bom { UTF8_BOM } else { &[] };
+    let hash = fnv1a_iter(prefix.iter().copied().chain(text.bytes()));
+    Ok(FileSnapshot::from_metadata_and_hash(
+        &file.metadata()?,
+        hash,
+    ))
+}
+
+/// Atomic saves preserve supported Unix metadata on the replacement inode.
+/// Fail before publication if preserving any part of the contract fails.
+#[cfg(unix)]
+fn preserve_save_metadata(source: &fs::File, destination: &fs::File) -> Result<()> {
+    use std::os::unix::{fs::MetadataExt, io::AsRawFd};
+    let before = source.metadata()?;
+    let current = destination.metadata()?;
+    if before.uid() != current.uid() || before.gid() != current.gid() {
+        // SAFETY: destination is a live file descriptor; ownership values came
+        // from the still-open original. Failure leaves the original intact.
+        if unsafe { libc::fchown(destination.as_raw_fd(), before.uid(), before.gid()) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("preserving file owner/group");
+        }
+    }
+    destination.set_permissions(before.permissions())?;
+    #[cfg(target_os = "macos")]
+    {
+        // fcopyfile copies native macOS ACLs and every xattr (including resource
+        // forks), without copying content or timestamps over the new text.
+        // SAFETY: both file descriptors remain live for this call; null requests
+        // copyfile's internally managed state.
+        if unsafe {
+            libc::fcopyfile(
+                source.as_raw_fd(),
+                destination.as_raw_fd(),
+                std::ptr::null_mut(),
+                libc::COPYFILE_ACL | libc::COPYFILE_XATTR,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("preserving ACLs and extended attributes");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    copy_linux_xattrs(source, destination)?;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    bail!("metadata-preserving atomic saves are not supported on this Unix platform");
+    let after = destination.metadata()?;
+    if (before.uid(), before.gid(), before.mode() & 0o7777)
+        != (after.uid(), after.gid(), after.mode() & 0o7777)
+    {
+        bail!("filesystem changed owner/group or permission bits while preserving metadata");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_linux_xattrs(source: &fs::File, destination: &fs::File) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    const ATTRIBUTE_LIMIT: usize = 16 * 1024 * 1024;
+    fn names(fd: i32) -> Result<Vec<std::ffi::CString>> {
+        // SAFETY: descriptor is live; null plus zero asks for the list size.
+        let length = unsafe { libc::flistxattr(fd, std::ptr::null_mut(), 0) };
+        if length < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOTSUP) {
+                return Ok(Vec::new());
+            }
+            return Err(error).context("listing extended attributes");
+        }
+        if length as usize > ATTRIBUTE_LIMIT {
+            bail!("extended attribute list exceeds the save limit");
+        }
+        let mut bytes = vec![0u8; length as usize];
+        // SAFETY: bytes is writable for its length and descriptor is live.
+        let actual = unsafe { libc::flistxattr(fd, bytes.as_mut_ptr().cast(), bytes.len()) };
+        if actual < 0 {
+            return Err(std::io::Error::last_os_error()).context("reading extended attribute list");
+        }
+        bytes.truncate(actual as usize);
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| Ok(std::ffi::CString::new(name)?))
+            .collect()
+    }
+    let source_fd = source.as_raw_fd();
+    let destination_fd = destination.as_raw_fd();
+    let attributes = names(source_fd)?;
+    // A parent directory may give the new inode an ACL the original did not
+    // have. Remove inherited attributes so the metadata is an exact copy.
+    for name in names(destination_fd)?
+        .into_iter()
+        .filter(|name| !attributes.contains(name))
+    {
+        // SAFETY: descriptor and NUL-terminated name are live.
+        if unsafe { libc::fremovexattr(destination_fd, name.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("clearing inherited extended attributes");
+        }
+    }
+    for name in attributes {
+        // Linux POSIX ACLs are system.posix_acl_access xattrs, and are copied
+        // through this same path alongside user, security and trusted attrs.
+        // SAFETY: live descriptor and valid name, zero buffer requests size.
+        let length = unsafe { libc::fgetxattr(source_fd, name.as_ptr(), std::ptr::null_mut(), 0) };
+        if length < 0 {
+            return Err(std::io::Error::last_os_error()).context("measuring extended attribute");
+        }
+        if length as usize > ATTRIBUTE_LIMIT {
+            bail!("extended attribute exceeds the save limit");
+        }
+        let mut bytes = vec![0u8; length as usize];
+        // SAFETY: destination buffer is writable and source descriptor is live.
+        let actual = unsafe {
+            libc::fgetxattr(
+                source_fd,
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        if actual < 0 {
+            return Err(std::io::Error::last_os_error()).context("reading extended attribute");
+        }
+        // Security labels can already match but be non-writable by this user.
+        // Retain identical attributes instead of requesting a privileged write.
+        let mut current = vec![0u8; actual as usize];
+        // SAFETY: destination descriptor/name are live and current is writable.
+        let existing = unsafe {
+            libc::fgetxattr(
+                destination_fd,
+                name.as_ptr(),
+                current.as_mut_ptr().cast(),
+                current.len(),
+            )
+        };
+        if existing == actual && current == bytes[..actual as usize] {
+            continue;
+        }
+        // SAFETY: bytes and name are valid for their lengths; destination is live.
+        if unsafe {
+            libc::fsetxattr(
+                destination_fd,
+                name.as_ptr(),
+                bytes.as_ptr().cast(),
+                actual as usize,
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error()).context("preserving extended attribute");
+        }
+    }
+    Ok(())
 }
 
 /// Gives the finished temporary file its final name without ever replacing
@@ -1649,32 +1947,51 @@ fn publish_new_file(temp_path: &Path, path: &Path) -> Result<()> {
             "destination {} already exists; choose a different path",
             path.display()
         ),
-        // Some filesystems have no hard links. Fall back to a final check and
-        // a rename; the window is as small as it can be there.
-        Err(_) => {
-            if fs::symlink_metadata(path).is_ok() {
-                bail!(
-                    "destination {} already exists; choose a different path",
-                    path.display()
-                );
-            }
-            fs::rename(temp_path, path)
-                .with_context(|| format!("failed to create {}", path.display()))
-        }
+        // A check followed by rename would overwrite a destination created
+        // between those operations. Refuse unsupported exclusive publication
+        // rather than silently weaken Save As's no-overwrite contract.
+        Err(error) => Err(error).with_context(|| format!(
+            "cannot exclusively publish {}; this filesystem must support hard links for safe Save As; choose another destination",
+            path.display()
+        )),
     }
 }
 
 /// Writes the text into the existing file (same inode, owner and mode).
 #[cfg(unix)]
-fn rewrite_in_place(path: &Path, has_bom: bool, text: &Rope) -> Result<()> {
-    let mut file = OpenOptions::new().write(true).truncate(true).open(path)?;
+fn rewrite_in_place(
+    path: &Path,
+    has_bom: bool,
+    text: &Rope,
+    expected: Option<&FileSnapshot>,
+) -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Open before truncating, refuse newly introduced symlinks, and bind the
+    // fallback to the same original inode/content as the atomic attempt.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let before = file.metadata()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let snapshot = FileSnapshot::from_metadata_and_bytes(&before, &bytes);
+    if Some(&snapshot) != expected
+        || FileSnapshot::from_metadata_and_bytes(&file.metadata()?, &bytes) != snapshot
+    {
+        bail!("conflict: mounted file changed before in-place save; original file is unchanged");
+    }
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
     if has_bom {
         file.write_all(UTF8_BOM)?;
     }
     text.write_to(&mut file)?;
     file.flush()?;
     file.sync_all()?;
-    Ok(())
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -1692,6 +2009,240 @@ mod tests {
             buffer.insert_char(&mut cursor, ch);
         }
         (buffer, cursor)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_a_hard_link_refuses_without_mutating_either_name() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("original.conf");
+        let alias = dir.path().join("alias.conf");
+        fs::write(&path, "old text").unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        let inode = fs::metadata(&path).unwrap().ino();
+        let mut buffer = Buffer::open(Some(path.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "new ");
+        let error = buffer.save().unwrap_err().to_string();
+        assert!(
+            error.contains("hard links") && error.contains("Save As"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old text");
+        assert_eq!(fs::read_to_string(&alias).unwrap(), "old text");
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        assert!(buffer.is_dirty());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn save_baseline_cannot_adopt_a_writer_after_the_conflict_check() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("concurrent.conf");
+        fs::write(&path, "original").unwrap();
+        let mut buffer = Buffer::open(Some(path.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "my edit ");
+        assert!(buffer.external_conflict().unwrap().is_none());
+        let accepted = buffer.disk_snapshot.clone();
+        // Reproduce a writer between the UI conflict check and save setup.
+        fs::write(&path, "other writer").unwrap();
+        let error = buffer
+            .save_against_snapshot(accepted)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("conflict:"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "other writer");
+        assert!(buffer.is_dirty());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn saved_snapshot_is_bound_to_the_written_inode_not_a_later_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("saved.conf");
+        fs::write(&path, "my saved text").unwrap();
+        let written = fs::File::open(&path).unwrap();
+        let replacement = dir.path().join("replacement");
+        fs::write(&replacement, "external text").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let snapshot =
+            snapshot_written_file(&written, false, &Rope::from_str("my saved text")).unwrap();
+        assert_eq!(snapshot.content_hash, fnv1a(b"my saved text"));
+        assert_ne!(Some(snapshot), capture_file_snapshot(&path).unwrap());
+        assert_eq!(fs::read_to_string(path).unwrap(), "external text");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_place_fallback_refuses_a_replaced_file_or_new_symlink_before_truncation() {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mounted.conf");
+        fs::write(&path, "original").unwrap();
+        let expected = capture_file_snapshot(&path).unwrap();
+        fs::write(&path, "new external text").unwrap();
+        let text = Rope::from_str("my draft");
+        assert!(rewrite_in_place(&path, false, &text, expected.as_ref()).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new external text");
+        fs::remove_file(&path).unwrap();
+        let target = dir.path().join("symlink-target");
+        fs::write(&target, "untouched target").unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(rewrite_in_place(&path, false, &text, expected.as_ref()).is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "untouched target");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn atomic_save_preserves_extended_attributes_owner_group_and_mode() {
+        use std::os::unix::{fs::MetadataExt, io::AsRawFd};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("metadata.conf");
+        fs::write(&path, "old text").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let name = c"user.audit";
+        let value = b"preserve-me";
+        // SAFETY: file is live and the name/value buffers are valid.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let before = file.metadata().unwrap();
+        let mut buffer = Buffer::open(Some(path.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "new ");
+        buffer.save().unwrap();
+        let saved = fs::File::open(&path).unwrap();
+        let after = saved.metadata().unwrap();
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode()),
+            (after.uid(), after.gid(), after.mode())
+        );
+        let mut actual = [0u8; 32];
+        // SAFETY: file is live and the destination buffer is writable.
+        let size = unsafe {
+            libc::fgetxattr(
+                saved.as_raw_fd(),
+                name.as_ptr(),
+                actual.as_mut_ptr().cast(),
+                actual.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(size, value.len() as isize);
+        assert_eq!(&actual[..value.len()], value);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn atomic_save_preserves_native_acl_and_nondefault_group() {
+        use std::os::unix::{
+            fs::{MetadataExt, PermissionsExt},
+            io::AsRawFd,
+        };
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("acl.conf");
+        fs::write(&path, "original").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let original_gid = file.metadata().unwrap().gid();
+        let mut groups = [0 as libc::gid_t; 128];
+        // SAFETY: groups has capacity for every entry requested.
+        let count = unsafe { libc::getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        assert!(count >= 0);
+        if let Some(gid) = groups[..count as usize]
+            .iter()
+            .find(|gid| **gid != original_gid)
+        {
+            // SAFETY: live descriptor; -1 uid requests unchanged ownership and
+            // this group is one of the current user's supplementary groups.
+            assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), !0, *gid) }, 0);
+        } else {
+            eprintln!("no supplementary group available; alternate group branch not exercised");
+        }
+        let output = Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let acl = |path: &Path| {
+            let output = Command::new("/bin/ls")
+                .arg("-le")
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let before_acl = acl(&path);
+        assert!(before_acl.contains("everyone allow read"), "{before_acl}");
+        let before = fs::metadata(&path).unwrap();
+        let mut buffer = Buffer::open(Some(path.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "new ");
+        buffer.save().unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode() & 0o7777),
+            (after.uid(), after.gid(), after.mode() & 0o7777)
+        );
+        assert_eq!(acl(&path), before_acl);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new original");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn atomic_save_preserves_linux_extended_attributes() {
+        use std::os::unix::io::AsRawFd;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("xattr.conf");
+        fs::write(&path, "old text").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let value = b"preserve-me";
+        // SAFETY: descriptor, name and byte buffer are valid.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    c"user.audit".as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            },
+            0
+        );
+        let mut buffer = Buffer::open(Some(path.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "new ");
+        buffer.save().unwrap();
+        let saved = fs::File::open(&path).unwrap();
+        let mut actual = [0u8; 32];
+        // SAFETY: descriptor/name are live and actual is writable.
+        let size = unsafe {
+            libc::fgetxattr(
+                saved.as_raw_fd(),
+                c"user.audit".as_ptr(),
+                actual.as_mut_ptr().cast(),
+                actual.len(),
+            )
+        };
+        assert_eq!(size, value.len() as isize);
+        assert_eq!(&actual[..value.len()], value);
     }
 
     #[test]
@@ -1770,41 +2321,102 @@ mod tests {
         assert!(!Buffer::empty(None).read_only_on_disk());
     }
 
-    /// Audit: saving a single-file bind mount (Docker `-v file:file`) failed
-    /// with "failed to replace": rename cannot replace a mount point. Only
-    /// runs where bind mounts are allowed (root on Linux).
+    /// Explicit gate for a real single-file Docker bind mount. The caller must
+    /// mount a disposable fixture at /fixture/mounted.txt containing exactly
+    /// the marker below. This test never claims a pass when mounts are absent.
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "requires disposable Docker file bind mount and MELLOW_BIND_MOUNT_FILE=/fixture/mounted.txt"]
     fn saving_a_bind_mounted_file_rewrites_it_in_place() {
-        use std::process::Command;
-        let dir = tempdir().unwrap();
-        let host = dir.path().join("host.yaml");
-        let mounted = dir.path().join("app.yaml");
-        fs::write(&host, "replicas: 1\n").unwrap();
-        fs::write(&mounted, "placeholder\n").unwrap();
-        let mount = Command::new("mount")
-            .arg("--bind")
-            .arg(&host)
-            .arg(&mounted)
-            .output();
-        if !mount.is_ok_and(|output| output.status.success()) {
-            eprintln!("bind mounts not permitted here; skipping");
-            return;
+        use std::os::unix::{
+            fs::{MetadataExt, PermissionsExt},
+            io::AsRawFd,
+        };
+        let mounted = PathBuf::from(
+            std::env::var_os("MELLOW_BIND_MOUNT_FILE")
+                .expect("set MELLOW_BIND_MOUNT_FILE to the disposable bind-mounted fixture"),
+        );
+        assert_eq!(mounted, Path::new("/fixture/mounted.txt"));
+        assert_eq!(
+            fs::read_to_string(&mounted).unwrap(),
+            "mellow-bind-mount-fixture: original\n"
+        );
+        fs::set_permissions(&mounted, fs::Permissions::from_mode(0o640)).unwrap();
+        let file = fs::File::open(&mounted).unwrap();
+        let value = b"preserve-bind-mount";
+        // SAFETY: live descriptor and valid name/value buffers.
+        let xattr = unsafe {
+            libc::fsetxattr(
+                file.as_raw_fd(),
+                c"user.mellow_bind_mount".as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        };
+        if xattr != 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::EOPNOTSUPP),
+                "unexpected xattr refusal: {error}"
+            );
+            eprintln!(
+                "bind-mount filesystem does not support user xattrs; this attribute branch was not exercised"
+            );
         }
-        let result = (|| {
-            let mut buffer = Buffer::open(Some(mounted.clone()))?;
-            let mut cursor = Cursor::new(0, 10);
-            buffer.insert_text(&mut cursor, "3");
-            buffer.save()?;
-            anyhow::Ok(buffer)
-        })();
-        let seen_through_mount = fs::read_to_string(&mounted).unwrap();
-        let _ = Command::new("umount").arg(&mounted).status();
-        let buffer = result.unwrap();
+        let before = file.metadata().unwrap();
+        let probe = mounted.with_file_name("rename-probe.tmp");
+        fs::write(&probe, "disposable probe").unwrap();
+        let error =
+            fs::rename(&probe, &mounted).expect_err("fixture must be an actual file mount point");
+        assert_eq!(error.raw_os_error(), Some(libc::EBUSY));
+        fs::remove_file(probe).unwrap();
+        let mut buffer = Buffer::open(Some(mounted.clone())).unwrap();
+        buffer.insert_text(&mut Cursor::default(), "updated ");
+        assert!(buffer.is_dirty());
+        buffer.save().unwrap();
+        assert_eq!(buffer.last_save_mode(), SaveMode::InPlace);
         assert!(!buffer.is_dirty());
-        assert_eq!(seen_through_mount, "replicas: 31\n");
-        assert_eq!(fs::read_to_string(&host).unwrap(), "replicas: 31\n");
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
+        assert_eq!(
+            fs::read_to_string(&mounted).unwrap(),
+            "updated mellow-bind-mount-fixture: original\n"
+        );
+        assert!(buffer.external_conflict().unwrap().is_none());
+        let saved = fs::File::open(&mounted).unwrap();
+        let after = saved.metadata().unwrap();
+        assert_eq!(
+            (
+                before.dev(),
+                before.ino(),
+                before.uid(),
+                before.gid(),
+                before.mode()
+            ),
+            (
+                after.dev(),
+                after.ino(),
+                after.uid(),
+                after.gid(),
+                after.mode()
+            )
+        );
+        if xattr == 0 {
+            let mut actual = [0u8; 64];
+            // SAFETY: live descriptor and valid name/output buffers.
+            let size = unsafe {
+                libc::fgetxattr(
+                    saved.as_raw_fd(),
+                    c"user.mellow_bind_mount".as_ptr(),
+                    actual.as_mut_ptr().cast(),
+                    actual.len(),
+                )
+            };
+            assert_eq!(size, value.len() as isize);
+            assert_eq!(&actual[..value.len()], value);
+            eprintln!("actual bind-mount user xattr preserved");
+        }
+        let leftovers: Vec<_> = fs::read_dir(mounted.parent().unwrap())
             .unwrap()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
@@ -1830,12 +2442,13 @@ mod tests {
         let mut buffer = Buffer::open(Some(path.clone())).unwrap();
         assert!(buffer.external_change().unwrap().is_none());
 
-        // A same-size rewrite that restores the old mtime: invisible to the
-        // poll by design, refused by save.
+        // A same-size rewrite that restores mtime still changes Unix ctime.
+        // The poll may detect that; the full-content save check must always.
         let file = fs::File::options().write(true).open(&path).unwrap();
         (&file).write_all(b"bravo\n").unwrap();
         file.set_modified(old).unwrap();
-        assert!(buffer.external_change().unwrap().is_none());
+        #[cfg(unix)]
+        assert!(buffer.external_change().unwrap().is_some());
         assert!(buffer.external_conflict().unwrap().is_some());
         let mut cursor = Cursor::new(0, 0);
         buffer.insert_char(&mut cursor, 'x');
@@ -1965,6 +2578,7 @@ mod tests {
             draft_id: 0,
             typing_run: None,
             tab_indent: false,
+            indent_width: 4,
         };
         assert_eq!(buffer.grapheme_count(0), 2);
 

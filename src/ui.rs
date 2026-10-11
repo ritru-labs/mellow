@@ -295,6 +295,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         AppMode::CodeActions => render_code_actions(frame, area, app),
         AppMode::Problems => render_problems(frame, area, app),
         AppMode::LanguageStatus => render_language_status(frame, area, app),
+        AppMode::Utility => render_utility(frame, area, app),
         AppMode::Changes => render_changes(frame, area, app),
         AppMode::ConfirmRevertHunk => render_revert_confirmation(frame, area, app),
         AppMode::ExplorerCreate => {
@@ -1430,9 +1431,9 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
     // line of the buffer. Skip it when wrap is off: this ran on every frame
     // (10 a second when idle) and made a 10 MiB file cost ~80% of a core.
     let layout = if app.word_wrap {
-        VisualLayout::new(view.buffer, text_width, TAB_WIDTH, true)
+        VisualLayout::new(view.buffer, text_width, view.buffer.indent_width(), true)
     } else {
-        VisualLayout::empty(TAB_WIDTH)
+        VisualLayout::empty(view.buffer.indent_width())
     };
     let problems = if view.focused {
         app.problem_items()
@@ -1474,7 +1475,9 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
         };
         let row_problem = problems
             .iter()
-            .filter(|problem| problem.cursor.row == row)
+            .filter(|problem| {
+                problem.cursor.row == row && problem.path.as_ref() == view.buffer.path()
+            })
             .map(|problem| problem.severity)
             .min_by_key(|severity| match severity {
                 ProblemSeverity::Error => 0,
@@ -1565,6 +1568,7 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
             text_width,
             &theme,
             RenderCodeOptions {
+                tab_width: view.buffer.indent_width(),
                 is_current_line: is_current,
                 selection: row_selection,
                 show_whitespace: app.show_whitespace,
@@ -1602,9 +1606,11 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
             if row >= view.buffer.line_count() {
                 break;
             }
-            let line_width =
-                view.buffer
-                    .display_width_before(row, view.buffer.grapheme_count(row), TAB_WIDTH);
+            let line_width = view.buffer.display_width_before(
+                row,
+                view.buffer.grapheme_count(row),
+                view.buffer.indent_width(),
+            );
             if line_width > view.scroll_col + text_width {
                 buffer.set_string(
                     area.right().saturating_sub(1),
@@ -1634,9 +1640,11 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
                     position.column,
                 )
             } else {
-                let display_col =
-                    view.buffer
-                        .display_width_before(bracket.row, bracket.col, TAB_WIDTH);
+                let display_col = view.buffer.display_width_before(
+                    bracket.row,
+                    bracket.col,
+                    view.buffer.indent_width(),
+                );
                 (
                     bracket.row.saturating_sub(view.scroll_row),
                     display_col.saturating_sub(view.scroll_col),
@@ -1672,9 +1680,11 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
                 position.column,
             )
         } else {
-            let display_col =
-                view.buffer
-                    .display_width_before(secondary.row, secondary.col, TAB_WIDTH);
+            let display_col = view.buffer.display_width_before(
+                secondary.row,
+                secondary.col,
+                view.buffer.indent_width(),
+            );
             (
                 secondary.row.saturating_sub(view.scroll_row),
                 display_col.saturating_sub(view.scroll_col),
@@ -1701,9 +1711,11 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
             position.column,
         )
     } else {
-        let cursor_display_col =
-            view.buffer
-                .display_width_before(view.cursor.row, view.cursor.col, TAB_WIDTH);
+        let cursor_display_col = view.buffer.display_width_before(
+            view.cursor.row,
+            view.cursor.col,
+            view.buffer.indent_width(),
+        );
         (
             view.cursor.row.saturating_sub(view.scroll_row),
             cursor_display_col.saturating_sub(view.scroll_col),
@@ -1775,6 +1787,7 @@ fn render_ghost(
 
 #[derive(Debug, Clone, Copy)]
 struct RenderCodeOptions {
+    tab_width: usize,
     is_current_line: bool,
     selection: Option<(usize, usize)>,
     show_whitespace: bool,
@@ -1792,6 +1805,7 @@ fn render_highlighted_slice(
     options: RenderCodeOptions,
 ) -> Vec<Span<'static>> {
     let RenderCodeOptions {
+        tab_width,
         is_current_line,
         selection,
         show_whitespace,
@@ -1848,7 +1862,7 @@ fn render_highlighted_slice(
 
             let mut is_guide = false;
             let (display, width) = if grapheme == "\t" {
-                let w = TAB_WIDTH - (absolute_col % TAB_WIDTH);
+                let w = tab_width.max(1) - (absolute_col % tab_width.max(1));
                 let display = if show_whitespace {
                     format!(
                         "{}{}",
@@ -1867,7 +1881,7 @@ fn render_highlighted_slice(
                     if theme.unicode_symbols { "·" } else { "." }.to_owned()
                 } else if show_indent_guides
                     && leading_whitespace
-                    && absolute_col.is_multiple_of(TAB_WIDTH)
+                    && absolute_col.is_multiple_of(tab_width.max(1))
                 {
                     is_guide = true;
                     if theme.unicode_symbols { "│" } else { "|" }.to_owned()
@@ -2253,14 +2267,14 @@ fn status_right_items(app: &App) -> Vec<StatusItem> {
     items.push(
         StatusItem::new(
             if app.buffer.uses_tab_indent() {
-                "Tabs"
+                "Tabs".to_owned()
             } else {
-                "Spaces: 4"
+                format!("Spaces: {}", app.buffer.indent_width())
             },
             muted,
             45,
         )
-        .on_click(Command::ToggleIndentStyle),
+        .on_click(Command::CycleIndentWidth),
     );
     items.push(
         StatusItem::new(app.buffer.language(), muted, 50).on_click(Command::LanguageServerStatus),
@@ -2937,7 +2951,12 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let end = (start + available).min(matches.len());
 
-    if matches.is_empty() {
+    if !app.quick_open_is_ready() {
+        lines.push(Line::from(Span::styled(
+            "  Searching files… Enter opens when ready.",
+            Style::default().fg(theme.muted),
+        )));
+    } else if matches.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No matching files. Type a path like ../notes.txt or ~/file and press Enter.",
             Style::default().fg(theme.muted),
@@ -3060,7 +3079,7 @@ fn active_completion_anchor(area: Rect, app: &App) -> Option<(u16, u16, Rect)> {
     let gutter = gutter_width(view.buffer.line_count());
     let text_width = pane_area.width.saturating_sub(gutter).max(1) as usize;
     let (visual_row, display_col) = if app.word_wrap {
-        let layout = VisualLayout::new(view.buffer, text_width, TAB_WIDTH, true);
+        let layout = VisualLayout::new(view.buffer, text_width, view.buffer.indent_width(), true);
         let position = layout.visual_position_for_cursor(view.buffer, view.cursor);
         (
             position.row.saturating_sub(view.visual_scroll_row),
@@ -3070,7 +3089,7 @@ fn active_completion_anchor(area: Rect, app: &App) -> Option<(u16, u16, Rect)> {
         (
             view.cursor.row.saturating_sub(view.scroll_row),
             view.buffer
-                .display_width_before(view.cursor.row, view.cursor.col, TAB_WIDTH)
+                .display_width_before(view.cursor.row, view.cursor.col, view.buffer.indent_width())
                 .saturating_sub(view.scroll_col),
         )
     };
@@ -3666,10 +3685,10 @@ fn render_problems(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 }
             };
             let prefix = format!(
-                "{symbol} {:>4}:{:<3} {:<14} ",
+                "{symbol} {:>4}:{:<3} {:<24} ",
                 problem.cursor.row + 1,
                 problem.cursor.col + 1,
-                display_slice(&problem.source, 0, 14, TAB_WIDTH)
+                display_slice(&problem.source, 0, 24, TAB_WIDTH)
             );
             let message_width = (inner.width as usize).saturating_sub(prefix.len());
             let message = display_slice(&problem.message, 0, message_width, TAB_WIDTH);
@@ -4449,7 +4468,12 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     let popup = ai_prompt_rect(area, app);
     clear_overlay(frame, app, popup);
-    let block = ai_box(app, format!(" {spark} Ask AI about {} ", app.ai_subject()));
+    let title = if app.ai_shell_prompt() {
+        format!(" {spark} Ask AI for a shell command ")
+    } else {
+        format!(" {spark} Ask AI about {} ", app.ai_subject())
+    };
+    let block = ai_box(app, title);
     let inner = inset(block.inner(popup), 1, 0);
     frame.render_widget(block, popup);
 
@@ -4483,20 +4507,30 @@ fn render_ai_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     lines.push(Line::from(chips));
     lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("Sends ", Style::default().fg(theme.faint)),
-        Span::styled(
-            app.ai_context_label().to_owned(),
-            Style::default().fg(theme.text),
-        ),
-        Span::styled(
+    if app.ai_shell_prompt() {
+        lines.push(Line::styled(
             format!(
-                " with the file name and language to {}. Nothing else.",
+                "Sends only this request to {}. No file or terminal history.",
                 app.ai_provider_name()
             ),
             Style::default().fg(theme.faint),
-        ),
-    ]));
+        ));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Sends ", Style::default().fg(theme.faint)),
+            Span::styled(
+                app.ai_context_label().to_owned(),
+                Style::default().fg(theme.text),
+            ),
+            Span::styled(
+                format!(
+                    " with the file name and language to {}. Nothing else.",
+                    app.ai_provider_name()
+                ),
+                Style::default().fg(theme.faint),
+            ),
+        ]));
+    }
     lines.push(Line::from(Span::styled(
         "Enter send · Tab suggestion · Esc cancel",
         Style::default().fg(theme.faint),
@@ -4545,7 +4579,16 @@ fn render_ai_waiting(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let spark = if theme.unicode_symbols { "✦" } else { "*" };
     // Four content rows (status, query, gap, note) plus the border.
-    let popup = anchored_rect(area, app, 84, 6);
+    let popup = anchored_rect(
+        area,
+        app,
+        84,
+        if app.ai_stream_preview.is_empty() {
+            6
+        } else {
+            12
+        },
+    );
     clear_overlay(frame, app, popup);
     let block = ai_box(
         app,
@@ -4569,9 +4612,15 @@ fn render_ai_waiting(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(theme.muted),
                 ),
             ]),
-            Line::raw(""),
+            Line::raw(
+                app.ai_stream_preview
+                    .lines()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             Line::styled(
-                "Nothing changes until you accept. Esc stops waiting.",
+                "Esc cancels local transport; provider billing may continue.",
                 Style::default().fg(theme.faint),
             ),
         ])
@@ -5870,6 +5919,11 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = inset(popup, 2, 1);
     let input_width = inner.width.saturating_sub(2) as usize;
     let (query_view, query_cursor) = app.project_search_query.visible_window(input_width);
+    let scope = if app.project_search_report.scope_summary.is_empty() {
+        "Scope: project files".to_owned()
+    } else {
+        format!("Scope: {}", app.project_search_report.scope_summary)
+    };
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -5936,6 +5990,10 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 }),
             ),
         ]),
+        Line::from(Span::styled(
+            display_slice(&scope, 0, inner.width as usize, TAB_WIDTH),
+            Style::default().fg(theme.muted),
+        )),
         Line::from(Span::styled(
             rule_glyph(app).repeat(inner.width as usize),
             Style::default().fg(theme.elevated2),
@@ -6035,13 +6093,16 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     let mut skipped = Vec::new();
     if report.skipped_large > 0 {
-        skipped.push(format!("{} >2 MiB", report.skipped_large));
+        skipped.push(format!("{} over file limit", report.skipped_large));
     }
     if report.skipped_binary > 0 {
         skipped.push(format!("{} binary", report.skipped_binary));
     }
     if report.skipped_unreadable > 0 {
         skipped.push(format!("{} unreadable", report.skipped_unreadable));
+    }
+    if report.skipped_filtered > 0 {
+        skipped.push(format!("{} filtered", report.skipped_filtered));
     }
     if !skipped.is_empty() {
         notes.push(format!("skipped {}", skipped.join(", ")));
@@ -6523,6 +6584,44 @@ pub fn display_slice(
     result
 }
 
+fn render_utility(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let panel = centered_rect(
+        area,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(4),
+    );
+    frame.render_widget(Clear, panel);
+    let text: Vec<Line<'_>> = app
+        .utility_lines
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            Line::styled(
+                format!(
+                    "{} {}",
+                    if i == app.utility_selected { ">" } else { " " },
+                    text
+                ),
+                Style::default().fg(if i == app.utility_selected {
+                    app.theme.mint
+                } else {
+                    app.theme.text
+                }),
+            )
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(app.utility_title.as_str());
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((app.utility_selected.saturating_sub(2) as u16, 0)),
+        panel,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -6738,7 +6837,7 @@ mod tests {
         app.mode = AppMode::AiWaiting;
         let text = render_rows(&app, 80, 24).join("\n");
         assert!(text.contains("Working on it"), "{text}");
-        assert!(text.contains("Esc stops waiting"), "{text}");
+        assert!(text.contains("Esc cancels local transport"), "{text}");
 
         app.mode = AppMode::AiReview;
         app.ai_proposal = Some(AiProposal {
@@ -6858,6 +6957,7 @@ mod tests {
             2,
             &theme,
             RenderCodeOptions {
+                tab_width: 4,
                 is_current_line: false,
                 selection: None,
                 show_whitespace: false,
@@ -6880,6 +6980,7 @@ mod tests {
             40,
             &theme,
             RenderCodeOptions {
+                tab_width: 4,
                 is_current_line: false,
                 selection: None,
                 show_whitespace: true,
@@ -6902,6 +7003,7 @@ mod tests {
             40,
             &theme,
             RenderCodeOptions {
+                tab_width: 4,
                 is_current_line: false,
                 selection: None,
                 show_whitespace: false,
@@ -6928,6 +7030,7 @@ mod tests {
             10,
             &theme,
             RenderCodeOptions {
+                tab_width: 4,
                 is_current_line: false,
                 selection: Some((0, 1)),
                 show_whitespace: false,
@@ -7194,6 +7297,8 @@ mod tests {
             skipped_large: 2,
             skipped_binary: 0,
             skipped_unreadable: 0,
+            skipped_filtered: 3,
+            scope_summary: "include *.rs; exclude generated/*".to_owned(),
         };
         app.mode = AppMode::ProjectSearch;
 
@@ -7212,8 +7317,34 @@ mod tests {
         assert!(content.contains("let needle = value;"));
         assert!(content.contains("42 files"));
         assert!(content.contains("1 unsaved"));
-        assert!(content.contains("skipped 2 >2 MiB"));
+        assert!(content.contains("skipped 2 over file limit"));
+        assert!(content.contains("Scope: include *.rs; exclude generated/*"));
+        assert!(content.contains("3 filtered"));
         assert!(content.contains("limit reached"));
+    }
+
+    #[test]
+    fn project_search_configured_scope_and_filtered_counts_are_visible_at_80_by_24() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut app = crate::app::App::new(crate::buffer::Buffer::empty(None));
+        app.mode = crate::app::AppMode::ProjectSearch;
+        app.project_search_query.set("needle");
+        app.project_search_report.scope_summary = "include *.rs; exclude generated/*".to_owned();
+        app.project_search_report.skipped_filtered = 3;
+        app.project_search_report.skipped_large = 1;
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Scope: include *.rs; exclude generated/*"));
+        assert!(content.contains("3 filtered"));
+        assert!(content.contains("over file limit"));
+        assert!(!content.contains(">2 MiB"));
     }
 
     #[test]
@@ -7234,6 +7365,7 @@ mod tests {
             sort_text: None,
             insert_text: "println!".to_owned(),
             edit_range: None,
+            ..CompletionItem::default()
         }];
         app.mode = AppMode::Completion;
 
@@ -7389,5 +7521,26 @@ mod tests {
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(content.contains("new"));
         assert!(!content.contains("saved"));
+    }
+
+    #[test]
+    fn quick_open_pending_discovery_shows_searching_at_80_by_24() {
+        use crate::app::{App, AppMode};
+        use crate::buffer::Buffer;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::QuickOpen;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| super::render(frame, &app)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Searching files"));
+        assert!(!content.contains("No matching files"));
     }
 }

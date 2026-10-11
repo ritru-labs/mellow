@@ -892,6 +892,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "tokio",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-hcl",

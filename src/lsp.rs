@@ -48,7 +48,7 @@ pub struct LspDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompletionItem {
     pub label: String,
     pub detail: Option<String>,
@@ -56,6 +56,30 @@ pub struct CompletionItem {
     pub sort_text: Option<String>,
     pub insert_text: String,
     pub edit_range: Option<LspRange>,
+    pub additional_text_edits: Vec<CompletionTextEdit>,
+    /// Retained for disclosure only. Completion acceptance never executes commands.
+    pub command: Option<Value>,
+    /// Original opaque item including `data`, required by completionItem/resolve.
+    pub raw: Value,
+    pub needs_resolve: bool,
+    pub rejected: Option<String>,
+    /// Document identity/version at request time; supporting edits use this snapshot.
+    pub origin: Option<(PathBuf, i32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionTextEdit {
+    pub range: LspRange,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolLocation {
+    pub name: String,
+    pub detail: Option<String>,
+    pub kind: u64,
+    pub path: PathBuf,
+    pub range: LspRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,10 +122,15 @@ pub enum LanguageServiceEvent {
         request_id: u64,
         items: Vec<CompletionItem>,
     },
+    CompletionResolved {
+        request_id: u64,
+        item: Box<CompletionItem>,
+    },
     CompletionError {
         request_id: u64,
         error: String,
     },
+    Symbols(Vec<SymbolLocation>),
     Definition(Option<DefinitionLocation>),
     Hover(Option<String>),
     SignatureHelp(Vec<String>),
@@ -133,6 +162,9 @@ struct DocumentDescriptor {
 enum RequestKind {
     Initialize,
     Completion,
+    CompletionResolve,
+    DocumentSymbols,
+    WorkspaceSymbols,
     Definition,
     Hover,
     SignatureHelp,
@@ -281,6 +313,8 @@ struct LspClient {
     /// Document (uri, version) each edit-producing request (format, rename,
     /// code action) was made for. Its edits are only valid for that text.
     edit_targets: HashMap<u64, (String, i32)>,
+    completion_prefixes: HashMap<u64, String>,
+    workspace_edit_versions: HashMap<u64, HashMap<String, i32>>,
     next_id: u64,
     initialized: bool,
     server_label: String,
@@ -288,6 +322,9 @@ struct LspClient {
     server_args: Vec<String>,
     opened_documents: HashMap<String, (i32, String)>,
     completion_trigger_characters: Vec<String>,
+    completion_resolve: bool,
+    workspace_root: PathBuf,
+    queued_documents: HashMap<String, DocumentDescriptor>,
     /// Features the server announced (completion, rename, ...), for the
     /// health view.
     capabilities: Vec<&'static str>,
@@ -367,6 +404,8 @@ impl LspClient {
             incoming: rx,
             pending: HashMap::new(),
             edit_targets: HashMap::new(),
+            completion_prefixes: HashMap::new(),
+            workspace_edit_versions: HashMap::new(),
             next_id: 1,
             initialized: false,
             server_label: spec.label.to_owned(),
@@ -374,6 +413,10 @@ impl LspClient {
             server_args: spec.args.clone(),
             opened_documents: HashMap::new(),
             completion_trigger_characters: Vec::new(),
+            completion_resolve: false,
+            workspace_root: std::fs::canonicalize(workspace_root)
+                .unwrap_or_else(|_| workspace_root.to_path_buf()),
+            queued_documents: HashMap::from([(document.uri.clone(), document.clone())]),
             capabilities: Vec::new(),
             workspace_folders: workspace_folders.clone(),
             document,
@@ -389,7 +432,8 @@ impl LspClient {
             "capabilities": {
                 "workspace": {
                     "workspaceFolders": true,
-                    "configuration": true
+                    "configuration": true,
+                    "symbol": { "dynamicRegistration": false }
                 },
                 "textDocument": {
                     "synchronization": {
@@ -400,9 +444,11 @@ impl LspClient {
                     "completion": {
                         "completionItem": {
                             "snippetSupport": false,
-                            "documentationFormat": ["plaintext", "markdown"]
+                            "documentationFormat": ["plaintext", "markdown"],
+                            "resolveSupport": { "properties": ["additionalTextEdits", "command", "detail", "documentation"] }
                         }
                     },
+                    "documentSymbol": { "dynamicRegistration": false, "hierarchicalDocumentSymbolSupport": true },
                     "definition": { "dynamicRegistration": false, "linkSupport": true },
                     "hover": { "dynamicRegistration": false, "contentFormat": ["markdown", "plaintext"] },
                     "signatureHelp": { "dynamicRegistration": false, "signatureInformation": { "documentationFormat": ["markdown", "plaintext"] } },
@@ -422,6 +468,29 @@ impl LspClient {
     }
 
     fn send_request(&mut self, kind: RequestKind, method: &str, params: Value) -> Result<u64> {
+        // Position/version checks do not distinguish two queries made against
+        // the same unchanged document. Only the latest request for an action
+        // may update its panel or navigate, even when responses arrive reversed.
+        if kind != RequestKind::Initialize {
+            let superseded: Vec<_> = self
+                .pending
+                .iter()
+                .filter_map(|(id, pending)| {
+                    // Both symbol scopes share one panel and response event.
+                    // Switching scope also supersedes the other scope's query.
+                    (*pending == kind
+                        || matches!(
+                            (kind, *pending),
+                            (RequestKind::DocumentSymbols, RequestKind::WorkspaceSymbols)
+                                | (RequestKind::WorkspaceSymbols, RequestKind::DocumentSymbols)
+                        ))
+                    .then_some(*id)
+                })
+                .collect();
+            for id in superseded {
+                self.cancel_request(id);
+            }
+        }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.pending.insert(id, kind);
@@ -432,6 +501,14 @@ impl LspClient {
             "params": params
         }))?;
         Ok(id)
+    }
+
+    fn cancel_request(&mut self, id: u64) {
+        self.pending.remove(&id);
+        self.edit_targets.remove(&id);
+        self.completion_prefixes.remove(&id);
+        self.workspace_edit_versions.remove(&id);
+        let _ = self.send_notification("$/cancelRequest", json!({"id":id}));
     }
 
     fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
@@ -500,6 +577,8 @@ impl LspClient {
             text: text.to_owned(),
         };
         if !self.initialized {
+            self.queued_documents
+                .insert(self.document.uri.clone(), self.document.clone());
             return Ok(());
         }
         match previous {
@@ -517,6 +596,8 @@ impl LspClient {
         self.document.text = text.to_owned();
         self.document.version = version;
         if !self.initialized {
+            self.queued_documents
+                .insert(self.document.uri.clone(), self.document.clone());
             return Ok(());
         }
 
@@ -575,7 +656,71 @@ impl LspClient {
                 "context": context
             }),
         )?;
+        self.remember_edit_target(id);
+        let line = self.document.text.lines().nth(position.line).unwrap_or("");
+        let mut utf16 = 0;
+        let before: String = line
+            .chars()
+            .take_while(|ch| {
+                utf16 += ch.len_utf16();
+                utf16 <= position.character
+            })
+            .collect();
+        let prefix: String = before
+            .chars()
+            .rev()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        self.completion_prefixes.insert(id, prefix);
         Ok(Some(id))
+    }
+
+    fn request_completion_resolve(&mut self, item: &CompletionItem) -> Result<Option<u64>> {
+        if !self.initialized || !item.needs_resolve {
+            return Ok(None);
+        }
+        let current = (uri_to_path(&self.document.uri), self.document.version);
+        if !item.origin.as_ref().is_some_and(|(path, version)| {
+            current.0.as_ref() == Some(path) && current.1 == *version
+        }) {
+            anyhow::bail!("Completion expired: the document changed; request completion again");
+        }
+        let id = self.send_request(
+            RequestKind::CompletionResolve,
+            "completionItem/resolve",
+            item.raw.clone(),
+        )?;
+        self.remember_edit_target(id);
+        Ok(Some(id))
+    }
+
+    fn request_document_symbols(&mut self) -> Result<bool> {
+        if !self.initialized {
+            return Ok(false);
+        }
+        let id = self.send_request(
+            RequestKind::DocumentSymbols,
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": self.document.uri } }),
+        )?;
+        self.remember_edit_target(id);
+        Ok(true)
+    }
+
+    fn request_workspace_symbols(&mut self, query: &str) -> Result<bool> {
+        if !self.initialized {
+            return Ok(false);
+        }
+        let id = self.send_request(
+            RequestKind::WorkspaceSymbols,
+            "workspace/symbol",
+            json!({ "query": query }),
+        )?;
+        self.remember_edit_target(id);
+        Ok(true)
     }
 
     fn request_definition(&mut self, position: LspPosition) -> Result<bool> {
@@ -592,14 +737,16 @@ impl LspClient {
         method: &str,
         position: LspPosition,
     ) -> Result<u64> {
-        self.send_request(
+        let id = self.send_request(
             kind,
             method,
             json!({
                 "textDocument": { "uri": self.document.uri },
                 "position": position_json(position)
             }),
-        )
+        )?;
+        self.remember_edit_target(id);
+        Ok(id)
     }
 
     fn request_hover(&mut self, position: LspPosition) -> Result<bool> {
@@ -626,7 +773,7 @@ impl LspClient {
         if !self.initialized {
             return Ok(false);
         }
-        self.send_request(
+        let id = self.send_request(
             RequestKind::References,
             "textDocument/references",
             json!({
@@ -634,6 +781,7 @@ impl LspClient {
                 "context": { "includeDeclaration": true }
             }),
         )?;
+        self.remember_edit_target(id);
         Ok(true)
     }
 
@@ -676,12 +824,42 @@ impl LspClient {
     }
 
     fn remember_edit_target(&mut self, id: u64) {
+        if matches!(
+            self.pending.get(&id),
+            Some(RequestKind::Rename | RequestKind::CodeAction)
+        ) {
+            self.workspace_edit_versions.insert(
+                id,
+                self.opened_documents
+                    .iter()
+                    .map(|(uri, (version, _))| (uri.clone(), *version))
+                    .collect(),
+            );
+        }
         self.edit_targets
             .insert(id, (self.document.uri.clone(), self.document.version));
     }
 
     fn close_path(&mut self, path: &Path) -> Result<()> {
         let uri = path_to_uri(path);
+        // A reopened buffer can reset its revision. Forget requests for the
+        // previous document lifetime even if its URI/version later match again.
+        let ids: Vec<_> = self
+            .edit_targets
+            .iter()
+            .filter_map(|(id, (target, _))| {
+                (target == &uri
+                    || self
+                        .workspace_edit_versions
+                        .get(id)
+                        .is_some_and(|versions| versions.contains_key(&uri)))
+                .then_some(*id)
+            })
+            .collect();
+        for id in ids {
+            self.cancel_request(id);
+        }
+        self.queued_documents.remove(&uri);
         if self.opened_documents.remove(&uri).is_none() || !self.initialized {
             return Ok(());
         }
@@ -748,6 +926,10 @@ impl LspClient {
                     // The same folders as at initialize: an empty list told
                     // the server the project had been closed.
                     "workspace/workspaceFolders" => self.workspace_folders.clone(),
+                    "workspace/applyEdit" => json!({
+                        "applied": false,
+                        "failureReason": "Mellow requires an explicit user review before applying workspace edits"
+                    }),
                     "client/registerCapability"
                     | "client/unregisterCapability"
                     | "window/workDoneProgress/create" => Value::Null,
@@ -759,7 +941,15 @@ impl LspClient {
 
             if method == "textDocument/publishDiagnostics"
                 && let Some(uri) = message.pointer("/params/uri").and_then(Value::as_str)
-                && self.opened_documents.contains_key(uri)
+                && uri_to_path(uri).is_some_and(|path| path.starts_with(&self.workspace_root))
+                && !message
+                    .pointer("/params/version")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|version| {
+                        self.opened_documents
+                            .get(uri)
+                            .is_some_and(|(current, _)| i64::from(*current) != version)
+                    })
             {
                 events.push(ClientEvent::Diagnostics(
                     uri.to_owned(),
@@ -776,6 +966,8 @@ impl LspClient {
             return;
         };
         let edit_target = self.edit_targets.remove(&id);
+        let workspace_edit_versions = self.workspace_edit_versions.remove(&id).unwrap_or_default();
+        let completion_prefix = self.completion_prefixes.remove(&id).unwrap_or_default();
         let target_is_current = edit_target.as_ref().is_some_and(|(uri, version)| {
             *uri == self.document.uri && *version == self.document.version
         });
@@ -787,7 +979,10 @@ impl LspClient {
                 .and_then(Value::as_str)
                 .unwrap_or("language server request failed")
                 .to_owned();
-            if kind == RequestKind::Completion {
+            if matches!(
+                kind,
+                RequestKind::Completion | RequestKind::CompletionResolve
+            ) {
                 events.push(ClientEvent::CompletionError(id, reason));
             } else {
                 events.push(ClientEvent::Error(reason));
@@ -810,10 +1005,21 @@ impl LspClient {
                         .pointer("/result/capabilities")
                         .unwrap_or(&Value::Null),
                 );
+                self.completion_resolve = message
+                    .pointer("/result/capabilities/completionProvider/resolveProvider")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 self.initialized = true;
-                if self.send_notification("initialized", json!({})).is_err()
-                    || self.did_open().is_err()
-                {
+                let active_document = self.document.clone();
+                let queued = std::mem::take(&mut self.queued_documents);
+                let mut initialization_failed =
+                    self.send_notification("initialized", json!({})).is_err();
+                for document in queued.into_values() {
+                    self.document = document;
+                    initialization_failed |= self.did_open().is_err();
+                }
+                self.document = active_document;
+                if initialization_failed {
                     events.push(ClientEvent::Error(
                         "failed to finish language server initialization".to_owned(),
                     ));
@@ -821,11 +1027,80 @@ impl LspClient {
                     events.push(ClientEvent::Ready);
                 }
             }
-            RequestKind::Completion => {
-                events.push(ClientEvent::Completions(
+            RequestKind::Completion | RequestKind::CompletionResolve if !target_is_current => {
+                events.push(ClientEvent::CompletionError(
                     id,
-                    parse_completion_result(message.get("result").unwrap_or(&Value::Null)),
+                    "Completion expired: the file changed or you switched files".to_owned(),
                 ));
+            }
+            RequestKind::Completion | RequestKind::CompletionResolve => {
+                let result = message.get("result").unwrap_or(&Value::Null);
+                let result = if kind == RequestKind::CompletionResolve {
+                    json!([result])
+                } else if !completion_prefix.is_empty() {
+                    // Some servers send their whole global table. Filter before
+                    // the result cap so imports after the first 200 entries survive.
+                    let prefix = completion_prefix.to_lowercase();
+                    let candidates = result
+                        .as_array()
+                        .or_else(|| result.get("items").and_then(Value::as_array));
+                    Value::Array(
+                        candidates
+                            .into_iter()
+                            .flatten()
+                            .filter(|item| {
+                                item.get("filterText")
+                                    .or_else(|| item.get("label"))
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|label| label.to_lowercase().starts_with(&prefix))
+                            })
+                            .cloned()
+                            .collect(),
+                    )
+                } else {
+                    result.clone()
+                };
+                let mut items = parse_completion_result(&result);
+                for item in &mut items {
+                    item.origin = edit_target
+                        .as_ref()
+                        .and_then(|(uri, version)| uri_to_path(uri).map(|path| (path, *version)));
+                    item.needs_resolve = kind == RequestKind::Completion && self.completion_resolve;
+                }
+                if kind == RequestKind::CompletionResolve {
+                    if let Some(item) = items.into_iter().next() {
+                        events.push(ClientEvent::CompletionResolved(id, Box::new(item)));
+                    } else {
+                        events.push(ClientEvent::CompletionError(
+                            id,
+                            "Server returned an invalid resolved completion".to_owned(),
+                        ));
+                    }
+                } else {
+                    events.push(ClientEvent::Completions(id, items));
+                }
+            }
+            RequestKind::DocumentSymbols | RequestKind::WorkspaceSymbols if !target_is_current => {
+                events.push(ClientEvent::Error(
+                    "Symbols discarded: the document changed or you switched files".to_owned(),
+                ));
+            }
+            RequestKind::DocumentSymbols | RequestKind::WorkspaceSymbols => {
+                events.push(ClientEvent::Symbols(parse_symbols(
+                    message.get("result").unwrap_or(&Value::Null),
+                    &self.document.uri,
+                )))
+            }
+            RequestKind::Definition
+            | RequestKind::Hover
+            | RequestKind::SignatureHelp
+            | RequestKind::References
+                if !target_is_current =>
+            {
+                events.push(ClientEvent::Error(
+                    "Language server result discarded: the document changed or you switched files"
+                        .to_owned(),
+                ))
             }
             RequestKind::Definition => events.push(ClientEvent::Definition(
                 parse_definition_result(message.get("result").unwrap_or(&Value::Null)),
@@ -844,9 +1119,11 @@ impl LspClient {
                  arrived. Rename again."
                     .to_owned(),
             )),
-            RequestKind::Rename => events.push(ClientEvent::Rename(parse_workspace_edit(
+            RequestKind::Rename => events.push(ClientEvent::Rename(parse_workspace_edit_checked(
                 message.get("result").unwrap_or(&Value::Null),
                 active,
+                &self.opened_documents,
+                &workspace_edit_versions,
             ))),
             RequestKind::Formatting => {
                 // Edits are positions in the text that was formatted. Apply
@@ -876,10 +1153,14 @@ impl LspClient {
                  arrived. Ask again."
                     .to_owned(),
             )),
-            RequestKind::CodeAction => events.push(ClientEvent::CodeActions(parse_code_actions(
-                message.get("result").unwrap_or(&Value::Null),
-                active,
-            ))),
+            RequestKind::CodeAction => {
+                events.push(ClientEvent::CodeActions(parse_code_actions_checked(
+                    message.get("result").unwrap_or(&Value::Null),
+                    active,
+                    &self.opened_documents,
+                    &workspace_edit_versions,
+                )))
+            }
         }
     }
 }
@@ -896,7 +1177,9 @@ enum ClientEvent {
     Ready,
     Diagnostics(String, Vec<LspDiagnostic>),
     Completions(u64, Vec<CompletionItem>),
+    CompletionResolved(u64, Box<CompletionItem>),
     CompletionError(u64, String),
+    Symbols(Vec<SymbolLocation>),
     Definition(Option<DefinitionLocation>),
     Hover(Option<String>),
     SignatureHelp(Vec<String>),
@@ -911,6 +1194,8 @@ enum ClientEvent {
 #[derive(Default)]
 pub struct LanguageService {
     client: Option<LspClient>,
+    /// Inactive language services stay warm with their unsaved open documents.
+    pooled_clients: Vec<LspClient>,
     current_path: Option<PathBuf>,
     current_language: String,
     diagnostics_by_path: HashMap<PathBuf, Vec<LspDiagnostic>>,
@@ -931,14 +1216,36 @@ impl LanguageService {
         self.last_error = None;
 
         let (Some(path), Some(spec)) = (path, server_spec(language_name)) else {
-            self.stop();
+            if let Some(client) = self.client.take() {
+                self.pooled_clients.push(client);
+            }
             return;
         };
+        self.activate_with_spec(workspace_root, path, &spec, text, revision);
+    }
 
+    fn activate_with_spec(
+        &mut self,
+        workspace_root: &Path,
+        path: &Path,
+        spec: &ServerSpec,
+        text: &str,
+        revision: u64,
+    ) {
+        let workspace =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let matches =
+            |client: &LspClient| client.matches_server(spec) && client.workspace_root == workspace;
+        if !self.client.as_ref().is_some_and(matches) {
+            if let Some(client) = self.client.take() {
+                self.pooled_clients.push(client);
+            }
+            if let Some(index) = self.pooled_clients.iter().position(matches) {
+                self.client = Some(self.pooled_clients.remove(index));
+            }
+        }
         let version = version_from_revision(revision);
-        if let Some(client) = self.client.as_mut()
-            && client.matches_server(&spec)
-        {
+        if let Some(client) = self.client.as_mut() {
             if let Err(error) = client.activate_document(spec.language_id, path, text, version) {
                 self.last_error = Some(format!(
                     "{} document activation failed: {error}",
@@ -947,26 +1254,74 @@ impl LanguageService {
             }
             return;
         }
-
-        self.stop();
-        match LspClient::spawn(&spec, workspace_root, path, text, version) {
-            Ok(client) => self.client = Some(client),
-            Err(error) => {
-                self.last_error = Some(format!("{} unavailable: {error}", spec.label));
+        // Evict only an idle service; never discard an open unsaved document
+        // merely because another language becomes active.
+        const MAX_POOLED_SERVERS: usize = 8;
+        if self.pooled_clients.len() >= MAX_POOLED_SERVERS {
+            if let Some(index) = self.pooled_clients.iter().position(|client| {
+                client.opened_documents.is_empty() && client.queued_documents.is_empty()
+            }) {
+                self.pooled_clients.remove(index);
+            } else {
+                self.last_error = Some("Eight language services have open files; close files before starting another service".to_owned());
+                return;
             }
+        }
+        match LspClient::spawn(spec, workspace_root, path, text, version) {
+            Ok(client) => self.client = Some(client),
+            Err(error) => self.last_error = Some(format!("{} unavailable: {error}", spec.label)),
         }
     }
 
     pub fn sync_document(&mut self, path: Option<&Path>, text: &str, revision: u64) {
-        let Some(client) = self.client.as_mut() else {
+        let Some(path) = path else {
             return;
         };
-        if path != self.current_path.as_deref() {
-            return;
-        }
-
-        if let Err(error) = client.did_change(text, version_from_revision(revision)) {
-            self.last_error = Some(format!("language server sync failed: {error}"));
+        let uri = path_to_uri(path);
+        let version = version_from_revision(revision);
+        for client in self.client.iter_mut().chain(self.pooled_clients.iter_mut()) {
+            if client.document.uri != uri
+                && !client.opened_documents.contains_key(&uri)
+                && !client.queued_documents.contains_key(&uri)
+            {
+                continue;
+            }
+            // Coordinated edits synchronize every open tab, including tabs
+            // that did not change. Do not send duplicate-version didChange
+            // messages for those documents or invalidate server analysis.
+            if client
+                .opened_documents
+                .get(&uri)
+                .is_some_and(|(previous_version, previous_text)| {
+                    *previous_version == version && previous_text == text
+                })
+                || client
+                    .queued_documents
+                    .get(&uri)
+                    .is_some_and(|document| document.version == version && document.text == text)
+            {
+                continue;
+            }
+            let previous_active = client.document.clone();
+            if client.document.uri != uri {
+                client.document = client
+                    .queued_documents
+                    .get(&uri)
+                    .cloned()
+                    .unwrap_or_else(|| DocumentDescriptor {
+                        uri: uri.clone(),
+                        language_id: previous_active.language_id.clone(),
+                        version,
+                        text: text.to_owned(),
+                    });
+            }
+            let result = client.did_change(text, version);
+            if previous_active.uri != uri {
+                client.document = previous_active;
+            }
+            if let Err(error) = result {
+                self.last_error = Some(format!("language server sync failed: {error}"));
+            }
         }
     }
 
@@ -974,10 +1329,10 @@ impl LanguageService {
         let Some(path) = path else {
             return;
         };
-        if let Some(client) = self.client.as_mut()
-            && let Err(error) = client.close_path(path)
-        {
-            self.last_error = Some(format!("language server close failed: {error}"));
+        for client in self.client.iter_mut().chain(self.pooled_clients.iter_mut()) {
+            if let Err(error) = client.close_path(path) {
+                self.last_error = Some(format!("language server close failed: {error}"));
+            }
         }
         let identity = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.diagnostics_by_path.retain(|candidate, _| {
@@ -996,6 +1351,13 @@ impl LanguageService {
         client.request_completion(position, trigger_character)
     }
 
+    pub fn request_completion_resolve(&mut self, item: &CompletionItem) -> Result<Option<u64>> {
+        let Some(client) = self.client.as_mut() else {
+            return Ok(None);
+        };
+        client.request_completion_resolve(item)
+    }
+
     pub fn completion_trigger_characters(&self) -> &[String] {
         self.client
             .as_ref()
@@ -1003,11 +1365,45 @@ impl LanguageService {
             .unwrap_or(&[])
     }
 
+    pub fn request_document_symbols(&mut self) -> Result<bool> {
+        self.client
+            .as_mut()
+            .map_or(Ok(false), LspClient::request_document_symbols)
+    }
+
+    pub fn request_workspace_symbols(&mut self, query: &str) -> Result<bool> {
+        self.client
+            .as_mut()
+            .map_or(Ok(false), |client| client.request_workspace_symbols(query))
+    }
+
     pub fn request_definition(&mut self, position: LspPosition) -> Result<bool> {
         let Some(client) = self.client.as_mut() else {
             return Ok(false);
         };
         client.request_definition(position)
+    }
+
+    pub fn cancel_interactions(&mut self) {
+        for client in self.client.iter_mut().chain(self.pooled_clients.iter_mut()) {
+            let ids: Vec<_> = client
+                .pending
+                .iter()
+                .filter_map(|(id, kind)| {
+                    matches!(
+                        kind,
+                        RequestKind::Definition
+                            | RequestKind::References
+                            | RequestKind::Hover
+                            | RequestKind::SignatureHelp
+                    )
+                    .then_some(*id)
+                })
+                .collect();
+            for id in ids {
+                client.cancel_request(id);
+            }
+        }
     }
 
     pub fn request_hover(&mut self, position: LspPosition) -> Result<bool> {
@@ -1053,12 +1449,33 @@ impl LanguageService {
     }
 
     pub fn poll(&mut self) -> Vec<LanguageServiceEvent> {
-        let Some(client) = self.client.as_mut() else {
-            return Vec::new();
-        };
-
-        let label = client.server_label.clone();
         let mut output = Vec::new();
+        let mut exited_indices = Vec::new();
+        for (index, client) in self.pooled_clients.iter_mut().enumerate() {
+            for event in client.poll() {
+                match event {
+                    ClientEvent::Diagnostics(uri, diagnostics) => {
+                        if let Some(path) = uri_to_path(&uri) {
+                            self.diagnostics_by_path.insert(path, diagnostics);
+                            output.push(LanguageServiceEvent::DiagnosticsChanged);
+                        }
+                    }
+                    ClientEvent::Exited => exited_indices.push(index),
+                    // Interactive responses from an inactive document must not
+                    // update the panel or be re-targeted to another language.
+                    _ => {}
+                }
+            }
+        }
+        exited_indices.sort_unstable();
+        exited_indices.dedup();
+        for index in exited_indices.into_iter().rev() {
+            self.pooled_clients.remove(index);
+        }
+        let Some(client) = self.client.as_mut() else {
+            return output;
+        };
+        let label = client.server_label.clone();
         let mut exited = false;
         for event in client.poll() {
             match event {
@@ -1067,22 +1484,20 @@ impl LanguageService {
                 }
                 ClientEvent::Diagnostics(uri, diagnostics) => {
                     if let Some(path) = uri_to_path(&uri) {
-                        let is_current = self.current_path.as_ref().is_some_and(|current| {
-                            std::fs::canonicalize(current).unwrap_or_else(|_| current.clone())
-                                == std::fs::canonicalize(&path).unwrap_or(path.clone())
-                        });
                         self.diagnostics_by_path.insert(path, diagnostics);
-                        if is_current {
-                            output.push(LanguageServiceEvent::DiagnosticsChanged);
-                        }
+                        output.push(LanguageServiceEvent::DiagnosticsChanged);
                     }
                 }
                 ClientEvent::Completions(request_id, items) => {
                     output.push(LanguageServiceEvent::Completions { request_id, items });
                 }
+                ClientEvent::CompletionResolved(request_id, item) => {
+                    output.push(LanguageServiceEvent::CompletionResolved { request_id, item });
+                }
                 ClientEvent::CompletionError(request_id, error) => {
                     output.push(LanguageServiceEvent::CompletionError { request_id, error });
                 }
+                ClientEvent::Symbols(items) => output.push(LanguageServiceEvent::Symbols(items)),
                 ClientEvent::Definition(location) => {
                     output.push(LanguageServiceEvent::Definition(location))
                 }
@@ -1119,6 +1534,35 @@ impl LanguageService {
         output
     }
 
+    /// Workspace Problems, with explicit file identity and stable ordering.
+    pub fn workspace_diagnostics(&self) -> Vec<(PathBuf, LspDiagnostic)> {
+        let workspace = self
+            .client
+            .as_ref()
+            .map(|client| client.workspace_root.as_path());
+        let mut rows: Vec<_> = self
+            .diagnostics_by_path
+            .iter()
+            .filter(|(path, _)| workspace.is_none_or(|root| path.starts_with(root)))
+            .flat_map(|(path, diagnostics)| {
+                diagnostics
+                    .iter()
+                    .map(|diagnostic| (path.clone(), diagnostic.clone()))
+            })
+            .collect();
+        rows.sort_by(|(a, ad), (b, bd)| {
+            a.cmp(b)
+                .then(ad.range.start.line.cmp(&bd.range.start.line))
+                .then(ad.range.start.character.cmp(&bd.range.start.character))
+        });
+        rows
+    }
+
+    pub fn stop_current(&mut self) {
+        self.client.take();
+    }
+
+    #[cfg(test)]
     pub fn diagnostics(&self) -> &[LspDiagnostic] {
         self.current_path
             .as_ref()
@@ -1199,6 +1643,7 @@ impl LanguageService {
 
     pub fn stop(&mut self) {
         self.client.take();
+        self.pooled_clients.clear();
         self.diagnostics_by_path.clear();
     }
 }
@@ -1389,10 +1834,9 @@ fn parse_position(value: &Value) -> Option<LspPosition> {
 }
 
 fn parse_range(value: &Value) -> Option<LspRange> {
-    Some(LspRange {
-        start: parse_position(value.get("start")?)?,
-        end: parse_position(value.get("end")?)?,
-    })
+    let start = parse_position(value.get("start")?)?;
+    let end = parse_position(value.get("end")?)?;
+    ((start.line, start.character) <= (end.line, end.character)).then_some(LspRange { start, end })
 }
 
 fn parse_diagnostics(message: &Value) -> Vec<LspDiagnostic> {
@@ -1464,7 +1908,36 @@ fn parse_completion_result(result: &Value) -> Vec<CompletionItem> {
                 .unwrap_or(&label)
                 .to_owned();
 
+            let mut additional_text_edits = Vec::new();
+            let mut rejected = None;
+            if let Some(edits) = item.get("additionalTextEdits") {
+                match edits.as_array() {
+                    Some(edits) if edits.len() <= MAX_TEXT_EDITS => {
+                        for edit in edits {
+                            match (edit.get("range").and_then(parse_range), edit.get("newText").and_then(Value::as_str)) {
+                                (Some(range), Some(text)) => additional_text_edits.push(CompletionTextEdit { range, new_text: text.to_owned() }),
+                                _ => rejected = Some("Malformed supporting completion edit; nothing was changed".to_owned()),
+                            }
+                        }
+                    }
+                    _ => rejected = Some("Supporting completion edit limit exceeded or malformed; nothing was changed".to_owned()),
+                }
+            }
+            if item.get("insertTextFormat").and_then(Value::as_u64) == Some(2) {
+                rejected = Some("Server returned a snippet despite snippetSupport=false".to_owned());
+            }
+            if text_edit.is_some() && (edit_range.is_none()
+                || text_edit.and_then(|edit| edit.get("newText")).and_then(Value::as_str).is_none()) {
+                rejected = Some("Malformed primary completion edit; nothing was changed".to_owned());
+            }
+            if rejected.is_some() { additional_text_edits.clear(); }
             Some(CompletionItem {
+                additional_text_edits,
+                command: item.get("command").cloned(),
+                raw: item.clone(),
+                needs_resolve: false,
+                rejected,
+                origin: None,
                 label,
                 detail,
                 filter_text,
@@ -1474,6 +1947,59 @@ fn parse_completion_result(result: &Value) -> Vec<CompletionItem> {
             })
         })
         .collect()
+}
+
+fn parse_symbols(result: &Value, document_uri: &str) -> Vec<SymbolLocation> {
+    fn collect(
+        items: &[Value],
+        document_uri: &str,
+        output: &mut Vec<SymbolLocation>,
+        depth: usize,
+    ) {
+        if depth > 32 {
+            return;
+        }
+        for item in items {
+            if output.len() >= MAX_LOCATIONS {
+                return;
+            }
+            let location = item.get("location");
+            let uri = location
+                .and_then(|location| location.get("uri"))
+                .and_then(Value::as_str)
+                .unwrap_or(document_uri);
+            let range = location
+                .and_then(|location| location.get("range"))
+                .or_else(|| item.get("selectionRange"))
+                .or_else(|| item.get("range"))
+                .and_then(parse_range);
+            if let (Some(name), Some(path), Some(range)) = (
+                item.get("name").and_then(Value::as_str),
+                uri_to_path(uri),
+                range,
+            ) {
+                output.push(SymbolLocation {
+                    name: name.to_owned(),
+                    detail: item
+                        .get("detail")
+                        .or_else(|| item.get("containerName"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    kind: item.get("kind").and_then(Value::as_u64).unwrap_or(0),
+                    path,
+                    range,
+                });
+            }
+            if let Some(children) = item.get("children").and_then(Value::as_array) {
+                collect(children, document_uri, output, depth + 1);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    if let Some(items) = result.as_array() {
+        collect(items, document_uri, &mut output, 0);
+    }
+    output
 }
 
 fn parse_definition_result(result: &Value) -> Option<DefinitionLocation> {
@@ -1556,7 +2082,10 @@ fn push_text_edits(
     edits: &Value,
     output: &mut Vec<LspTextEdit>,
 ) -> std::result::Result<(), String> {
-    for edit in edits.as_array().into_iter().flatten() {
+    let edits = edits
+        .as_array()
+        .ok_or("the language server sent a malformed edit list")?;
+    for edit in edits {
         if output.len() >= MAX_TEXT_EDITS {
             return Err(format!(
                 "the language server proposed more than {MAX_TEXT_EDITS} edits"
@@ -1582,6 +2111,10 @@ fn parse_document_edits(
     result: &Value,
 ) -> std::result::Result<Vec<LspTextEdit>, String> {
     let path = uri_to_path(uri).ok_or("the language server used an unsupported file URI")?;
+    // Formatting's null result means there are no edits (per LSP).
+    if result.is_null() {
+        return Ok(Vec::new());
+    }
     let mut output = Vec::new();
     push_text_edits(&path, result, &mut output)?;
     Ok(output)
@@ -1593,7 +2126,13 @@ fn parse_workspace_edit(result: &Value, active: Option<(&str, i32)>) -> Workspac
     let mut output = Vec::new();
     let mut has_resource_operations = false;
     let mut collect = || -> std::result::Result<(), String> {
-        if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+        if !result.is_null() && !result.is_object() {
+            return Err("the language server sent a malformed workspace edit".to_owned());
+        }
+        if let Some(changes) = result.get("changes") {
+            let changes = changes
+                .as_object()
+                .ok_or("the language server sent malformed workspace changes")?;
             for (uri, edits) in changes {
                 let Some(path) = uri_to_path(uri) else {
                     has_resource_operations = true;
@@ -1602,7 +2141,10 @@ fn parse_workspace_edit(result: &Value, active: Option<(&str, i32)>) -> Workspac
                 push_text_edits(&path, edits, &mut output)?;
             }
         }
-        if let Some(document_changes) = result.get("documentChanges").and_then(Value::as_array) {
+        if let Some(document_changes) = result.get("documentChanges") {
+            let document_changes = document_changes
+                .as_array()
+                .ok_or("the language server sent malformed document changes")?;
             for change in document_changes {
                 let Some(uri) = change.pointer("/textDocument/uri").and_then(Value::as_str) else {
                     has_resource_operations = true;
@@ -1646,7 +2188,59 @@ fn parse_workspace_edit(result: &Value, active: Option<(&str, i32)>) -> Workspac
     }
 }
 
+/// An edit response may include inactive open documents. Validate both the
+/// server's stated versions and documents changed while the request was pending.
+fn parse_workspace_edit_checked(
+    result: &Value,
+    active: Option<(&str, i32)>,
+    current: &HashMap<String, (i32, String)>,
+    requested: &HashMap<String, i32>,
+) -> WorkspaceEditPreview {
+    let mut preview = parse_workspace_edit(result, active);
+    for change in result
+        .get("documentChanges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(uri), Some(version)) = (
+            change.pointer("/textDocument/uri").and_then(Value::as_str),
+            change
+                .pointer("/textDocument/version")
+                .and_then(Value::as_i64),
+        ) && current
+            .get(uri)
+            .is_some_and(|(now, _)| i64::from(*now) != version)
+        {
+            preview.rejected =
+                Some("Workspace edits target an older version of an open file".to_owned());
+        }
+    }
+    for edit in &preview.edits {
+        let uri = path_to_uri(&edit.path);
+        if let Some(previous) = requested.get(&uri)
+            && current.get(&uri).is_none_or(|(now, _)| now != previous)
+        {
+            preview.rejected = Some("Workspace edits discarded: an affected open file changed or closed while the request was pending".to_owned());
+        }
+    }
+    if preview.rejected.is_some() {
+        preview.edits.clear();
+    }
+    preview
+}
+
+#[cfg(test)]
 fn parse_code_actions(result: &Value, active: Option<(&str, i32)>) -> Vec<CodeActionItem> {
+    parse_code_actions_checked(result, active, &HashMap::new(), &HashMap::new())
+}
+
+fn parse_code_actions_checked(
+    result: &Value,
+    active: Option<(&str, i32)>,
+    current: &HashMap<String, (i32, String)>,
+    requested: &HashMap<String, i32>,
+) -> Vec<CodeActionItem> {
     result
         .as_array()
         .into_iter()
@@ -1656,7 +2250,7 @@ fn parse_code_actions(result: &Value, active: Option<(&str, i32)>) -> Vec<CodeAc
             let title = item.get("title")?.as_str()?.to_owned();
             let preview = item
                 .get("edit")
-                .map(|edit| parse_workspace_edit(edit, active))
+                .map(|edit| parse_workspace_edit_checked(edit, active, current, requested))
                 .unwrap_or_default();
             Some(CodeActionItem {
                 title,
@@ -2190,6 +2784,994 @@ done
 
         let parsed = read_lsp_message(&mut Cursor::new(framed)).unwrap().unwrap();
         assert_eq!(parsed, value);
+    }
+
+    #[cfg(unix)]
+    fn real_server_completion_fixture(
+        program_variable: &str,
+        language_id: &'static str,
+        extension: &str,
+    ) {
+        use std::time::{Duration, Instant};
+        let program =
+            std::env::var(program_variable).expect("set the explicit real-server executable path");
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let document = root.join(format!("main.{extension}"));
+        let helper = if extension == "py" {
+            "def audit_symbol() -> int:\n    return 42\n"
+        } else {
+            "export function audit_symbol(): number { return 42; }\n"
+        };
+        std::fs::write(root.join(format!("helper.{extension}")), helper).unwrap();
+        let text = "audit_sy";
+        std::fs::write(&document, text).unwrap();
+        if extension == "py" {
+            std::fs::write(
+                root.join("pyrightconfig.json"),
+                r#"{"include":["."],"typeCheckingMode":"basic"}"#,
+            )
+            .unwrap();
+        } else {
+            std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"module":"commonjs","target":"ES2020"},"include":["*.ts"]}"#).unwrap();
+        }
+        let spec = ServerSpec {
+            program,
+            args: vec!["--stdio".to_owned()],
+            language_id,
+            label: "real language server",
+        };
+        let mut client = LspClient::spawn(&spec, &root, &document, text, 1).unwrap();
+        client
+            .activate_document(
+                language_id,
+                &root.join(format!("helper.{extension}")),
+                helper,
+                1,
+            )
+            .unwrap();
+        client
+            .activate_document(language_id, &document, text, 1)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while !client.initialized {
+            for event in client.poll() {
+                if let ClientEvent::Error(error) = event {
+                    panic!("initialization error: {error}");
+                }
+            }
+            assert!(Instant::now() < deadline, "server initialization timed out");
+            thread::sleep(Duration::from_millis(20));
+        }
+        // Initialize only establishes the protocol. Wait for the synthetic
+        // document's first diagnostics so auto-import checks start after indexing.
+        let mut indexed = false;
+        while !indexed {
+            for event in client.poll() {
+                if let ClientEvent::Diagnostics(uri, _) = event {
+                    indexed |= uri == path_to_uri(&document);
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server did not finish initial document analysis"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let mut last_labels = Vec::new();
+        let item = 'completion: loop {
+            let id = client
+                .request_completion(
+                    LspPosition {
+                        line: 0,
+                        character: text.len(),
+                    },
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+            loop {
+                let events = client.poll();
+                let mut finished = false;
+                for event in events {
+                    match event {
+                        ClientEvent::Completions(request_id, items) if request_id == id => {
+                            last_labels = items.iter().map(|item| item.label.clone()).collect();
+                            if let Some(item) =
+                                items.into_iter().find(|item| item.label == "audit_symbol")
+                            {
+                                break 'completion item;
+                            }
+                            finished = true;
+                        }
+                        ClientEvent::CompletionError(request_id, error) if request_id == id => {
+                            panic!("completion error: {error}")
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "server did not offer the workspace auto-import; labels: {:?}",
+                    last_labels
+                );
+                if finished {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
+        let item = if item.needs_resolve {
+            let id = client.request_completion_resolve(&item).unwrap().unwrap();
+            'resolve: loop {
+                for event in client.poll() {
+                    match event {
+                        ClientEvent::CompletionResolved(request_id, item) if request_id == id => {
+                            break 'resolve *item;
+                        }
+                        ClientEvent::CompletionError(request_id, error) if request_id == id => {
+                            panic!("resolve error: {error}")
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "server did not resolve the completion"
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+        } else {
+            item
+        };
+        assert!(
+            item.rejected.is_none(),
+            "completion rejected: {:?}",
+            item.rejected
+        );
+        assert!(
+            !item.additional_text_edits.is_empty(),
+            "real server did not supply supporting import edits: {:?}",
+            item.raw
+        );
+        assert!(
+            item.additional_text_edits
+                .iter()
+                .any(|edit| edit.new_text.contains("helper")),
+            "supporting import did not reference helper: {:?}",
+            item.additional_text_edits
+        );
+        assert_eq!(item.origin, Some((document.clone(), 1)));
+        // Exercise the retained edit set through Mellow's shared atomic edit and
+        // history operation, rather than only inspecting the protocol response.
+        let mut buffer = crate::buffer::Buffer::open(Some(document.clone())).unwrap();
+        let primary = item.edit_range.unwrap_or(LspRange {
+            start: LspPosition {
+                line: 0,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 0,
+                character: text.len(),
+            },
+        });
+        let mut edit_set = vec![CompletionTextEdit {
+            range: primary,
+            new_text: item.insert_text.clone(),
+        }];
+        edit_set.extend(item.additional_text_edits.clone());
+        let replacements: Vec<_> = edit_set
+            .iter()
+            .map(|edit| {
+                (
+                    crate::cursor::Cursor::new(
+                        edit.range.start.line,
+                        buffer.grapheme_col_for_utf16(
+                            edit.range.start.line,
+                            edit.range.start.character,
+                        ),
+                    ),
+                    crate::cursor::Cursor::new(
+                        edit.range.end.line,
+                        buffer
+                            .grapheme_col_for_utf16(edit.range.end.line, edit.range.end.character),
+                    ),
+                    edit.new_text.clone(),
+                )
+            })
+            .collect();
+        let mut cursor = crate::cursor::Cursor::new(0, text.len());
+        buffer.replace_ranges_with_cursors(&replacements, cursor);
+        let completed = buffer.contents();
+        assert!(completed.contains("helper") && completed.contains("audit_symbol"));
+        assert!(buffer.undo(&mut cursor));
+        assert_eq!(
+            buffer.contents(),
+            text,
+            "one undo must revert both completion and import"
+        );
+        assert!(buffer.redo(&mut cursor));
+        assert_eq!(buffer.contents(), completed);
+
+        let program = if extension == "py" {
+            "from helper import audit_symbol\naudit_symbol()\naudit_missing_name\n"
+        } else {
+            "import { audit_symbol } from \"./helper\";\naudit_symbol();\naudit_missing_name;\n"
+        };
+        client.did_change(program, 2).unwrap();
+        client
+            .request_definition(LspPosition {
+                line: 1,
+                character: 3,
+            })
+            .unwrap();
+        let mut definition_seen = false;
+        let mut diagnostic_seen = false;
+        let navigation_deadline = Instant::now() + Duration::from_secs(30);
+        while !(definition_seen && diagnostic_seen) {
+            for event in client.poll() {
+                match event {
+                    ClientEvent::Definition(Some(location)) => {
+                        assert_eq!(location.path, root.join(format!("helper.{extension}")));
+                        assert_eq!(location.range.start.line, 0);
+                        definition_seen = true;
+                    }
+                    ClientEvent::Diagnostics(uri, diagnostics) if uri == path_to_uri(&document) => {
+                        diagnostic_seen |= diagnostics.iter().any(|diagnostic| {
+                            diagnostic.message.contains("audit_missing_name")
+                                && diagnostic.range.start.line == 2
+                        });
+                    }
+                    ClientEvent::Error(error) => panic!("real server workflow error: {error}"),
+                    _ => {}
+                }
+            }
+            assert!(
+                Instant::now() < navigation_deadline,
+                "real server did not complete navigation/diagnostics: definition={definition_seen}, diagnostic={diagnostic_seen}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        eprintln!(
+            "real {language_id} auto-import retained {} supporting edits; command retained={} (never executed)",
+            item.additional_text_edits.len(),
+            item.command.is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires an installed real Pyright executable via MELLOW_TEST_PYRIGHT"]
+    fn real_pyright_completion_resolves_workspace_auto_import() {
+        real_server_completion_fixture("MELLOW_TEST_PYRIGHT", "python", "py");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires an installed real TypeScript language server via MELLOW_TEST_TYPESCRIPT_LSP"]
+    fn real_typescript_completion_resolves_workspace_auto_import() {
+        real_server_completion_fixture("MELLOW_TEST_TYPESCRIPT_LSP", "typescript", "ts");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires real Pyright and TypeScript server paths via MELLOW_TEST_PYRIGHT and MELLOW_TEST_TYPESCRIPT_LSP"]
+    fn real_mixed_language_pool_preserves_unsaved_diagnostics_and_processes() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let python = root.join("one.py");
+        let typescript = root.join("two.ts");
+        let python_original = "audit_python_original_missing\n";
+        let typescript_original =
+            "const audit_ts_value: number = audit_typescript_original_missing;\n";
+        std::fs::write(&python, python_original).unwrap();
+        std::fs::write(&typescript, typescript_original).unwrap();
+        std::fs::write(
+            root.join("pyrightconfig.json"),
+            r#"{"include":["*.py"],"typeCheckingMode":"basic"}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"module":"commonjs","target":"ES2020"},"include":["*.ts"]}"#).unwrap();
+        let py = ServerSpec {
+            program: std::env::var("MELLOW_TEST_PYRIGHT").expect("set real Pyright path"),
+            args: vec!["--stdio".to_owned()],
+            language_id: "python",
+            label: "real Pyright",
+        };
+        let ts = ServerSpec {
+            program: std::env::var("MELLOW_TEST_TYPESCRIPT_LSP")
+                .expect("set real TypeScript server path"),
+            args: vec!["--stdio".to_owned()],
+            language_id: "typescript",
+            label: "real TypeScript",
+        };
+        let mut service = LanguageService::default();
+        service.activate_with_spec(&root, &python, &py, python_original, 0);
+        let py_pid = service.client.as_ref().unwrap().child.id();
+        service.activate_with_spec(&root, &typescript, &ts, typescript_original, 0);
+        let ts_pid = service.client.as_ref().unwrap().child.id();
+        assert_ne!(py_pid, ts_pid);
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let wait_for = |service: &mut LanguageService, py_name: &str, ts_name: &str| {
+            loop {
+                for event in service.poll() {
+                    assert!(
+                        !matches!(
+                            event,
+                            LanguageServiceEvent::Exited(_) | LanguageServiceEvent::Error(_)
+                        ),
+                        "real language service failed: {event:?}"
+                    );
+                }
+                let problems = service.workspace_diagnostics();
+                if problems
+                    .iter()
+                    .any(|(path, d)| path == &python && d.message.contains(py_name))
+                    && problems
+                        .iter()
+                        .any(|(path, d)| path == &typescript && d.message.contains(ts_name))
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "named workspace diagnostics did not arrive: {problems:?}"
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_for(
+            &mut service,
+            "audit_python_original_missing",
+            "audit_typescript_original_missing",
+        );
+        let python_unsaved = "audit_python_unsaved_missing\n";
+        service.sync_document(Some(&python), python_unsaved, 1);
+        wait_for(
+            &mut service,
+            "audit_python_unsaved_missing",
+            "audit_typescript_original_missing",
+        );
+        service.activate_with_spec(&root, &python, &py, python_unsaved, 1);
+        let typescript_unsaved =
+            "const audit_ts_value: number = audit_typescript_unsaved_missing;\naudit_ts_value;\n";
+        service.sync_document(Some(&typescript), typescript_unsaved, 1);
+        wait_for(
+            &mut service,
+            "audit_python_unsaved_missing",
+            "audit_typescript_unsaved_missing",
+        );
+        for _ in 0..4 {
+            service.activate_with_spec(&root, &typescript, &ts, typescript_unsaved, 1);
+            assert_eq!(service.client.as_ref().unwrap().child.id(), ts_pid);
+            assert_eq!(
+                service.client.as_ref().unwrap().opened_documents[&path_to_uri(&typescript)].1,
+                typescript_unsaved
+            );
+            service.activate_with_spec(&root, &python, &py, python_unsaved, 1);
+            assert_eq!(service.client.as_ref().unwrap().child.id(), py_pid);
+            assert_eq!(
+                service.client.as_ref().unwrap().opened_documents[&path_to_uri(&python)].1,
+                python_unsaved
+            );
+            assert_eq!(service.pooled_clients.len(), 1);
+        }
+        assert_eq!(std::fs::read_to_string(&python).unwrap(), python_original);
+        assert_eq!(
+            std::fs::read_to_string(&typescript).unwrap(),
+            typescript_original
+        );
+        let problems = service.workspace_diagnostics();
+        assert!(
+            !problems
+                .iter()
+                .any(|(_, d)| d.message.contains("original_missing"))
+        );
+        eprintln!(
+            "real mixed pool retained Pyright pid {py_pid}, TypeScript pid {ts_pid}; both inactive unsaved diagnostic updates retained file identity"
+        );
+
+        // Pyright supports workspace symbols. This checks real protocol/file
+        // identity separately from terminal selection or display acceptance.
+        let symbol_text =
+            "def audit_workspace_symbol():\n    return 42\n\naudit_workspace_symbol()\n";
+        service.sync_document(Some(&python), symbol_text, 2);
+        let mut saw_analysis = false;
+        while !saw_analysis {
+            for event in service.poll() {
+                saw_analysis |= matches!(event, LanguageServiceEvent::DiagnosticsChanged)
+                    && service
+                        .diagnostics_by_path
+                        .get(&python)
+                        .is_some_and(Vec::is_empty);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "symbol document analysis timed out"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            service
+                .request_workspace_symbols("audit_workspace_symbol")
+                .unwrap()
+        );
+        'symbols: loop {
+            for event in service.poll() {
+                if let LanguageServiceEvent::Symbols(symbols) = event {
+                    assert!(
+                        symbols
+                            .iter()
+                            .any(|symbol| symbol.name == "audit_workspace_symbol"
+                                && symbol.path == python),
+                        "real workspace symbol identity missing: {symbols:?}"
+                    );
+                    break 'symbols;
+                }
+            }
+            assert!(Instant::now() < deadline, "workspace symbols timed out");
+            thread::sleep(Duration::from_millis(20));
+        }
+        for (path, spec, text, revision, position, use_row) in [
+            (
+                &python,
+                &py,
+                symbol_text,
+                2,
+                LspPosition {
+                    line: 0,
+                    character: 10,
+                },
+                3,
+            ),
+            (
+                &typescript,
+                &ts,
+                typescript_unsaved,
+                1,
+                LspPosition {
+                    line: 0,
+                    character: 10,
+                },
+                1,
+            ),
+        ] {
+            service.activate_with_spec(&root, path, spec, text, revision);
+            assert!(service.request_references(position).unwrap());
+            'references: loop {
+                for event in service.poll() {
+                    if let LanguageServiceEvent::References(locations) = event {
+                        assert!(
+                            locations.iter().any(|location| location.path == *path
+                                && location.range.start.line == use_row),
+                            "real references lost unsaved callsite/file identity: {locations:?}"
+                        );
+                        break 'references;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "real unsaved references timed out"
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn inert_test_spec(identity: &str) -> ServerSpec {
+        ServerSpec {
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "cat >/dev/null".to_owned(),
+                identity.to_owned(),
+            ],
+            language_id: "python",
+            label: "fixture",
+        }
+    }
+
+    #[cfg(unix)]
+    fn initialize_test_client(client: &mut LspClient) {
+        client.handle_message(json!({"id": 1, "result": {"capabilities": {"completionProvider": {"resolveProvider": true}}}}), &mut Vec::new());
+        assert!(client.initialized);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f10_two_services_stay_warm_and_sync_inactive_unsaved_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let one = root.join("one.py");
+        let two = root.join("two.ts");
+        let mut service = LanguageService::default();
+        let a = inert_test_spec("python");
+        let b = inert_test_spec("typescript");
+        service.activate_with_spec(&root, &one, &a, "first", 0);
+        let first_pid = service.client.as_ref().unwrap().child.id();
+        initialize_test_client(service.client.as_mut().unwrap());
+        service.activate_with_spec(&root, &two, &b, "second", 0);
+        let second_pid = service.client.as_ref().unwrap().child.id();
+        initialize_test_client(service.client.as_mut().unwrap());
+        service.sync_document(Some(&one), "unsaved first", 1);
+        for _ in 0..3 {
+            service.activate_with_spec(&root, &one, &a, "unsaved first", 1);
+            assert_eq!(service.client.as_ref().unwrap().child.id(), first_pid);
+            assert_eq!(
+                service.client.as_ref().unwrap().opened_documents[&path_to_uri(&one)].1,
+                "unsaved first"
+            );
+            service.activate_with_spec(&root, &two, &b, "second", 0);
+            assert_eq!(service.client.as_ref().unwrap().child.id(), second_pid);
+        }
+        service.close_document(Some(&one));
+        assert!(
+            !service.pooled_clients[0]
+                .opened_documents
+                .contains_key(&path_to_uri(&one))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f10_documents_opened_before_initialize_are_all_delivered() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let one = root.join("one.py");
+        let two = root.join("two.py");
+        let mut client =
+            LspClient::spawn(&inert_test_spec("python"), &root, &one, "first", 1).unwrap();
+        client
+            .activate_document("python", &two, "second", 2)
+            .unwrap();
+        initialize_test_client(&mut client);
+        assert_eq!(client.opened_documents.len(), 2);
+        assert_eq!(client.opened_documents[&path_to_uri(&one)].1, "first");
+        assert_eq!(client.opened_documents[&path_to_uri(&two)].1, "second");
+        assert_eq!(client.document.uri, path_to_uri(&two));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f09_resolve_preserves_import_and_rejects_stale_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.py");
+        let mut client =
+            LspClient::spawn(&inert_test_spec("python"), dir.path(), &path, "Pat", 1).unwrap();
+        initialize_test_client(&mut client);
+        let id = client
+            .request_completion(
+                LspPosition {
+                    line: 0,
+                    character: 3,
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let mut events = Vec::new();
+        client.handle_message(
+            json!({"id": id, "result": [{"label": "Path", "data": {"ticket": 19}}]}),
+            &mut events,
+        );
+        let ClientEvent::Completions(_, items) = events.remove(0) else {
+            panic!("expected completion");
+        };
+        assert!(items[0].needs_resolve);
+        assert_eq!(items[0].raw["data"]["ticket"], 19);
+        let resolve_id = client
+            .request_completion_resolve(&items[0])
+            .unwrap()
+            .unwrap();
+        client.handle_message(json!({"id": resolve_id, "result": {
+            "label": "Path", "data": {"ticket": 19},
+            "additionalTextEdits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "from pathlib import Path\n"}]
+        }}), &mut events);
+        let ClientEvent::CompletionResolved(_, item) = events.remove(0) else {
+            panic!("expected resolved item");
+        };
+        assert_eq!(
+            item.additional_text_edits[0].new_text,
+            "from pathlib import Path\n"
+        );
+        assert!(!item.needs_resolve);
+        let stale_id = client
+            .request_completion_resolve(&items[0])
+            .unwrap()
+            .unwrap();
+        client.did_change("changed", 2).unwrap();
+        assert!(client.request_completion_resolve(&items[0]).is_err());
+        client.handle_message(
+            json!({"id": stale_id, "result": {"label": "Path"}}),
+            &mut events,
+        );
+        assert!(matches!(events[0], ClientEvent::CompletionError(_, _)));
+    }
+
+    #[test]
+    fn symbols_keep_hierarchy_and_workspace_file_identity() {
+        let range =
+            json!({"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}});
+        let symbols = parse_symbols(
+            &json!([{"name": "parent", "kind": 5, "selectionRange": range, "children": [{"name": "child", "kind": 6, "selectionRange": range}]}]),
+            "file:///tmp/demo.yaml",
+        );
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[1].name, "child");
+        assert_eq!(symbols[1].path, PathBuf::from("/tmp/demo.yaml"));
+        let workspace = parse_symbols(
+            &json!([{"name": "module", "location": {"uri": "file:///tmp/other.ts", "range": range}}]),
+            "file:///tmp/current.ts",
+        );
+        assert_eq!(workspace[0].path, PathBuf::from("/tmp/other.ts"));
+    }
+
+    #[test]
+    fn f09_completion_keeps_supporting_import_and_opaque_resolve_data() {
+        let result = json!([{
+            "label": "Path", "insertText": "Path", "data": {"ticket": 19},
+            "additionalTextEdits": [{"range": {
+                "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}
+            }, "newText": "from pathlib import Path\n"}],
+            "command": {"title": "finish", "command": "server.private.finish", "arguments": [19]}
+        }]);
+        let items = parse_completion_result(&result);
+        let retained = format!("{:?}", items[0]);
+        assert!(
+            retained.contains("from pathlib import Path"),
+            "supporting import was lost: {retained}"
+        );
+        assert!(
+            retained.contains("server.private.finish"),
+            "command was silently lost"
+        );
+        assert!(retained.contains("ticket"), "resolve identity was lost");
+    }
+
+    #[test]
+    fn latest_requests_win_when_same_document_replies_arrive_in_reverse() {
+        let mut client = silent_client(Path::new("/tmp/mellow-a.rs"));
+        let kinds = [
+            RequestKind::WorkspaceSymbols,
+            RequestKind::DocumentSymbols,
+            RequestKind::Definition,
+            RequestKind::Hover,
+            RequestKind::SignatureHelp,
+            RequestKind::References,
+            RequestKind::Completion,
+            RequestKind::CompletionResolve,
+        ];
+        for kind in kinds {
+            let old = client
+                .send_request(kind, "fixture", json!({"query":"alpha"}))
+                .unwrap();
+            client.remember_edit_target(old);
+            let latest = client
+                .send_request(kind, "fixture", json!({"query":"beta"}))
+                .unwrap();
+            client.remember_edit_target(latest);
+            assert!(
+                !client.pending.contains_key(&old),
+                "old {kind:?} request was not invalidated"
+            );
+            assert!(!client.edit_targets.contains_key(&old));
+            let mut events = Vec::new();
+            client.handle_message(json!({"id":latest,"result":null}), &mut events);
+            let count = events.len();
+            client.handle_message(json!({"id":old,"result":null}), &mut events);
+            assert_eq!(
+                events.len(),
+                count,
+                "older {kind:?} response replaced the latest result"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_symbol_scope_invalidates_the_previous_panel_request() {
+        let mut client = silent_client(Path::new("/tmp/symbol-scope.rs"));
+        for (old_kind, latest_kind) in [
+            (RequestKind::WorkspaceSymbols, RequestKind::DocumentSymbols),
+            (RequestKind::DocumentSymbols, RequestKind::WorkspaceSymbols),
+        ] {
+            let old = client
+                .send_request(old_kind, "fixture", Value::Null)
+                .unwrap();
+            client.remember_edit_target(old);
+            let latest = client
+                .send_request(latest_kind, "fixture", Value::Null)
+                .unwrap();
+            client.remember_edit_target(latest);
+            let mut events = Vec::new();
+            client.handle_message(json!({"id":latest,"result":null}), &mut events);
+            assert!(matches!(events.as_slice(), [ClientEvent::Symbols(_)]));
+            client.handle_message(json!({"id":old,"result":null}), &mut events);
+            assert_eq!(
+                events.len(),
+                1,
+                "older {old_kind:?} reply replaced {latest_kind:?} panel"
+            );
+            assert!(!client.edit_targets.contains_key(&old));
+        }
+    }
+
+    #[test]
+    fn unchanged_inactive_document_sync_is_idempotent() {
+        let inactive = Path::new("/tmp/inactive-sync.rs");
+        let mut client = silent_client(inactive);
+        client.did_open().unwrap();
+        let original = client.document.text.clone();
+        let active = DocumentDescriptor {
+            uri: path_to_uri(Path::new("/tmp/active-sync.rs")),
+            language_id: "rust".to_owned(),
+            version: 1,
+            text: "fn active() {}".to_owned(),
+        };
+        client.document = active.clone();
+        // A queue without a writer thread lets us observe exactly whether a
+        // change was sent, independently of subprocess pipe scheduling.
+        client.writer = LspWriter {
+            shared: Arc::new((Mutex::new(OutgoingQueue::default()), Condvar::new())),
+        };
+        let mut service = LanguageService {
+            client: Some(client),
+            ..LanguageService::default()
+        };
+        service.sync_document(Some(inactive), &original, 1);
+        assert_eq!(
+            service.client.as_ref().unwrap().writer.pending_bytes(),
+            0,
+            "unchanged document emitted a duplicate-version didChange"
+        );
+        let changed = "fn inactive_updated() {}";
+        service.sync_document(Some(inactive), changed, 2);
+        let client = service.client.as_ref().unwrap();
+        assert!(client.writer.pending_bytes() > 0);
+        assert_eq!(
+            client.opened_documents[&path_to_uri(inactive)],
+            (2, changed.to_owned())
+        );
+        assert_eq!(client.document.uri, active.uri);
+        assert_eq!(client.document.text, active.text);
+        assert_eq!(client.document.version, active.version);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interaction_cancellation_drops_responses_without_cancelling_symbol_panels() {
+        let mut client = silent_client(Path::new("/tmp/cancel.rs"));
+        let mut cancelled = Vec::new();
+        for kind in [
+            RequestKind::Definition,
+            RequestKind::References,
+            RequestKind::Hover,
+            RequestKind::SignatureHelp,
+        ] {
+            let id = client.send_request(kind, "fixture", Value::Null).unwrap();
+            client.remember_edit_target(id);
+            cancelled.push(id);
+        }
+        let symbols = client
+            .send_request(
+                RequestKind::WorkspaceSymbols,
+                "workspace/symbol",
+                Value::Null,
+            )
+            .unwrap();
+        let mut service = LanguageService {
+            client: Some(client),
+            ..LanguageService::default()
+        };
+        service.cancel_interactions();
+        let client = service.client.as_mut().unwrap();
+        assert!(client.pending.contains_key(&symbols));
+        for id in cancelled {
+            assert!(!client.pending.contains_key(&id));
+            assert!(!client.edit_targets.contains_key(&id));
+            let mut events = Vec::new();
+            client.handle_message(json!({"id":id,"result":null}), &mut events);
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
+    fn formatting_null_result_means_no_edits() {
+        assert!(
+            parse_document_edits("file:///tmp/a.rs", &Value::Null)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn f10_malformed_workspace_edit_containers_never_apply_a_partial_set() {
+        for edit in [
+            json!({"changes":{"file:///tmp/a.rs":[text_edit(0)], "file:///tmp/b.rs":null}}),
+            json!({"changes":[], "documentChanges":[{"textDocument":{"uri":"file:///tmp/a.rs","version":null},"edits":[text_edit(0)]}]}),
+            json!({"changes":{"file:///tmp/a.rs":[text_edit(0)]}, "documentChanges":{}}),
+        ] {
+            let preview = parse_workspace_edit(&edit, None);
+            assert!(
+                preview.rejected.is_some() && preview.edits.is_empty(),
+                "malformed edit was partially accepted: {edit}"
+            );
+        }
+    }
+
+    #[test]
+    fn f10_close_and_reopen_cannot_resurrect_pending_completion() {
+        let path = Path::new("/tmp/mellow-a.rs");
+        let mut client = silent_client(path);
+        let id = client
+            .request_completion(
+                LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        client.close_path(path).unwrap();
+        client
+            .activate_document("rust", path, "new document with reset revision", 1)
+            .unwrap();
+        let mut events = Vec::new();
+        client.handle_message(
+            json!({"id":id,"result":[{"label":"old_item"}]}),
+            &mut events,
+        );
+        assert!(
+            events.is_empty(),
+            "closed-document requests must stay cancelled after reopen"
+        );
+        assert!(!client.pending.contains_key(&id));
+        assert!(!client.edit_targets.contains_key(&id));
+    }
+
+    #[test]
+    fn f10_unsolicited_server_edits_receive_an_explicit_refusal() {
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut client = silent_client(Path::new("/tmp/mellow-a.rs"));
+        client.writer =
+            LspWriter::start(Capture(Arc::clone(&bytes)), "capture".to_owned()).unwrap();
+        let mut events = Vec::new();
+        client.handle_message(json!({"id":"server-edit","method":"workspace/applyEdit","params":{"edit":{"changes":{"file:///tmp/mellow-a.rs":[text_edit(0)]}}}}), &mut events);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let response = loop {
+            let snapshot = bytes.lock().unwrap().clone();
+            if !snapshot.is_empty() {
+                break read_lsp_message(&mut std::io::Cursor::new(snapshot))
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!(response["id"], "server-edit");
+        assert_eq!(response["result"]["applied"], false);
+        assert!(
+            response["result"]["failureReason"]
+                .as_str()
+                .unwrap()
+                .contains("review")
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ClientEvent::Rename(_) | ClientEvent::Formatting(_)))
+        );
+    }
+
+    #[test]
+    fn f10_workspace_edits_refuse_changed_inactive_documents_and_stale_versions() {
+        let a = Path::new("/tmp/mellow-a.rs");
+        let b = Path::new("/tmp/mellow-b.rs");
+        let mut client = silent_client(a);
+        client.activate_document("rust", b, "old b", 1).unwrap();
+        client.activate_document("rust", a, "active a", 1).unwrap();
+        client
+            .request_rename(
+                LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                "renamed",
+            )
+            .unwrap();
+        let id = client.next_id - 1;
+        client.activate_document("rust", b, "new b", 2).unwrap();
+        client.activate_document("rust", a, "active a", 1).unwrap();
+        let mut events = Vec::new();
+        client.handle_message(
+            json!({"id":id,"result":{"changes":{path_to_uri(b):[text_edit(0)]}}}),
+            &mut events,
+        );
+        let ClientEvent::Rename(preview) = events.remove(0) else {
+            panic!("expected preview");
+        };
+        assert!(preview.edits.is_empty() && preview.rejected.is_some());
+        client
+            .request_code_actions(LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+            })
+            .unwrap();
+        let id = client.next_id - 1;
+        client.handle_message(json!({"id":id,"result":[{"title":"stale import","edit":{"documentChanges":[{"textDocument":{"uri":path_to_uri(b),"version":1},"edits":[text_edit(0)]}]}}]}), &mut events);
+        let ClientEvent::CodeActions(actions) = events.remove(0) else {
+            panic!("expected code actions");
+        };
+        assert!(actions[0].edits.is_empty() && actions[0].rejected.is_some());
+    }
+
+    #[test]
+    fn f09_primary_completion_requires_text_and_an_ordered_range() {
+        let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":2}});
+        let items = parse_completion_result(&json!([
+            {"label":"fallback must not replace text", "textEdit":{"range":range}},
+            {"label":"reversed", "textEdit":{"range":{"start":{"line":1,"character":0},"end":{"line":0,"character":0}},"newText":"wrong"}}
+        ]));
+        assert!(items.iter().all(|item| item.rejected.is_some()));
+    }
+
+    #[test]
+    fn f10_late_navigation_replies_cannot_change_the_new_document() {
+        let mut client = silent_client(Path::new("/tmp/mellow-a.rs"));
+        let position = LspPosition {
+            line: 0,
+            character: 0,
+        };
+        let mut ids = Vec::new();
+        client.request_definition(position).unwrap();
+        ids.push(client.next_id - 1);
+        client.request_hover(position).unwrap();
+        ids.push(client.next_id - 1);
+        client.request_signature_help(position).unwrap();
+        ids.push(client.next_id - 1);
+        client.request_references(position).unwrap();
+        ids.push(client.next_id - 1);
+        client
+            .activate_document("rust", Path::new("/tmp/mellow-b.rs"), "other", 2)
+            .unwrap();
+        let mut events = Vec::new();
+        for id in ids {
+            client.handle_message(json!({"id":id,"result":null}), &mut events);
+        }
+        assert_eq!(events.len(), 4);
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, ClientEvent::Error(_)))
+        );
+        assert!(client.edit_targets.is_empty());
+    }
+
+    #[test]
+    fn f09_malformed_supporting_edit_refuses_the_whole_completion() {
+        let result =
+            json!([{"label": "unsafe", "additionalTextEdits": [{"newText": "import unsafe"}]}]);
+        let items = parse_completion_result(&result);
+        assert!(format!("{:?}", items[0]).contains("Malformed supporting completion edit"));
     }
 
     #[test]

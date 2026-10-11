@@ -167,7 +167,10 @@ fn wait_for_startup(master: &mut File, captured: &mut Vec<u8>, queries: &mut usi
             return;
         }
     }
-    panic!("Native binary did not enter alternate screen and query cursor within 5 seconds");
+    panic!(
+        "Native binary did not enter alternate screen and query cursor within 5 seconds; output={:?}",
+        String::from_utf8_lossy(captured)
+    );
 }
 
 fn wait_for_saved_text(
@@ -205,6 +208,18 @@ fn spawn_mellow_with(
     size: (u16, u16),
     mouse: bool,
 ) -> (ChildGuard, File) {
+    spawn_mellow_with_env(binary, cwd, file, home, size, mouse, &[])
+}
+
+fn spawn_mellow_with_env(
+    binary: &Path,
+    cwd: &Path,
+    file: Option<&Path>,
+    home: &Path,
+    size: (u16, u16),
+    mouse: bool,
+    overrides: &[(&str, &str)],
+) -> (ChildGuard, File) {
     let binary_c = CString::new(binary.as_os_str().as_bytes()).unwrap();
     let cwd_c = CString::new(cwd.as_os_str().as_bytes()).unwrap();
     let file_c = file.map(|file| CString::new(file.as_os_str().as_bytes()).unwrap());
@@ -217,19 +232,39 @@ fn spawn_mellow_with(
     }
     argv.push(ptr::null());
 
-    let home_c = CString::new(home.as_os_str().as_bytes()).unwrap();
     let config = home.join("config");
     let state = home.join("state");
     fs::create_dir_all(&config).unwrap();
     fs::create_dir_all(&state).unwrap();
-    let config_c = CString::new(config.as_os_str().as_bytes()).unwrap();
-    let state_c = CString::new(state.as_os_str().as_bytes()).unwrap();
-
-    let home_key = CString::new("HOME").unwrap();
-    let config_key = CString::new("XDG_CONFIG_HOME").unwrap();
-    let state_key = CString::new("XDG_STATE_HOME").unwrap();
-    let term_key = CString::new("TERM").unwrap();
-    let term_value = CString::new("xterm-256color").unwrap();
+    // Construct a private child environment before fork. setenv in the child
+    // can allocate or acquire a lock inherited from another test thread.
+    // Formatter overrides belong to this child, never process-global tests.
+    let mut child_env: std::collections::BTreeMap<_, _> = std::env::vars_os()
+        .filter(|(key, _)| !key.to_string_lossy().starts_with("MELLOW_"))
+        .collect();
+    for (key, value) in [
+        ("HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("XDG_STATE_HOME", state.as_os_str()),
+        ("SHELL", std::ffi::OsStr::new("/bin/sh")),
+        ("TERM", std::ffi::OsStr::new("xterm-256color")),
+    ] {
+        child_env.insert(key.into(), value.to_os_string());
+    }
+    for &(key, value) in overrides {
+        child_env.insert(key.into(), value.into());
+    }
+    let environment: Vec<CString> = child_env
+        .into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            CString::new(entry).unwrap()
+        })
+        .collect();
+    let mut envp: Vec<_> = environment.iter().map(|value| value.as_ptr()).collect();
+    envp.push(ptr::null());
 
     let mut master_fd = -1;
     let mut slave_fd = -1;
@@ -304,12 +339,7 @@ fn spawn_mellow_with(
                 libc::_exit(126);
             }
 
-            libc::setenv(home_key.as_ptr(), home_c.as_ptr(), 1);
-            libc::setenv(config_key.as_ptr(), config_c.as_ptr(), 1);
-            libc::setenv(state_key.as_ptr(), state_c.as_ptr(), 1);
-            libc::setenv(term_key.as_ptr(), term_value.as_ptr(), 1);
-
-            libc::execv(binary_c.as_ptr(), argv.as_ptr());
+            libc::execve(binary_c.as_ptr(), argv.as_ptr(), envp.as_ptr());
             libc::_exit(127);
         }
     }
@@ -1016,6 +1046,7 @@ fn live_mouse_click_runs_a_palette_row_at_120_by_34() {
         |rows| rows.iter().any(|row| row.contains("hello")),
     );
     type_keys(&mut master, &mut captured, &mut queries, b"\x10"); // Ctrl+P
+    type_keys(&mut master, &mut captured, &mut queries, b"New file");
     let rows = wait_for_rows(
         &mut master,
         &mut captured,
@@ -1024,7 +1055,15 @@ fn live_mouse_click_runs_a_palette_row_at_120_by_34() {
         "the palette",
         |rows| find_on_screen(rows, "New file").is_some(),
     );
-    let (column, row) = find_on_screen(&rows, "New file").unwrap();
+    // The query line also says New file. Click the actual command row.
+    let (row, line) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.contains("New file") && !line.contains("> New file"))
+        .unwrap();
+    let byte = line.find("New file").unwrap();
+    let column = line[..byte].chars().count() as u16;
+    let row = row as u16;
     click_cell(&mut master, &mut captured, &mut queries, column + 2, row);
     wait_for_rows(
         &mut master,
@@ -1079,4 +1118,1601 @@ fn live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o() {
         "Open file (not symbols)",
         |rows| rows.iter().any(|row| row.contains("● Open file")),
     );
+}
+
+/// Configure only a local mock and a dummy key. No provider credentials from
+/// the developer machine are needed for this extracted-binary regression.
+fn mock_ai_config(home: &Path, provider: &str, endpoint: &str) {
+    let directory = home.join("config/mellow");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("ai.conf"), format!(
+        "provider = {provider}\nendpoint = {endpoint}\nmodel = audit-mock\napi_key = synthetic-audit-key\ninline_suggestions = false\n"
+    )).unwrap();
+}
+
+fn accept_mock_request(listener: &std::net::TcpListener) -> std::net::TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // BSD/macOS accepts can inherit O_NONBLOCK from the listener.
+                // A bounded blocking fixture read must wait for request bytes,
+                // rather than race the client's write immediately after accept.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "mock provider received no request within its deadline"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("mock listener failed: {error}"),
+        }
+    }
+}
+
+fn read_mock_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        assert!(
+            request.len() < 128 * 1024,
+            "mock request exceeds fixture bound"
+        );
+        let read = stream.read(&mut chunk).unwrap_or_else(|error| {
+            let header_end = request.windows(4).position(|part| part == b"\r\n\r\n");
+            panic!(
+                "mock read failed after {} bytes, header_end={header_end:?}: {error}",
+                request.len()
+            )
+        });
+        assert!(read > 0, "mock request ended before its body");
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .expect("fixture requires bounded Content-Length");
+            if request.len() >= header_end + 4 + length {
+                return request;
+            }
+        }
+    }
+}
+
+fn begin_selected_ai_request(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize) {
+    write_all(master, &[0x01, 0x0b]); // Select All, Ask AI.
+    wait_for_screen_state(
+        master,
+        captured,
+        queries,
+        "AI context disclosure before submission",
+        |screen| {
+            screen.contains("Sends")
+                && screen.contains("file name and language")
+                && screen.contains("Enter send")
+        },
+    );
+}
+
+#[test]
+fn release_binary_ai_proposal_disclosure_reject_accept_and_grouped_undo_redo() {
+    use std::net::TcpListener;
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("proposal.txt");
+    let original = "before_name\nbefore_value\n";
+    let replacement = "after_name 🙂\nafter_value e\u{301}\nthird_line\n";
+    fs::write(&file, original).unwrap();
+    fs::write(
+        workspace.path().join("unselected.txt"),
+        "unselected_synthetic_private_content",
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    mock_ai_config(
+        home.path(),
+        "custom",
+        &format!("http://{}/chat", listener.local_addr().unwrap()),
+    );
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let mut stream = accept_mock_request(&listener);
+            requests.push(read_mock_http_request(&mut stream));
+            let proposal = serde_json::json!({"summary":"Synthetic reviewed multi-line edit", "replacement":replacement}).to_string();
+            let body =
+                serde_json::json!({"choices":[{"message":{"content":proposal}}]}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        requests
+    });
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    for accept in [false, true] {
+        begin_selected_ai_request(&mut master, &mut captured, &mut queries);
+        assert_eq!(fs::read_to_string(&file).unwrap(), original);
+        write_all(&mut master, b"review this synthetic edit\r");
+        wait_for_screen_state(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            "review before any edit",
+            |screen| {
+                screen.contains("Suggested change")
+                    && screen.contains("before_name")
+                    && screen.contains("after_name")
+                    && screen.contains("Accept")
+                    && screen.contains("Reject")
+            },
+        );
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            original,
+            "review wrote disk before acceptance"
+        );
+        write_all(&mut master, if accept { b"\r" } else { b"r" });
+        wait_for_screen_state(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            "explicit proposal decision",
+            |screen| {
+                screen.contains(if accept {
+                    "Suggestion applied"
+                } else {
+                    "Suggestion rejected"
+                })
+            },
+        );
+        if !accept {
+            write_all(&mut master, &[0x13]);
+            wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, original);
+        }
+    }
+    write_all(&mut master, &[0x13]);
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, replacement);
+    write_all(&mut master, &[0x1a, 0x13]);
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, original);
+    write_all(&mut master, &[0x19, 0x13]);
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, replacement);
+    for request in server.join().unwrap() {
+        let header_end = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        let envelope: serde_json::Value = serde_json::from_slice(&request[header_end..]).unwrap();
+        let user: serde_json::Value =
+            serde_json::from_str(envelope["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(user["context"], original);
+        assert_eq!(user["replacement_allowed"], true);
+        assert!(user["file"].as_str().unwrap().ends_with("proposal.txt"));
+        assert!(
+            !String::from_utf8_lossy(&request).contains("unselected_synthetic_private_content")
+        );
+    }
+    assert!(!String::from_utf8_lossy(&captured).contains("synthetic-audit-key"));
+}
+
+#[test]
+fn release_binary_ai_stream_cancel_aborts_socket_and_late_result_cannot_overwrite_edit() {
+    use std::net::TcpListener;
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("cancel.txt");
+    fs::write(&file, "original_target\n").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    mock_ai_config(
+        home.path(),
+        "custom",
+        &format!("http://{}/chat", listener.local_addr().unwrap()),
+    );
+    let (cancelled_sender, cancelled_receiver) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let mut stream = accept_mock_request(&listener);
+        read_mock_http_request(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let prefix = "{\"summary\":\"streaming_pending\",\"replacement\":\"";
+        writeln!(
+            stream,
+            "data: {}\n",
+            serde_json::json!({"choices":[{"delta":{"content":prefix}}]})
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        cancelled_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        // The peer must close the active transport without waiting for a
+        // provider to finish generating. Then deliberately attempt late output.
+        let mut byte = [0u8; 1];
+        let closed = stream.read(&mut byte).unwrap() == 0;
+        let late = "late_provider_overwrite\\n\"}";
+        serde_json::from_str::<serde_json::Value>(&format!("{prefix}{late}")).unwrap();
+        let _ = writeln!(
+            stream,
+            "data: {}\n\ndata: [DONE]\n",
+            serde_json::json!({"choices":[{"delta":{"content":late},"finish_reason":"stop"}]})
+        );
+        closed
+    });
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    begin_selected_ai_request(&mut master, &mut captured, &mut queries);
+    write_all(&mut master, b"suggest a synthetic replacement\r");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "actual in-flight stream preview",
+        |screen| {
+            screen.contains("streaming_pending") && screen.contains("Esc cancels local transport")
+        },
+    );
+    write_all(&mut master, b"\x1b");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "explicit local transport cancellation",
+        |screen| screen.contains("AI local transport cancelled"),
+    );
+    cancelled_sender.send(()).unwrap();
+    write_all(
+        &mut master,
+        "\x1b[200~local edit 🙂\n\x1b[201~\x13".as_bytes(),
+    );
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &file,
+        "local edit 🙂\n",
+    );
+    assert!(
+        server.join().unwrap(),
+        "cancellation left provider socket open"
+    );
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(700),
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "local edit 🙂\n");
+    let screen = rendered_rows(&captured, (80, 24)).join("\n");
+    assert!(!screen.contains("Suggested change"));
+    assert!(!screen.contains("late_provider_overwrite"));
+    write_all(&mut master, &[0x1a, 0x13]);
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &file,
+        "original_target\n",
+    );
+    assert!(!String::from_utf8_lossy(&captured).contains("synthetic-audit-key"));
+}
+
+fn ask_shell_through_palette(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize) {
+    write_all(master, &[0x10]);
+    wait_for_screen_state(master, captured, queries, "command palette", |screen| {
+        screen.contains("Commands")
+    });
+    write_all(master, b"Ask AI for a shell command");
+    pump(master, captured, queries, Duration::from_millis(100));
+    write_all(master, b"\r");
+    wait_for_screen_state(master, captured, queries, "AI prompt", |screen| {
+        screen.contains("Describe the command") || screen.contains("Ask AI")
+    });
+    write_all(master, b"suggest a command\r");
+}
+
+fn smoke_binary() -> std::path::PathBuf {
+    std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into())
+}
+
+fn start_editor(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize) {
+    wait_for_startup(master, captured, queries);
+    pump(master, captured, queries, Duration::from_millis(200));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    parser.process(captured);
+    if parser.screen().contents().contains("Welcome to Mellow") {
+        write_all(master, b"\x1b");
+    }
+    wait_for_screen_state(
+        master,
+        captured,
+        queries,
+        "editing after onboarding",
+        |screen| !screen.contains("Welcome to Mellow") && screen.contains("Ln"),
+    );
+}
+
+fn palette_command(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize, name: &str) {
+    write_all(master, &[0x10]);
+    wait_for_screen_state(master, captured, queries, "palette", |screen| {
+        screen.contains("Commands")
+    });
+    write_all(master, name.as_bytes());
+    pump(master, captured, queries, Duration::from_millis(100));
+    write_all(master, b"\r");
+    pump(master, captured, queries, Duration::from_millis(150));
+}
+
+fn fixture_executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Synthetic clipboard adapters keep the host clipboard untouched while the
+/// executable still exercises its real subprocess/native-clipboard route.
+fn fixture_clipboard(root: &Path, text: &str) -> String {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let clipboard = root.join("clipboard.txt");
+    fs::write(&clipboard, text).unwrap();
+    for name in ["pbcopy", "wl-copy"] {
+        fixture_executable(
+            &bin.join(name),
+            &format!(
+                "printf invoked > '{}'; /bin/cat > '{}'",
+                root.join(format!("{name}.invoked")).display(),
+                clipboard.display()
+            ),
+        );
+    }
+    for name in ["pbpaste", "wl-paste"] {
+        fixture_executable(
+            &bin.join(name),
+            &format!(
+                "printf invoked > '{}'; /bin/cat '{}'",
+                root.join(format!("{name}.invoked")).display(),
+                clipboard.display()
+            ),
+        );
+    }
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    // Fail on a broken fixture rather than mistaking it for editor behavior.
+    for adapter in ["pbpaste", "pbcopy", "wl-paste", "wl-copy"] {
+        let status = std::process::Command::new(adapter)
+            .env("PATH", &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("could not start synthetic clipboard adapter");
+        assert!(status.success(), "synthetic clipboard adapter failed");
+        fs::remove_file(root.join(format!("{adapter}.invoked"))).unwrap();
+    }
+    fs::write(&clipboard, text).unwrap();
+    path
+}
+
+#[test]
+fn release_binary_unicode_multicursor_terminal_and_clipboard_paste_are_one_undo() {
+    for bracketed in [true, false] {
+        let workspace = tempdir().unwrap();
+        let home = tempdir().unwrap();
+        let file = workspace.path().join("multicursor.txt");
+        fs::write(&file, "aa\nbb\n").unwrap();
+        let path = fixture_clipboard(workspace.path(), "🦀e\u{301}");
+        let (_child, mut master) = spawn_mellow_with_env(
+            &smoke_binary(),
+            workspace.path(),
+            Some(&file),
+            home.path(),
+            (80, 24),
+            false,
+            &[("PATH", &path)],
+        );
+        let mut captured = Vec::new();
+        let mut queries = 0;
+        start_editor(&mut master, &mut captured, &mut queries);
+        palette_command(&mut master, &mut captured, &mut queries, "Add cursor below");
+        if bracketed {
+            write_all(&mut master, "\x1b[200~🦀e\u{301}\x1b[201~".as_bytes());
+        } else {
+            write_all(&mut master, &[0x16]); // Ctrl+V through the clipboard adapter.
+        }
+        wait_for_screen_state(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            "paste at both cursors",
+            |screen| {
+                screen.contains("🦀e\u{301}aa")
+                    && count_occurrences(screen.as_bytes(), "🦀e\u{301}".as_bytes()) == 2
+            },
+        );
+        write_all(&mut master, &[0x13]);
+        wait_for_saved_text(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            &file,
+            "🦀e\u{301}aa\n🦀e\u{301}bb\n",
+        );
+        write_all(&mut master, &[0x1a, 0x13]); // One Undo, then Save.
+        wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, "aa\nbb\n");
+        write_all(&mut master, &[0x19, 0x13]); // Redo restores all cursor edits.
+        wait_for_saved_text(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            &file,
+            "🦀e\u{301}aa\n🦀e\u{301}bb\n",
+        );
+    }
+}
+
+#[test]
+fn release_binary_rectangle_paste_distributes_rows_and_undo_restores_all() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("rectangle.txt");
+    fs::write(&file, "aa\nbb\n").unwrap();
+    let (_child, mut master) = spawn_mellow_with(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        (80, 24),
+        true,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    // Alt+Shift mouse drag is the supported rectangle gesture. Select one
+    // text column across the first two rows, using SGR modifier bits 4 + 8.
+    write_all(&mut master, b"\x1b[<12;5;3M\x1b[<44;6;4M\x1b[<12;6;4m");
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(150),
+    );
+    write_all(&mut master, "\x1b[200~🦀\n尾\x1b[201~".as_bytes());
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(150),
+    );
+    write_all(&mut master, &[0x13]);
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &file,
+        "🦀a\n尾b\n",
+    );
+    write_all(&mut master, &[0x1a, 0x13]);
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, "aa\nbb\n");
+}
+
+#[test]
+fn release_binary_linked_snippet_paste_and_restart_history_restore_are_undoable() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("snippet.py");
+    fs::write(&file, "").unwrap();
+    let (mut child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Insert snippet template",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "snippet picker",
+        |screen| screen.contains("Linked variable"),
+    );
+    write_all(&mut master, b"\x1b[B\x1b[B\x1b[B\r");
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(150),
+    );
+    write_all(
+        &mut master,
+        "\x1b[200~名字\x1b[201~\t\x1b[200~42\x1b[201~\t".as_bytes(),
+    );
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(150),
+    );
+    write_all(&mut master, &[0x13]);
+    let expected = "名字 = 42\nprint(名字)\n";
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, expected);
+    write_all(&mut master, &[0x11]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !child.try_reap() {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(50),
+        );
+        assert!(Instant::now() < deadline, "saved snippet could not quit");
+    }
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Local history / restore checkpoint",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "persistent checkpoints",
+        |screen| screen.contains("Private local history") && screen.contains("before-save"),
+    );
+    write_all(&mut master, b"\x1b[B\r"); // Restore pre-save empty file without writing it.
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "unsaved restored checkpoint",
+        |screen| screen.contains("Checkpoint restored"),
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), expected);
+    write_all(&mut master, &[0x1a, 0x13]);
+    wait_for_saved_text(&mut master, &mut captured, &mut queries, &file, expected);
+}
+
+fn trust_workspace(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize) {
+    palette_command(master, captured, queries, "Trust workspace execution");
+    wait_for_screen_state(
+        master,
+        captured,
+        queries,
+        "explicit trust review",
+        |screen| screen.contains("Press Enter to explicitly trust"),
+    );
+    write_all(master, b"\r");
+    wait_for_screen_state(master, captured, queries, "workspace trusted", |screen| {
+        screen.contains("Workspace trusted")
+    });
+}
+
+fn formatter_settings(home: &Path) {
+    let directory = home.join("config/mellow");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("settings.conf"), "format_on_save = true\n").unwrap();
+}
+
+#[test]
+fn release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases() {
+    use std::os::unix::fs::symlink;
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let initial = workspace.path().join("ordinary.txt");
+    fs::write(&initial, "ordinary\n").unwrap();
+    let direct = outside.path().join("external.py");
+    let aliased = outside.path().join("other.py");
+    let alias = workspace.path().join("alias.py");
+    fs::write(&direct, "direct_external\n").unwrap();
+    fs::write(&aliased, "aliased_external\n").unwrap();
+    symlink(&aliased, &alias).unwrap();
+    let lsp_marker = workspace.path().join("lsp-started");
+    let formatter_marker = workspace.path().join("formatter-started");
+    let lsp = workspace.path().join("dummy-lsp");
+    let formatter = workspace.path().join("dummy-formatter");
+    fixture_executable(
+        &lsp,
+        &format!(
+            "printf started > {}\n/bin/cat > /dev/null",
+            shell_quote(lsp_marker.to_str().unwrap())
+        ),
+    );
+    fixture_executable(
+        &formatter,
+        &format!(
+            "printf started > {}\n/bin/cat",
+            shell_quote(formatter_marker.to_str().unwrap())
+        ),
+    );
+    formatter_settings(home.path());
+    let lsp_program = lsp.to_string_lossy().into_owned();
+    let formatter_program = formatter.to_string_lossy().into_owned();
+    let (_child, mut master) = spawn_mellow_with_env(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&initial),
+        home.path(),
+        (80, 24),
+        false,
+        &[
+            ("MELLOW_LSP_PYTHON", &lsp_program),
+            ("MELLOW_FORMAT_PYTHON", &formatter_program),
+        ],
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    trust_workspace(&mut master, &mut captured, &mut queries);
+    for (open_path, disk_path, content) in [
+        (direct.as_path(), direct.as_path(), "direct_external"),
+        (alias.as_path(), aliased.as_path(), "aliased_external"),
+    ] {
+        write_all(&mut master, &[0x0f]);
+        wait_for_screen_state(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            "outside file picker",
+            |screen| screen.contains("Open file"),
+        );
+        write_all(&mut master, open_path.to_str().unwrap().as_bytes());
+        wait_for_screen_state(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            "complete explicit outside path echoed",
+            |screen| screen.contains(open_path.file_name().unwrap().to_str().unwrap()),
+        );
+        // Enter during asynchronous discovery explicitly asks the user to wait
+        // and try again. A symlink is intentionally absent from completion
+        // candidates, but its explicit path remains openable. Exercise that
+        // workflow without assuming the worker is ready after a fixed sleep.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let screen = rendered_rows(&captured, (80, 24)).join("\n");
+            if !screen.contains("Open file") {
+                assert!(
+                    screen.contains(content),
+                    "wrong outside file opened: {screen}"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "explicit outside path did not open: {screen}"
+            );
+            write_all(&mut master, b"\r");
+            pump(
+                &mut master,
+                &mut captured,
+                &mut queries,
+                Duration::from_millis(100),
+            );
+        }
+        write_all(&mut master, b"\x1b[200~edited_\x1b[201~\x13");
+        wait_for_saved_text(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            disk_path,
+            &format!("edited_{content}\n"),
+        );
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(350),
+        );
+        assert!(
+            !lsp_marker.exists(),
+            "trusted workspace launched LSP for outside path {}",
+            open_path.display()
+        );
+        assert!(
+            !formatter_marker.exists(),
+            "trusted workspace formatted outside path {}",
+            open_path.display()
+        );
+    }
+    // Positive controls prove both per-process overrides are executable and
+    // the trusted workspace is enabled, rather than accepting absent markers
+    // from a broken fixture or globally disabled execution.
+    let internal = workspace.path().join("internal.py");
+    fs::write(&internal, "internal_control\n").unwrap();
+    write_all(&mut master, &[0x0f]);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "inside file picker",
+        |screen| screen.contains("Open file"),
+    );
+    write_all(&mut master, b"./internal.py");
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(300),
+    );
+    write_all(&mut master, b"\r");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "inside file opened",
+        |screen| screen.contains("internal_control") && !screen.contains("Open file"),
+    );
+    wait_for_marker(&mut master, &mut captured, &mut queries, &lsp_marker);
+    write_all(&mut master, b"\x1b[200~edited_\x1b[201~\x13");
+    wait_for_marker(&mut master, &mut captured, &mut queries, &formatter_marker);
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &internal,
+        "edited_internal_control\n",
+    );
+}
+
+fn wait_for_marker(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize, marker: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !marker.exists() {
+        pump(master, captured, queries, Duration::from_millis(50));
+        assert!(Instant::now() < deadline, "formatter never started");
+    }
+}
+
+#[test]
+fn release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("format.sh");
+    fs::write(&file, "original\n").unwrap();
+    let formatter = workspace.path().join("formatter.sh");
+    let started = workspace.path().join("started");
+    fixture_executable(
+        &formatter,
+        &format!(
+            "printf started > '{}'\n/bin/sleep 2\nprintf 'FORMATTED\\n'",
+            started.display()
+        ),
+    );
+    formatter_settings(home.path());
+    let formatter_string = formatter.to_string_lossy().into_owned();
+    let (_child, mut master) = spawn_mellow_with_env(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        (80, 24),
+        false,
+        &[("MELLOW_FORMAT_SHELL", &formatter_string)],
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    trust_workspace(&mut master, &mut captured, &mut queries);
+    write_all(&mut master, b"\x1b[200~edited \x1b[201~\x13");
+    wait_for_marker(&mut master, &mut captured, &mut queries, &started);
+    write_all(&mut master, b"\x1b[200~LATE \x1b[201~");
+    let interaction = Instant::now();
+    write_all(&mut master, &[0x10]);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "palette during formatter",
+        |screen| screen.contains("Commands"),
+    );
+    assert!(
+        interaction.elapsed() < Duration::from_secs(1),
+        "formatter blocked palette input"
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "stale formatter rejected",
+        |screen| screen.contains("Formatting discarded"),
+    );
+    // Escape cancels a pending formatter too; close the palette after stale
+    // output has already been rejected so it cannot mask the stale check.
+    type_keys(&mut master, &mut captured, &mut queries, b"\x1b");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "original\n");
+    fs::remove_file(&started).unwrap();
+    write_all(&mut master, &[0x13]);
+    wait_for_marker(&mut master, &mut captured, &mut queries, &started);
+    write_all(&mut master, b"\x1b");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "cancelled formatter",
+        |screen| screen.contains("save cancelled"),
+    );
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(2300),
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "original\n",
+        "cancelled save wrote to disk"
+    );
+}
+
+#[test]
+fn release_binary_formatter_deadline_includes_descendants_holding_pipes() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("deadline.sh");
+    fs::write(&file, "original\n").unwrap();
+    let formatter = workspace.path().join("formatter.sh");
+    let escaped = workspace.path().join("descendant-escaped");
+    fixture_executable(
+        &formatter,
+        &format!(
+            "(/bin/sleep 13; printf escaped > '{}') &\nexit 0",
+            escaped.display()
+        ),
+    );
+    formatter_settings(home.path());
+    let formatter_string = formatter.to_string_lossy().into_owned();
+    let (_child, mut master) = spawn_mellow_with_env(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        (80, 24),
+        false,
+        &[("MELLOW_FORMAT_SHELL", &formatter_string)],
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    trust_workspace(&mut master, &mut captured, &mut queries);
+    let operation = Instant::now();
+    write_all(&mut master, b"\x1b[200~edited \x1b[201~\x13");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(100),
+        );
+        if fs::read_to_string(&file).is_ok_and(|text| text == "edited original\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "inherited formatter pipe outlived its deadline"
+        );
+    }
+    assert!(operation.elapsed() < Duration::from_secs(12));
+    let rows = rendered_rows(&captured, (80, 24));
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("timed out") || row.contains("deadline")),
+        "missing formatter failure disclosure: {rows:?}"
+    );
+    // Had the descendant escaped process-group cleanup, it would now write.
+    while operation.elapsed() < Duration::from_secs(14) {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(100),
+        );
+    }
+    assert!(
+        !escaped.exists(),
+        "formatter descendant survived timeout cleanup"
+    );
+}
+
+#[test]
+fn release_binary_safe_ai_shell_stays_in_review_copy_and_close_never_execute() {
+    use std::net::TcpListener;
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("shell-review.txt");
+    fs::write(&file, "unchanged\n").unwrap();
+    let path = fixture_clipboard(workspace.path(), "");
+    let marker = workspace.path().join("must-not-exist");
+    let suggestion = format!("printf audit > '{}'", marker.display());
+    let expected_clipboard = suggestion.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    mock_ai_config(
+        home.path(),
+        "custom",
+        &format!("http://{}/chat", listener.local_addr().unwrap()),
+    );
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "mock provider received no request"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("mock provider: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0u8; 16384];
+        let _ = stream.read(&mut request).unwrap();
+        let body = serde_json::json!({"choices":[{"message":{"content":suggestion}}]}).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let (_child, mut master) = spawn_mellow_with_env(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        (80, 24),
+        false,
+        &[("PATH", &path)],
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    // An existing shell with a partial command must never receive the answer.
+    write_all(&mut master, &[0x14]);
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(250),
+    );
+    write_all(&mut master, b"printf partial");
+    write_all(&mut master, &[0x14]);
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(150),
+    );
+    ask_shell_through_palette(&mut master, &mut captured, &mut queries);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "shell read-only review",
+        |screen| screen.contains("printf audit") && screen.contains("copy answer"),
+    );
+    server.join().unwrap();
+    assert!(!marker.exists());
+    write_all(&mut master, b"c");
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &workspace.path().join("clipboard.txt"),
+        &expected_clipboard,
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("clipboard.txt")).unwrap(),
+        expected_clipboard,
+        "copy fixture called={}; screen={:?}",
+        workspace.path().join("pbcopy.invoked").exists(),
+        rendered_rows(&captured, (80, 24))
+    );
+    assert!(!marker.exists(), "copy action executed shell suggestion");
+    write_all(&mut master, b"\r");
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(300),
+    );
+    assert!(!marker.exists(), "close action executed shell suggestion");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "unchanged\n");
+}
+
+#[test]
+fn release_binary_save_all_multiple_files_and_navigation_back_forward() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let first = workspace.path().join("first.txt");
+    let second = workspace.path().join("second.txt");
+    fs::write(&first, "first\n").unwrap();
+    fs::write(&second, "second\n").unwrap();
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&first), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    write_all(&mut master, b"\x1b[200~A \x1b[201~\x0f");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "open file picker",
+        |screen| screen.contains("Open file"),
+    );
+    write_all(&mut master, b"./second.txt");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "resolved second file path",
+        |screen| count_occurrences(screen.as_bytes(), b"second.txt") >= 2,
+    );
+    write_all(&mut master, b"\r");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "second buffer opened",
+        |screen| screen.contains("1 │ second"),
+    );
+    write_all(&mut master, b"\x1b[200~B \x1b[201~");
+    palette_command(&mut master, &mut captured, &mut queries, "Save All files");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "two dirty file review",
+        |screen| {
+            screen.contains("2 dirty files")
+                && screen.contains("first.txt")
+                && screen.contains("second.txt")
+        },
+    );
+    assert_eq!(fs::read_to_string(&first).unwrap(), "first\n");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "second\n");
+    write_all(&mut master, b"\r");
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &first,
+        "A first\n",
+    );
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &second,
+        "B second\n",
+    );
+    palette_command(&mut master, &mut captured, &mut queries, "Go to line");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "line navigation",
+        |screen| screen.contains("Go to line"),
+    );
+    write_all(&mut master, b"2\r");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "line two",
+        |screen| screen.contains("Ln 2, Col 1"),
+    );
+    palette_command(&mut master, &mut captured, &mut queries, "Navigation back");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "previous caret",
+        |screen| screen.contains("Ln 1, Col 3"),
+    );
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Navigation forward",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "forward caret",
+        |screen| screen.contains("Ln 2, Col 1"),
+    );
+}
+
+#[test]
+fn release_binary_terminal_doctor_omits_paste_contents_and_config_review_does_not_save() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("config.json");
+    fs::write(&file, "{\"spec\":{\"replicas\":1}}\n").unwrap();
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Terminal Doctor / key recorder",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "terminal diagnostics",
+        |screen| screen.contains("Terminal Doctor") && screen.contains("Keyboard:"),
+    );
+    write_all(
+        &mut master,
+        b"\x0f\x1b[200~synthetic-private-paste-4937\x1b[201~",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "recorded delivered paste",
+        |screen| screen.contains("Delivered bracketed paste") && screen.contains("content omitted"),
+    );
+    assert!(
+        !String::from_utf8_lossy(&captured).contains("synthetic-private-paste-4937"),
+        "diagnostics retained pasted content"
+    );
+    write_all(&mut master, b"\x1b");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "editor after doctor",
+        |screen| !screen.contains("Terminal Doctor"),
+    );
+    write_all(
+        &mut master,
+        b"\x01\x1b[200~{\"spec\":{\"replicas\":3},\"token\":\"synthetic-secret-719\"}\n\x1b[201~",
+    );
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Safe configuration change",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "semantic configuration review",
+        |screen| screen.contains("spec.replicas") && screen.contains("[redacted]"),
+    );
+    let rows = rendered_rows(&captured, (80, 24));
+    assert!(
+        !rows.iter().any(|row| row.contains("synthetic-secret-719")),
+        "semantic review disclosed a secret value"
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "{\"spec\":{\"replicas\":1}}\n",
+        "review saved without explicit action"
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x1b");
+    write_all(&mut master, b"\x01\x1b[200~{\"a\":1,\"a\":2}\x1b[201~");
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Safe configuration change",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "duplicate keys rejected",
+        |screen| screen.contains("Configuration validation failed"),
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "{\"spec\":{\"replicas\":1}}\n"
+    );
+}
+
+#[test]
+fn release_binary_cli_multifile_goto_wait_reaches_the_requested_caret() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let first = workspace.path().join("first.txt");
+    let second = workspace.path().join("second.txt");
+    fs::write(&first, "first\nrow\n").unwrap();
+    fs::write(&second, "second\n").unwrap();
+    let launcher = workspace.path().join("launch-cli.sh");
+    fixture_executable(
+        &launcher,
+        &format!(
+            "exec {} --wait --no-mouse --goto {} {}",
+            shell_quote(&smoke_binary().to_string_lossy()),
+            shell_quote(&format!("{}:2:2", first.display())),
+            shell_quote(&second.to_string_lossy())
+        ),
+    );
+    let (mut child, mut master) = spawn_mellow(&launcher, workspace.path(), None, home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "both CLI files and requested location",
+        |screen| {
+            screen.contains("first.txt")
+                && screen.contains("second.txt")
+                && screen.contains("Ln 2, Col 2")
+        },
+    );
+    assert!(!child.try_reap(), "--wait returned before editing finished");
+    write_all(&mut master, "\x1b[200~🦀\x1b[201~\x13".as_bytes());
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &first,
+        "first\nr🦀ow\n",
+    );
+    write_all(&mut master, b"\x1b[6;5~");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "second CLI buffer",
+        |screen| screen.contains("1 │ second"),
+    );
+    assert_eq!(fs::read_to_string(&second).unwrap(), "second\n");
+    write_all(&mut master, &[0x11]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !child.try_reap() {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(50),
+        );
+        assert!(
+            Instant::now() < deadline,
+            "--wait did not return after quitting"
+        );
+    }
+}
+
+#[test]
+fn release_binary_cli_piped_stdin_retains_interactive_terminal_and_saves_draft() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let launcher = workspace.path().join("launch-stdin.sh");
+    let content = "stdin 🦀\nsecond line\n";
+    fixture_executable(
+        &launcher,
+        &format!(
+            "printf '%s' {} | {} --wait --no-mouse -",
+            shell_quote(content),
+            shell_quote(&smoke_binary().to_string_lossy())
+        ),
+    );
+    let (_child, mut master) = spawn_mellow(&launcher, workspace.path(), None, home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "stdin draft in interactive editor",
+        |screen| screen.contains("stdin 🦀") && screen.contains("Untitled"),
+    );
+    write_all(&mut master, &[0x13]);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "stdin Save As prompt",
+        |screen| screen.contains("Save as") || screen.contains("Save As"),
+    );
+    write_all(&mut master, b"\r");
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &workspace.path().join("untitled.txt"),
+        content,
+    );
+}
+
+#[test]
+fn release_binary_slow_clipboard_keeps_palette_responsive_and_discards_stale_paste() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("clipboard-stale.txt");
+    fs::write(&file, "original\n").unwrap();
+    let path = fixture_clipboard(workspace.path(), "late clipboard");
+    let started = workspace.path().join("clipboard-started");
+    for adapter in ["pbpaste", "wl-paste"] {
+        fixture_executable(
+            &workspace.path().join("bin").join(adapter),
+            &format!(
+                "printf started > {}\n/bin/sleep 0.8\nprintf 'late clipboard'",
+                shell_quote(&started.to_string_lossy())
+            ),
+        );
+    }
+    let (_child, mut master) = spawn_mellow_with_env(
+        &smoke_binary(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+        (80, 24),
+        false,
+        &[("PATH", &path)],
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+    write_all(&mut master, &[0x16]);
+    wait_for_marker(&mut master, &mut captured, &mut queries, &started);
+    write_all(&mut master, b"\x1b[200~new edit \x1b[201~");
+    let interaction = Instant::now();
+    write_all(&mut master, &[0x10]);
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "palette during clipboard read",
+        |screen| screen.contains("Commands"),
+    );
+    assert!(
+        interaction.elapsed() < Duration::from_millis(600),
+        "clipboard blocked editor interaction"
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "stale clipboard discarded",
+        |screen| screen.contains("Clipboard result discarded"),
+    );
+    type_keys(&mut master, &mut captured, &mut queries, b"\x1b");
+    write_all(&mut master, &[0x13]);
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &file,
+        "new edit original\n",
+    );
+}
+
+#[test]
+fn release_binary_rejects_hostile_ai_shell_before_terminal_input() {
+    use std::net::TcpListener;
+    let binary = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("shell-safety.txt");
+    fs::write(&file, "shell safety fixture").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    mock_ai_config(home.path(), "custom", &format!("http://{address}/chat"));
+    let marker = workspace.path().join("must-not-exist");
+    let hostile = format!("printf audit > '{}'\r# no explicit Enter", marker.display());
+    let server = std::thread::spawn(move || {
+        let mut stream = accept_mock_request(&listener);
+        let mut request = [0u8; 16384];
+        let _ = stream.read(&mut request).unwrap();
+        let body = serde_json::json!({"choices":[{"message":{"content":hostile}}]}).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let (_child, mut master) = spawn_mellow(&binary, workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "onboarding",
+        |screen| screen.contains("Welcome to Mellow"),
+    );
+    write_all(&mut master, b"\x1b");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "editor",
+        |screen| screen.contains("shell safety fixture") && !screen.contains("Welcome to Mellow"),
+    );
+    write_all(&mut master, &[0x14]); // Start a real shell, then return to editor.
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(200),
+    );
+    write_all(&mut master, &[0x14]);
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(100),
+    );
+    ask_shell_through_palette(&mut master, &mut captured, &mut queries);
+    // Collect the actual execution evidence before checking the rejection UI.
+    // The published vulnerable artifact must fail because it creates a marker,
+    // not merely because it lacks this candidate's new status message.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut refused = false;
+    while Instant::now() < deadline {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(100),
+        );
+        refused = rendered_rows(&captured, (80, 24))
+            .iter()
+            .any(|row| row.contains("Control bytes refused"));
+        if marker.exists() || refused {
+            break;
+        }
+    }
+    assert!(
+        !marker.exists(),
+        "AI response executed before a separate user action: synthetic marker exists"
+    );
+    assert!(
+        refused,
+        "terminal controls were not explicitly refused; marker=false"
+    );
+    server.join().unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), "shell safety fixture");
+}
+
+#[test]
+fn release_binary_claude_redirect_never_contacts_key_target() {
+    use std::net::TcpListener;
+    let binary = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("redirect-safety.txt");
+    fs::write(&file, "redirect safety fixture").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let target_port = target.local_addr().unwrap().port();
+    let source = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = source.local_addr().unwrap();
+    mock_ai_config(
+        home.path(),
+        "claude",
+        &format!("http://{address}/v1/messages"),
+    );
+    let server = std::thread::spawn(move || {
+        let mut stream = accept_mock_request(&source);
+        let mut request = [0u8; 16384];
+        let read = stream.read(&mut request).unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..read]).contains("x-api-key: synthetic-audit-key")
+        );
+        write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://localhost:{target_port}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let (_child, mut master) = spawn_mellow(&binary, workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "onboarding",
+        |screen| screen.contains("Welcome to Mellow"),
+    );
+    write_all(&mut master, b"\x1b");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "editor",
+        |screen| {
+            screen.contains("redirect safety fixture") && !screen.contains("Welcome to Mellow")
+        },
+    );
+    ask_shell_through_palette(&mut master, &mut captured, &mut queries);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rejected = false;
+    let mut redirected = false;
+    let mut forwarded_key = false;
+    while Instant::now() < deadline {
+        pump(
+            &mut master,
+            &mut captured,
+            &mut queries,
+            Duration::from_millis(100),
+        );
+        match target.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                redirected = true;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut request = [0u8; 16384];
+                let read = stream.read(&mut request).unwrap();
+                forwarded_key =
+                    String::from_utf8_lossy(&request[..read]).contains("synthetic-audit-key");
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("redirect target failed: {error}"),
+        }
+        rejected = rendered_rows(&captured, (80, 24))
+            .iter()
+            .any(|row| row.contains("307") || row.contains("Temporary Redirect"));
+        if rejected {
+            break;
+        }
+    }
+    assert!(
+        !redirected,
+        "redirect destination received a request; synthetic API key forwarded={forwarded_key}"
+    );
+    assert!(
+        rejected,
+        "provider redirect was not explicitly rejected; target_requests=0"
+    );
+    server.join().unwrap();
+    assert!(!String::from_utf8_lossy(&captured).contains("synthetic-audit-key"));
 }

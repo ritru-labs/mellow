@@ -1,7 +1,14 @@
 use std::{
     collections::HashSet,
     fs,
+    io::Read,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -14,6 +21,136 @@ pub struct ExplorerEntry {
     pub path: PathBuf,
     pub depth: usize,
     pub is_dir: bool,
+}
+
+pub struct QuickOpenUpdate {
+    pub generation: u64,
+    pub query: String,
+    pub result: std::result::Result<Vec<PathBuf>, String>,
+    pub truncated: bool,
+}
+struct QuickOpenJob {
+    generation: u64,
+    root: PathBuf,
+    query: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+pub struct QuickOpenWorker {
+    jobs: Sender<QuickOpenJob>,
+    updates: Receiver<QuickOpenUpdate>,
+    generation: u64,
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+impl Default for QuickOpenWorker {
+    fn default() -> Self {
+        let (jobs, pending) = mpsc::channel::<QuickOpenJob>();
+        let (results, updates) = mpsc::sync_channel(4);
+        std::thread::Builder::new()
+            .name("mellow-quick-open".to_owned())
+            .spawn(move || {
+                let mut cached: Option<(PathBuf, FileList)> = None;
+                while let Ok(mut job) = pending.recv() {
+                    for newer in pending.try_iter() {
+                        job = newer;
+                    }
+                    if job.cancelled.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let explicit = job.query.starts_with('/')
+                        || job.query.starts_with("./")
+                        || job.query.starts_with("../")
+                        || job.query.starts_with("~/");
+                    let mut truncated = false;
+                    let result = if explicit {
+                        path_completions(&job.root, &job.query, 64)
+                            .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+                    } else {
+                        if job.query.is_empty()
+                            || cached.as_ref().is_none_or(|(root, _)| *root != job.root)
+                        {
+                            match discover_file_list_cancellable(
+                                &job.root,
+                                DEFAULT_LIMIT,
+                                &job.cancelled,
+                            ) {
+                                Ok(list) => cached = Some((job.root.clone(), list)),
+                                Err(error) => {
+                                    if !job.cancelled.load(Ordering::Relaxed) {
+                                        let _ = results.try_send(QuickOpenUpdate {
+                                            generation: job.generation,
+                                            query: job.query,
+                                            result: Err(error.to_string()),
+                                            truncated: false,
+                                        });
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        let list = &cached.as_ref().expect("discovery cache").1;
+                        truncated = list.truncated;
+                        Ok(list.files.clone())
+                    }
+                    .map_err(|error| error.to_string());
+                    let mut update = QuickOpenUpdate {
+                        generation: job.generation,
+                        query: job.query,
+                        result,
+                        truncated,
+                    };
+                    while !job.cancelled.load(Ordering::Relaxed) {
+                        match results.try_send(update) {
+                            Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => break,
+                            Err(mpsc::TrySendError::Full(value)) => {
+                                update = value;
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("start Quick Open worker");
+        Self {
+            jobs,
+            updates,
+            generation: 0,
+            cancelled: None,
+        }
+    }
+}
+
+impl QuickOpenWorker {
+    pub fn submit(&mut self, root: PathBuf, query: String) -> u64 {
+        self.cancel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.cancelled = Some(Arc::clone(&cancelled));
+        let _ = self.jobs.send(QuickOpenJob {
+            generation: self.generation,
+            root,
+            query,
+            cancelled,
+        });
+        self.generation
+    }
+    pub fn cancel(&mut self) {
+        if let Some(cancelled) = self.cancelled.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.generation = self.generation.wrapping_add(1);
+    }
+    pub fn poll(&self) -> Vec<QuickOpenUpdate> {
+        self.updates
+            .try_iter()
+            .filter(|update| update.generation == self.generation)
+            .collect()
+    }
+}
+impl Drop for QuickOpenWorker {
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
 
 pub fn discover_tree(root: &Path, expanded: &HashSet<PathBuf>) -> Result<Vec<ExplorerEntry>> {
@@ -90,6 +227,7 @@ fn visit_tree(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn discover_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(discover_file_list(root)?.files)
 }
@@ -105,46 +243,235 @@ pub struct FileList {
 /// Lists project files. Inside a Git repository this honours .gitignore
 /// (tracked plus untracked, non-ignored files); elsewhere it walks the tree
 /// skipping heavy internal folders.
+#[cfg(test)]
 pub fn discover_file_list(root: &Path) -> Result<FileList> {
-    if let Some(list) = git_file_list(root, DEFAULT_LIMIT) {
+    discover_file_list_cancellable(root, DEFAULT_LIMIT, &AtomicBool::new(false))
+}
+
+pub fn discover_file_list_cancellable(
+    root: &Path,
+    limit: usize,
+    cancelled: &AtomicBool,
+) -> Result<FileList> {
+    if cancelled.load(Ordering::Relaxed) {
+        anyhow::bail!("file discovery cancelled");
+    }
+    if let Some(list) = git_file_list_cancellable(root, limit, cancelled)? {
         return Ok(list);
     }
-    let mut files = discover_files_with_limit(root, DEFAULT_LIMIT + 1)?;
-    let truncated = files.len() > DEFAULT_LIMIT;
-    files.truncate(DEFAULT_LIMIT);
+    let mut files = Vec::new();
+    let mut truncated = false;
+    visit_cancellable(root, root, 0, limit, cancelled, &mut files, &mut truncated)?;
+    files.sort();
+    files.dedup();
+    truncated |= files.len() > limit;
+    files.truncate(limit);
     Ok(FileList { files, truncated })
 }
 
-fn git_file_list(root: &Path, limit: usize) -> Option<FileList> {
-    let output = crate::git::git_command(root)
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+#[cfg(unix)]
+struct DiscoveryProcess(std::process::Child);
+#[cfg(unix)]
+impl Drop for DiscoveryProcess {
+    fn drop(&mut self) {
+        // git_command starts an isolated session, so inherited stdout holders
+        // and Git's descendants are cancelled together.
+        unsafe {
+            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
-    let mut files: Vec<PathBuf> = output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| PathBuf::from(String::from_utf8_lossy(entry).into_owned()))
-        // Deleted-but-tracked files are still listed by --cached.
-        .filter(|path| root.join(path).is_file())
-        .collect();
-    files.sort();
-    files.dedup();
-    let truncated = files.len() > limit;
-    files.truncate(limit);
-    Some(FileList { files, truncated })
 }
 
+#[cfg(unix)]
+fn git_file_list_cancellable(
+    root: &Path,
+    limit: usize,
+    cancelled: &AtomicBool,
+) -> Result<Option<FileList>> {
+    let mut command = crate::git::git_command(root);
+    command.args([
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ]);
+    read_file_list_command(root, limit, cancelled, command, Duration::from_secs(10))
+}
+
+#[cfg(unix)]
+fn read_file_list_command(
+    root: &Path,
+    limit: usize,
+    cancelled: &AtomicBool,
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> Result<Option<FileList>> {
+    use std::os::{unix::ffi::OsStringExt, unix::io::AsRawFd};
+    let Ok(child) = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return Ok(None);
+    };
+    let mut process = DiscoveryProcess(child);
+    let mut stdout = process.0.stdout.take().expect("piped discovery stdout");
+    let fd = stdout.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let deadline = Instant::now() + timeout;
+    let mut bytes = Vec::new();
+    let mut files = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut consumed = 0usize;
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!("file discovery cancelled");
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "Git file discovery exceeded its {} ms deadline (including inherited pipes)",
+                timeout.as_millis()
+            );
+        }
+        match stdout.read(&mut chunk) {
+            Ok(0) => {
+                if let Some(status) = process.0.try_wait()? {
+                    if !status.success() {
+                        return Ok(None);
+                    }
+                    files.sort();
+                    files.dedup();
+                    return Ok(Some(FileList {
+                        files,
+                        truncated: false,
+                    }));
+                }
+            }
+            Ok(count) => {
+                bytes.extend_from_slice(&chunk[..count]);
+                let mut start = 0;
+                while let Some(end) = bytes[start..]
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .map(|end| start + end)
+                {
+                    consumed += end + 1 - start;
+                    if end != start {
+                        let path =
+                            PathBuf::from(std::ffi::OsString::from_vec(bytes[start..end].to_vec()));
+                        if root.join(&path).is_file() {
+                            files.push(path);
+                        }
+                    }
+                    start = end + 1;
+                    if files.len() > limit || consumed > 8 * 1024 * 1024 {
+                        files.sort();
+                        files.dedup();
+                        files.truncate(limit);
+                        return Ok(Some(FileList {
+                            files,
+                            truncated: true,
+                        }));
+                    }
+                }
+                bytes.drain(..start);
+                if bytes.len() > 64 * 1024 {
+                    anyhow::bail!("Git file discovery sent an oversized path");
+                }
+                continue;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[cfg(not(unix))]
+fn git_file_list_cancellable(
+    _root: &Path,
+    _limit: usize,
+    _cancelled: &AtomicBool,
+) -> Result<Option<FileList>> {
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_cancellable(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    limit: usize,
+    cancelled: &AtomicBool,
+    files: &mut Vec<PathBuf>,
+    truncated: &mut bool,
+) -> Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        anyhow::bail!("file discovery cancelled");
+    }
+    if files.len() > limit {
+        *truncated = true;
+        return Ok(());
+    }
+    if depth > MAX_DEPTH {
+        *truncated = true;
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) if depth > 0 => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let entry_limit = limit.saturating_mul(4).max(4_096);
+    let mut ordered = Vec::new();
+    for entry in entries {
+        if cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!("file discovery cancelled");
+        }
+        if ordered.len() >= entry_limit {
+            *truncated = true;
+            break;
+        }
+        if let Ok(entry) = entry {
+            ordered.push(entry);
+        }
+    }
+    ordered.sort_by_key(|entry| entry.file_name());
+    for entry in ordered {
+        if cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!("file discovery cancelled");
+        }
+        if files.len() > limit {
+            *truncated = true;
+            break;
+        }
+        if should_skip_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            visit_cancellable(root, &path, depth + 1, limit, cancelled, files, truncated)?;
+        } else if kind.is_file()
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            files.push(relative.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub fn discover_files_with_limit(root: &Path, limit: usize) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     visit(root, root, 0, limit, &mut files)?;
@@ -152,6 +479,7 @@ pub fn discover_files_with_limit(root: &Path, limit: usize) -> Result<Vec<PathBu
     Ok(files)
 }
 
+#[cfg(test)]
 fn visit(
     root: &Path,
     dir: &Path,
@@ -473,6 +801,66 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn f08_quick_open_worker_drops_old_queries_and_completes_explicit_paths() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("alpha.txt"), "").unwrap();
+        let mut worker = QuickOpenWorker::default();
+        worker.submit(dir.path().to_path_buf(), "older".to_owned());
+        let generation = worker.submit(dir.path().to_path_buf(), "./al".to_owned());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(update) = worker.poll().into_iter().next() {
+                assert_eq!(update.generation, generation);
+                assert_eq!(update.query, "./al");
+                assert_eq!(update.result.unwrap(), vec![PathBuf::from("./alpha.txt")]);
+                worker.cancel();
+                assert!(worker.poll().is_empty());
+                return;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f08_discovery_deadline_covers_descendant_inherited_stdout() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempdir().unwrap();
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & exit 0"]);
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let start = Instant::now();
+        let error = read_file_list_command(
+            dir.path(),
+            5,
+            &AtomicBool::new(false),
+            command,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("inherited pipes"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn f08_file_discovery_is_cancelled_before_any_work_and_reports_truncation() {
+        let dir = tempdir().unwrap();
+        assert!(discover_file_list_cancellable(dir.path(), 2, &AtomicBool::new(true)).is_err());
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        let list = discover_file_list_cancellable(dir.path(), 2, &AtomicBool::new(false)).unwrap();
+        assert_eq!(list.files.len(), 2);
+        assert!(list.truncated);
     }
 
     #[test]

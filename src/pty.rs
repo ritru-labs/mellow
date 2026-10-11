@@ -15,6 +15,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 const SCROLLBACK_LINES: usize = 10_000;
+// Terminal output is polled on the editor loop. A continuously writing job
+// must yield so keyboard, cancellation and rendering receive their next turn.
+const MAX_READ_BYTES_PER_TICK: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalColor {
@@ -60,6 +63,11 @@ impl PtySession {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "/bin/sh".into());
         Self::spawn_program(id, Path::new(&shell), &["-i"], cwd, cols, rows)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_test_shell(id: usize, cwd: &Path) -> Result<Self> {
+        Self::spawn_program(id, Path::new("/bin/sh"), &["-i"], cwd, 80, 24)
     }
 
     fn spawn_program(
@@ -243,7 +251,7 @@ impl PtySession {
 
     pub fn read_available(&mut self) -> Result<usize> {
         let mut total = 0usize;
-        loop {
+        while total < MAX_READ_BYTES_PER_TICK {
             let mut poll_fd = libc::pollfd {
                 fd: self.master.as_raw_fd(),
                 events: libc::POLLIN,
@@ -258,7 +266,8 @@ impl PtySession {
             }
 
             let mut buffer = [0u8; 4096];
-            match self.master.read(&mut buffer) {
+            let remaining = (MAX_READ_BYTES_PER_TICK - total).min(buffer.len());
+            match self.master.read(&mut buffer[..remaining]) {
                 Ok(0) => {
                     self.exited = true;
                     break;
@@ -915,6 +924,34 @@ mod tests {
         assert!(
             text.contains("AFTER_INTERRUPT"),
             "shell did not recover after Ctrl+C: {text:?}"
+        );
+    }
+
+    #[test]
+    fn continuously_writing_terminal_job_yields_to_editor_input() {
+        let dir = tempdir().unwrap();
+        // The fixture stops itself after two seconds even if the old
+        // unbounded reader is under test, so a regression fails without hanging.
+        let mut session = PtySession::spawn_program(
+            4,
+            Path::new("/bin/sh"),
+            &["-c", "yes terminal-output & writer=$!; sleep 2; kill \"$writer\"; wait \"$writer\" 2>/dev/null"],
+            dir.path(), 80, 24,
+        ).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let started = Instant::now();
+        let read = session.read_available().unwrap();
+        assert!(
+            read > 0,
+            "continuous-output fixture produced no terminal data"
+        );
+        assert!(
+            read <= MAX_READ_BYTES_PER_TICK,
+            "a terminal job monopolized the input turn"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "terminal output starved editor input"
         );
     }
 }

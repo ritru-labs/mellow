@@ -19,6 +19,11 @@ pub struct EditorSettings {
     pub copy_on_select: bool,
     /// Run the language's formatter (rustfmt, ruff, shfmt...) when saving.
     pub format_on_save: bool,
+    pub history_enabled: bool,
+    pub indent_width: usize,
+    pub ai_max_requests: u32,
+    pub ai_max_output_tokens: u32,
+    pub ai_session_token_budget: u64,
 }
 
 impl Default for EditorSettings {
@@ -34,6 +39,11 @@ impl Default for EditorSettings {
             copy_on_select: false,
             // Never reformat someone's files unless they ask for it.
             format_on_save: false,
+            history_enabled: true,
+            indent_width: 4,
+            ai_max_requests: 20,
+            ai_max_output_tokens: 4096,
+            ai_session_token_budget: 100_000,
         }
     }
 }
@@ -89,6 +99,35 @@ pub fn load_from(path: &Path) -> Result<EditorSettings> {
             "explorer_visible" => settings.explorer_visible = parse_bool(path, index, value)?,
             "auto_completion" => settings.auto_completion = parse_bool(path, index, value)?,
             "copy_on_select" => settings.copy_on_select = parse_bool(path, index, value)?,
+            "history_enabled" => settings.history_enabled = parse_bool(path, index, value)?,
+            "ai_max_requests" => {
+                settings.ai_max_requests = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (1..=1000).contains(n))
+                    .context("ai_max_requests must be 1 through 1000")?
+            }
+            "ai_max_output_tokens" => {
+                settings.ai_max_output_tokens = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (1..=16000).contains(n))
+                    .context("ai_max_output_tokens must be 1 through 16000")?
+            }
+            "ai_session_token_budget" => {
+                settings.ai_session_token_budget = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| (1..=10_000_000).contains(n))
+                    .context("ai_session_token_budget must be 1 through 10000000")?
+            }
+            "indent_width" => {
+                settings.indent_width = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=8).contains(n))
+                    .context("indent_width must be 1 through 8")?;
+            }
             "format_on_save" => settings.format_on_save = parse_bool(path, index, value)?,
             _ => anyhow::bail!("{}:{} unknown setting '{}'", path.display(), index + 1, key),
         }
@@ -101,7 +140,7 @@ pub fn write(settings: EditorSettings) -> Result<PathBuf> {
     let parent = path.parent().context("settings path has no parent")?;
     fs::create_dir_all(parent)?;
     let text = format!(
-        "theme = {}\nword_wrap = {}\nshow_whitespace = {}\nshow_indent_guides = {}\nexplorer_visible = {}\nauto_completion = {}\ncopy_on_select = {}\nformat_on_save = {}\n",
+        "theme = {}\nword_wrap = {}\nshow_whitespace = {}\nshow_indent_guides = {}\nexplorer_visible = {}\nauto_completion = {}\ncopy_on_select = {}\nformat_on_save = {}\nhistory_enabled = {}\nindent_width = {}\nai_max_requests = {}\nai_max_output_tokens = {}\nai_session_token_budget = {}\n",
         settings.theme_preset.config_name(),
         settings.word_wrap,
         settings.show_whitespace,
@@ -110,6 +149,11 @@ pub fn write(settings: EditorSettings) -> Result<PathBuf> {
         settings.auto_completion,
         settings.copy_on_select,
         settings.format_on_save,
+        settings.history_enabled,
+        settings.indent_width,
+        settings.ai_max_requests,
+        settings.ai_max_output_tokens,
+        settings.ai_session_token_budget,
     );
     let temp = parent.join(format!(".settings-{}.tmp", std::process::id()));
     let mut options = OpenOptions::new();
@@ -195,6 +239,101 @@ pub fn config_root() -> PathBuf {
 /// Sessions, recovery journals and first-run state (`~/.local/state/mellow`).
 pub fn state_root() -> PathBuf {
     state_base().join(crate::brand::DIR_NAME)
+}
+
+/// Resolve indentation from outer to inner EditorConfig files. Unknown keys
+/// are left alone; malformed or unsupported glob expressions never match.
+pub fn project_indentation(path: &Path) -> (Option<usize>, Option<bool>) {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut configs = Vec::new();
+    let mut parent = absolute.parent();
+    while let Some(dir) = parent {
+        if let Ok(text) = fs::read_to_string(dir.join(".editorconfig")) {
+            let root = text
+                .lines()
+                .take_while(|l| !l.trim().starts_with('['))
+                .any(|l| {
+                    l.split_once('=')
+                        .is_some_and(|(k, v)| k.trim() == "root" && v.trim() == "true")
+                });
+            configs.push((dir.to_path_buf(), text));
+            if root {
+                break;
+            }
+        }
+        parent = dir.parent();
+    }
+    let mut width = None;
+    let mut tabs = None;
+    for (dir, text) in configs.into_iter().rev() {
+        let relative = absolute
+            .strip_prefix(&dir)
+            .unwrap_or(&absolute)
+            .to_string_lossy();
+        let mut applies = false;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.starts_with('#') || line.starts_with(';') {
+                continue;
+            }
+            if let Some(pattern) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                applies = editorconfig_matches(pattern, &relative);
+                continue;
+            }
+            if !applies {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match (key.trim(), value.trim()) {
+                ("indent_style", "tab") => tabs = Some(true),
+                ("indent_style", "space") => tabs = Some(false),
+                ("indent_style", "unset") => tabs = None,
+                ("indent_size" | "tab_width", "unset") => width = None,
+                ("indent_size" | "tab_width", value) => {
+                    if let Ok(n) = value.parse::<usize>()
+                        && (1..=8).contains(&n)
+                    {
+                        width = Some(n);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (width, tabs)
+}
+
+fn editorconfig_matches(pattern: &str, relative: &str) -> bool {
+    let target = if pattern.contains('/') {
+        relative
+    } else {
+        relative.rsplit('/').next().unwrap_or(relative)
+    };
+    let pattern = pattern.trim_start_matches('/');
+    let mut re = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                re.push_str(".*");
+            }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '{' => re.push_str("(?:"),
+            '}' => re.push(')'),
+            ',' => re.push('|'),
+            _ => re.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re).is_ok_and(|r| r.is_match(target))
 }
 
 fn parse_bool(path: &Path, index: usize, value: &str) -> Result<bool> {

@@ -1,6 +1,31 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Save,
+    SaveAll,
+    RestoreTrash,
+    AiUsage,
+    KeyboardBindings,
+    CloseAll,
+    CloseOthers,
+    ExplorerNewFile,
+    ExplorerNewDirectory,
+    ExplorerRename,
+    ExplorerDelete,
+    SelectNextOccurrence,
+    SelectAllOccurrences,
+    NavigateBack,
+    NavigateForward,
+    CycleIndentWidth,
+    WorkspaceSymbols,
+    TrustWorkspace,
+    RevokeWorkspaceTrust,
+    LocalHistory,
+    CompareDisk,
+    InsertSnippet,
+    RunTask,
+    TerminalDoctor,
+    SafeConfigChange,
+
     SaveAs,
     NewFile,
     OpenFile,
@@ -128,6 +153,27 @@ impl Command {
         matches!(
             self,
             Self::Save
+                | Self::SaveAll
+                | Self::CloseAll
+                | Self::CloseOthers
+                | Self::ExplorerNewFile
+                | Self::ExplorerNewDirectory
+                | Self::ExplorerRename
+                | Self::ExplorerDelete
+                | Self::SelectNextOccurrence
+                | Self::SelectAllOccurrences
+                | Self::NavigateBack
+                | Self::NavigateForward
+                | Self::CycleIndentWidth
+                | Self::WorkspaceSymbols
+                | Self::TrustWorkspace
+                | Self::RevokeWorkspaceTrust
+                | Self::LocalHistory
+                | Self::CompareDisk
+                | Self::InsertSnippet
+                | Self::RunTask
+                | Self::TerminalDoctor
+                | Self::SafeConfigChange
                 | Self::SaveAs
                 | Self::NewFile
                 | Self::OpenFile
@@ -225,6 +271,198 @@ pub struct CommandSpec {
 }
 
 pub const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        command: Command::AiUsage,
+        id: "ai.usage",
+        label: "AI request usage and limits",
+        category: "AI",
+        help: "Show provider-reported tokens, unknown cost and session budgets",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::KeyboardBindings,
+        id: "settings.bindings",
+        label: "Keyboard bindings / edit keys",
+        category: "Workbench",
+        help: "Inspect effective bindings, open their config or use Terminal Doctor",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::RestoreTrash,
+        id: "file.restore_trash",
+        label: "Restore deleted file / trash",
+        category: "File",
+        help: "Recover a removed item without overwriting newer work",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::SaveAll,
+        id: "file.save_all",
+        label: "Save All files",
+        category: "Workbench",
+        help: "Save every dirty tab; stop for each conflict or missing name",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::CloseAll,
+        id: "file.close_all",
+        label: "Close all files",
+        category: "Workbench",
+        help: "Close files with individual unsaved-work confirmation",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::CloseOthers,
+        id: "file.close_others",
+        label: "Close other files",
+        category: "Workbench",
+        help: "Keep this file and confirm each dirty file",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::ExplorerNewFile,
+        id: "explorer.new_file",
+        label: "Create file in explorer",
+        category: "Workbench",
+        help: "Create a named file in the selected folder",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::ExplorerNewDirectory,
+        id: "explorer.new_directory",
+        label: "New folder / directory",
+        category: "Workbench",
+        help: "Create a directory in the selected folder",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::ExplorerRename,
+        id: "explorer.rename",
+        label: "Rename file / move",
+        category: "Workbench",
+        help: "Rename the selected explorer file or directory",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::ExplorerDelete,
+        id: "explorer.delete",
+        label: "Delete file / directory",
+        category: "Workbench",
+        help: "Review deletion of the selected explorer entry",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::SelectNextOccurrence,
+        id: "edit.next_occurrence",
+        label: "Select next occurrence",
+        category: "Workbench",
+        help: "Add the next matching word or selection",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::SelectAllOccurrences,
+        id: "edit.all_occurrences",
+        label: "Select all occurrences",
+        category: "Workbench",
+        help: "Edit up to 500 matching occurrences together",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::NavigateBack,
+        id: "navigation.back",
+        label: "Navigation back",
+        category: "Workbench",
+        help: "Return to the previous jump location",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::NavigateForward,
+        id: "navigation.forward",
+        label: "Navigation forward",
+        category: "Workbench",
+        help: "Return to the next jump location",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::CycleIndentWidth,
+        id: "edit.indent_width",
+        label: "Change indentation width",
+        category: "Workbench",
+        help: "Cycle effective indentation through 2, 4 and 8 spaces",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::WorkspaceSymbols,
+        id: "language.workspace_symbols",
+        label: "Search workspace symbols",
+        category: "Workbench",
+        help: "Requires a trusted workspace and supporting language server",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::TrustWorkspace,
+        id: "workspace.trust",
+        label: "Trust workspace execution",
+        category: "Workbench",
+        help: "Review permission for language servers, formatters and named tasks",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::RevokeWorkspaceTrust,
+        id: "workspace.restrict",
+        label: "Restrict workspace execution",
+        category: "Workbench",
+        help: "Stop optional executable integrations; core editing remains available",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::LocalHistory,
+        id: "file.local_history",
+        label: "Local history / restore checkpoint",
+        category: "Workbench",
+        help: "Review private saved versions and restore as an undoable edit",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::CompareDisk,
+        id: "file.compare_disk",
+        label: "Compare with saved disk version",
+        category: "Workbench",
+        help: "Review disk and unsaved text before deciding",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::InsertSnippet,
+        id: "edit.snippet",
+        label: "Insert snippet template",
+        category: "Workbench",
+        help: "Choose a small template with linked placeholders",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::RunTask,
+        id: "workspace.task",
+        label: "Run named task",
+        category: "Workbench",
+        help: "Review a configured command before starting it",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::TerminalDoctor,
+        id: "terminal.doctor",
+        label: "Terminal Doctor / key recorder",
+        category: "Workbench",
+        help: "Inspect delivered keys, paste protocol and clipboard route",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::SafeConfigChange,
+        id: "file.safe_config",
+        label: "Safe configuration change",
+        category: "Workbench",
+        help: "Review semantic JSON/YAML changes and validation before Save",
+        bindings: &[],
+    },
     CommandSpec {
         command: Command::Save,
         id: "file.save",

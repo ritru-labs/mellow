@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -11,10 +12,197 @@ use crate::claude;
 
 const MAX_CONTEXT_CHARS: usize = 32_000;
 const MAX_RESPONSE_CHARS: usize = 64_000;
+const MAX_INSTRUCTION_CHARS: usize = 8_000;
+const MAX_ENVELOPE_BYTES: usize = 512 * 1024;
+
+/// Conservative default privacy boundary. Refuse rather than silently change
+/// selected text: a redacted selection cannot safely be replaced by a model.
+pub fn context_problem(path: &str, text: &str) -> Option<&'static str> {
+    if excluded_path(path)
+        || fs::canonicalize(path).is_ok_and(|canonical| excluded_path(&canonical.to_string_lossy()))
+    {
+        return Some("this file is excluded from AI context by the default privacy policy");
+    }
+    match configured_deny_problem(&crate::settings::config_root().join("ai-deny.conf"), path) {
+        Ok(true) => return Some("this file is excluded from AI context by ai-deny.conf"),
+        Err(_) => {
+            return Some(
+                "AI privacy policy could not be read or parsed; fix ai-deny.conf before sending context",
+            );
+        }
+        Ok(false) => {}
+    }
+    if secret_like(text) {
+        return Some("context appears to contain a credential; remove it before asking AI");
+    }
+    None
+}
+
+fn configured_deny_problem(policy_path: &Path, path: &str) -> Result<bool> {
+    use std::io::Read;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = match options.open(policy_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > 65536 {
+        bail!("AI deny policy must be a regular file of at most 64 KiB");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            bail!("AI deny policy must be owned by this user and not writable by other users");
+        }
+    }
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65536 {
+        bail!("AI deny policy exceeds 64 KiB");
+    }
+    let patterns = deny_patterns(std::str::from_utf8(&bytes)?)?;
+    let canonical = fs::canonicalize(path).ok();
+    Ok(deny_matches(&patterns, path)
+        || canonical.is_some_and(|canonical| deny_matches(&patterns, &canonical.to_string_lossy())))
+}
+
+fn deny_patterns(text: &str) -> Result<Vec<regex::Regex>> {
+    let mut patterns = Vec::new();
+    for line in text.lines() {
+        let pattern = line.trim();
+        if pattern.is_empty() || pattern.starts_with('#') {
+            continue;
+        }
+        if patterns.len() >= 256 || pattern.len() > 1024 {
+            bail!("AI deny policy pattern limit exceeded");
+        }
+        if pattern
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '[' | ']' | '{' | '}' | '\\'))
+            || pattern.starts_with('!')
+        {
+            bail!("unsupported AI deny glob; only *, ** and ? wildcards are supported");
+        }
+        let mut expression = String::from("(?:^|/)");
+        let mut chars = pattern.trim_start_matches('/').chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '*' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                        expression.push_str("(?:.*/)?");
+                    } else {
+                        expression.push_str(".*");
+                    }
+                }
+                '*' => expression.push_str("[^/]*"),
+                '?' => expression.push_str("[^/]"),
+                _ => expression.push_str(&regex::escape(&ch.to_string())),
+            }
+        }
+        expression.push('$');
+        patterns.push(regex::Regex::new(&expression)?);
+    }
+    Ok(patterns)
+}
+
+fn deny_matches(patterns: &[regex::Regex], path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let normalized = path.replace('\\', "/");
+    patterns.iter().any(|pattern| pattern.is_match(&normalized))
+}
+
+fn excluded_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let name = normalized.rsplit('/').next().unwrap_or("");
+    name == ".env"
+        || (name.starts_with(".env.") && !name.ends_with(".example") && !name.ends_with(".sample"))
+        || matches!(
+            name,
+            "credentials"
+                | "id_rsa"
+                | "id_ed25519"
+                | "id_ecdsa"
+                | "id_dsa"
+                | "secrets.json"
+                | "secrets.yaml"
+                | "secrets.yml"
+                | "secrets.toml"
+                | "secrets.conf"
+        )
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || normalized.starts_with(".ssh/")
+        || normalized.starts_with(".aws/")
+        || normalized.contains("/.ssh/")
+        || normalized.contains("/.aws/")
+}
+
+fn secret_like(text: &str) -> bool {
+    static SECRETS: OnceLock<regex::Regex> = OnceLock::new();
+    SECRETS.get_or_init(|| regex::Regex::new(
+        r#"(?im)-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password)["']?\s*[=:]\s*["']?[^\s"',;}]{3,}"#
+    ).expect("built-in credential pattern is valid")).is_match(text)
+}
+
+fn check_instruction(instruction: &str) -> Result<()> {
+    if instruction.trim().is_empty() {
+        bail!("AI instruction cannot be empty");
+    }
+    if instruction.chars().count() > MAX_INSTRUCTION_CHARS {
+        bail!("AI instruction is too large (limit {MAX_INSTRUCTION_CHARS} characters)");
+    }
+    if let Some(problem) = context_problem("", instruction) {
+        bail!("AI context refused: {problem}");
+    }
+    Ok(())
+}
+
+pub(crate) fn bounded_output(text: String) -> Result<String> {
+    if text.chars().count() > MAX_RESPONSE_CHARS {
+        bail!("AI reply is too long (limit {MAX_RESPONSE_CHARS} characters); nothing was changed");
+    }
+    Ok(text)
+}
+
+/// Provider error bodies can echo credentials. Never include them in a status
+/// message, terminal capture or panic; status codes are enough to diagnose.
+pub(crate) fn provider_error(
+    config: &AiProviderConfig,
+    status: reqwest::StatusCode,
+) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} returned {status}; provider error details withheld to protect credentials",
+        config.provider.short_label()
+    )
+}
 
 /// Keys and code only travel over HTTPS; plain HTTP is allowed for a model
 /// running on this computer (Ollama and similar).
 pub fn endpoint_problem(endpoint: &str) -> Option<&'static str> {
+    if endpoint.chars().any(char::is_control) {
+        return Some("The provider address must not contain control characters");
+    }
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return Some("The address must be a valid https:// URL (http:// only for loopback)");
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return Some("Use the separate API key field; credentials in an endpoint URL are refused");
+    }
+    if url.fragment().is_some() {
+        return Some("The provider address must not contain a fragment");
+    }
     if let Some(rest) = endpoint.strip_prefix("http://") {
         let host = rest.split(['/', '?', '#']).next().unwrap_or("");
         let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
@@ -159,7 +347,7 @@ impl std::fmt::Debug for AiProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AiProviderConfig")
             .field("provider", &self.provider)
-            .field("endpoint", &self.endpoint)
+            .field("endpoint_host", &endpoint_host(&self.endpoint))
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("inline_suggestions", &self.inline_suggestions)
@@ -402,9 +590,28 @@ const INLINE_SYSTEM: &str = concat!(
     "the current line or adding a few lines. Reply with nothing if no confident completion exists."
 );
 
+#[cfg(test)]
 pub fn request(config: &AiProviderConfig, request: &AiRequest) -> Result<AiProposal> {
-    if request.instruction.trim().is_empty() {
-        bail!("AI instruction cannot be empty");
+    Ok(request_cancellable(
+        config,
+        request,
+        &std::sync::atomic::AtomicBool::new(false),
+        16_000,
+        None,
+    )?
+    .value)
+}
+
+pub fn request_cancellable(
+    config: &AiProviderConfig,
+    request: &AiRequest,
+    cancelled: &std::sync::atomic::AtomicBool,
+    max_output_tokens: u32,
+    progress: Option<&std::sync::mpsc::Sender<String>>,
+) -> Result<AiResponse<AiProposal>> {
+    check_instruction(&request.instruction)?;
+    if let Some(problem) = context_problem(&request.path, &request.context) {
+        bail!("AI context refused: {problem}");
     }
 
     if let Some(problem) = endpoint_problem(&config.endpoint) {
@@ -427,51 +634,71 @@ pub fn request(config: &AiProviderConfig, request: &AiRequest) -> Result<AiPropo
     })
     .to_string();
 
-    let content = match config.provider {
-        AiProvider::Claude => claude::send(
-            config,
-            &claude::Exchange {
-                system: ASK_SYSTEM,
-                user: &user_payload,
-                max_tokens: 16_000,
-                effort: "medium",
-                timeout: ASK_TIMEOUT,
-            },
-        )?,
-        _ => chat_completion(config, ASK_SYSTEM, &user_payload, ASK_TIMEOUT)?,
-    };
-    parse_proposal(&content, request.allow_replacement)
+    let result = exchange_cancellable(
+        config,
+        &claude::Exchange {
+            system: ASK_SYSTEM,
+            user: &user_payload,
+            max_tokens: max_output_tokens,
+            effort: "medium",
+            timeout: ASK_TIMEOUT,
+        },
+        cancelled,
+        progress,
+    )?;
+    Ok(AiResponse {
+        value: parse_proposal(&result.value, request.allow_replacement)
+            .map_err(|error| with_usage(error, result.usage))?,
+        usage: result.usage,
+    })
 }
 
 /// A short continuation for the cursor position, or an empty string.
-pub fn complete_inline(config: &AiProviderConfig, request: &InlineRequest) -> Result<String> {
+pub fn complete_inline_cancellable(
+    config: &AiProviderConfig,
+    request: &InlineRequest,
+    cancelled: &std::sync::atomic::AtomicBool,
+    max_output_tokens: u32,
+    progress: Option<&std::sync::mpsc::Sender<String>>,
+) -> Result<AiResponse<String>> {
     if let Some(problem) = endpoint_problem(&config.endpoint) {
         bail!("AI address refused: {problem}");
     }
-    let before: String = {
-        let chars: Vec<char> = request.before.chars().collect();
-        chars[chars.len().saturating_sub(6_000)..].iter().collect()
-    };
+    let before: String = request
+        .before
+        .chars()
+        .rev()
+        .take(6_000)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let after: String = request.after.chars().take(2_000).collect();
+    if let Some(problem) =
+        context_problem(&request.path, &before).or_else(|| context_problem(&request.path, &after))
+    {
+        bail!("AI context refused: {problem}");
+    }
     let user = format!(
         "File: {}\nLanguage: {}\n<before_cursor>\n{}</before_cursor>\n<after_cursor>\n{}</after_cursor>",
         request.path, request.language, before, after
     );
-    let text = match config.provider {
-        AiProvider::Claude => claude::send(
-            config,
-            &claude::Exchange {
-                system: INLINE_SYSTEM,
-                user: &user,
-                // A deliberately short answer: a few lines at most.
-                max_tokens: 1_024,
-                effort: "low",
-                timeout: INLINE_TIMEOUT,
-            },
-        )?,
-        _ => chat_completion(config, INLINE_SYSTEM, &user, INLINE_TIMEOUT)?,
-    };
-    Ok(clean_inline(&text))
+    let result = exchange_cancellable(
+        config,
+        &claude::Exchange {
+            system: INLINE_SYSTEM,
+            user: &user,
+            max_tokens: max_output_tokens.min(1024),
+            effort: "low",
+            timeout: INLINE_TIMEOUT,
+        },
+        cancelled,
+        progress,
+    )?;
+    Ok(AiResponse {
+        value: clean_inline(&result.value),
+        usage: result.usage,
+    })
 }
 
 const COMMIT_SYSTEM: &str = concat!(
@@ -486,7 +713,62 @@ const COMMIT_DIFF_CHARS: usize = 12_000;
 
 /// Drafts a commit message for staged changes. Nothing is committed here;
 /// the caller shows the draft for review.
+#[cfg(test)]
 pub fn commit_message(config: &AiProviderConfig, diff: &str) -> Result<String> {
+    Ok(commit_message_cancellable(
+        config,
+        diff,
+        &std::env::current_dir()?,
+        &std::sync::atomic::AtomicBool::new(false),
+        1024,
+        None,
+    )?
+    .value)
+}
+
+pub fn commit_message_cancellable(
+    config: &AiProviderConfig,
+    diff: &str,
+    workspace: &Path,
+    cancelled: &std::sync::atomic::AtomicBool,
+    max_output_tokens: u32,
+    progress: Option<&std::sync::mpsc::Sender<String>>,
+) -> Result<AiResponse<String>> {
+    if let Some(problem) = context_problem("", diff) {
+        bail!("AI context refused: {problem}");
+    }
+    if secret_like(diff)
+        || diff.lines().any(|line| {
+            let path = line
+                .strip_prefix("+++ ")
+                .or_else(|| line.strip_prefix("--- "))
+                .or_else(|| line.strip_prefix("rename from "))
+                .or_else(|| line.strip_prefix("rename to "));
+            let Some(path) = path else {
+                return false;
+            };
+            let path = if path.starts_with('"') {
+                match serde_json::from_str::<String>(path) {
+                    Ok(path) => path,
+                    // Git can also use C-style octal escapes. Refuse ambiguous
+                    // quoted paths rather than bypass the deny policy.
+                    Err(_) => return true,
+                }
+            } else {
+                path.to_owned()
+            };
+            let path = path
+                .strip_prefix("a/")
+                .or_else(|| path.strip_prefix("b/"))
+                .unwrap_or(&path);
+            context_problem(path, "").is_some()
+                || context_problem(&workspace.join(path).to_string_lossy(), "").is_some()
+        })
+    {
+        bail!(
+            "AI context refused: staged diff includes excluded files or credentials; review and remove them first"
+        );
+    }
     if let Some(problem) = endpoint_problem(&config.endpoint) {
         bail!("AI address refused: {problem}");
     }
@@ -497,20 +779,22 @@ pub fn commit_message(config: &AiProviderConfig, diff: &str) -> Result<String> {
         ""
     };
     let user = format!("Staged diff:\n{shown}{note}");
-    let text = match config.provider {
-        AiProvider::Claude => claude::send(
-            config,
-            &claude::Exchange {
-                system: COMMIT_SYSTEM,
-                user: &user,
-                max_tokens: 1_024,
-                effort: "low",
-                timeout: ASK_TIMEOUT,
-            },
-        )?,
-        _ => chat_completion(config, COMMIT_SYSTEM, &user, ASK_TIMEOUT)?,
-    };
-    Ok(clean_commit_message(&text))
+    let result = exchange_cancellable(
+        config,
+        &claude::Exchange {
+            system: COMMIT_SYSTEM,
+            user: &user,
+            max_tokens: max_output_tokens.min(1024),
+            effort: "low",
+            timeout: ASK_TIMEOUT,
+        },
+        cancelled,
+        progress,
+    )?;
+    Ok(AiResponse {
+        value: clean_commit_message(&result.value),
+        usage: result.usage,
+    })
 }
 
 const SHELL_SYSTEM: &str = concat!(
@@ -520,36 +804,54 @@ const SHELL_SYSTEM: &str = concat!(
 );
 const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Turns a plain-language request into one shell command. It is only typed
-/// into the terminal for the user to review; nothing runs here.
+/// Turns a plain-language request into one shell command for read-only review.
+/// The editor never inserts the response into an interactive PTY.
+#[cfg(test)]
 pub fn shell_command(config: &AiProviderConfig, request: &str) -> Result<String> {
-    if let Some(problem) = endpoint_problem(&config.endpoint) {
-        bail!("AI address refused: {problem}");
-    }
-    let text = match config.provider {
-        AiProvider::Claude => claude::send(
-            config,
-            &claude::Exchange {
-                system: SHELL_SYSTEM,
-                user: request,
-                max_tokens: 256,
-                effort: "low",
-                timeout: SHELL_TIMEOUT,
-            },
-        )?,
-        _ => chat_completion(config, SHELL_SYSTEM, request, SHELL_TIMEOUT)?,
-    };
-    clean_shell_command(&text)
+    Ok(shell_command_cancellable(
+        config,
+        request,
+        &std::sync::atomic::AtomicBool::new(false),
+        256,
+        None,
+    )?
+    .value)
 }
 
-/// The first non-empty line, without fences, quotes or a leading `$`.
+pub fn shell_command_cancellable(
+    config: &AiProviderConfig,
+    request: &str,
+    cancelled: &std::sync::atomic::AtomicBool,
+    max_output_tokens: u32,
+    progress: Option<&std::sync::mpsc::Sender<String>>,
+) -> Result<AiResponse<String>> {
+    check_instruction(request)?;
+    let result = exchange_cancellable(
+        config,
+        &claude::Exchange {
+            system: SHELL_SYSTEM,
+            user: request,
+            max_tokens: max_output_tokens.min(256),
+            effort: "low",
+            timeout: SHELL_TIMEOUT,
+        },
+        cancelled,
+        progress,
+    )?;
+    Ok(AiResponse {
+        value: clean_shell_command(&result.value)
+            .map_err(|error| with_usage(error, result.usage))?,
+        usage: result.usage,
+    })
+}
+
+/// Commands are data for review, never PTY input. Reject controls before
+/// trimming: CR/LF, ESC, NUL and C1 can submit or alter an interactive terminal.
 fn clean_shell_command(text: &str) -> Result<String> {
-    let line = text
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("```"))
-        .map(|line| line.trim().trim_matches('`').trim())
-        .find(|line| !line.is_empty())
-        .unwrap_or("");
+    if text.chars().any(char::is_control) {
+        bail!("Control bytes refused in AI shell command; nothing was inserted");
+    }
+    let line = text.trim().trim_matches('`').trim();
     let line = line.strip_prefix("$ ").unwrap_or(line).trim();
     if line.is_empty() {
         bail!("the AI did not suggest a command");
@@ -562,11 +864,25 @@ mod shell_command_tests {
     use super::clean_shell_command;
 
     #[test]
-    fn keeps_one_command_and_drops_fences_and_prompts() {
+    fn shell_commands_reject_every_terminal_control_before_cleaning() {
+        for control in (0u32..=31).chain(127..=159) {
+            let hostile = format!("printf audit{}# ignored", char::from_u32(control).unwrap());
+            assert!(
+                clean_shell_command(&hostile).is_err(),
+                "accepted U+{control:04X}"
+            );
+        }
+        assert!(clean_shell_command("echo safe\necho unsafe").is_err());
+        assert!(clean_shell_command("echo safe\r").is_err());
         assert_eq!(
-            clean_shell_command("```bash\n$ du -sh *\n```").unwrap(),
-            "du -sh *"
+            clean_shell_command("$ printf 'hello'").unwrap(),
+            "printf 'hello'"
         );
+    }
+
+    #[test]
+    fn keeps_one_command_and_drops_fences_and_prompts() {
+        assert_eq!(clean_shell_command("$ du -sh *").unwrap(), "du -sh *");
         assert!(clean_shell_command("\n\n").is_err());
     }
 }
@@ -607,64 +923,6 @@ fn clean_inline(text: &str) -> String {
     body.lines().take(8).collect::<Vec<_>>().join("\n")
 }
 
-fn chat_completion(
-    config: &AiProviderConfig,
-    system: &str,
-    user: &str,
-    timeout: Duration,
-) -> Result<String> {
-    // Never follow redirects: the key header would go to wherever they point.
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .context("failed to build AI HTTP client")?;
-    let mut http = client.post(&config.endpoint).json(&json!({
-        "model": config.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ],
-        "temperature": 0.2
-    }));
-
-    if let Some(api_key) = &config.api_key {
-        http = http.bearer_auth(api_key);
-    }
-    let response = http
-        .send()
-        .map_err(|error| connection_error(config, &error))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .context("failed to read AI provider response")?;
-    if !status.is_success() {
-        let preview: String = body.chars().take(500).collect();
-        bail!(
-            "{} returned {status}: {preview}",
-            config.provider.short_label()
-        );
-    }
-
-    let envelope: Value =
-        serde_json::from_str(&body).context("AI provider returned invalid JSON envelope")?;
-    if envelope
-        .pointer("/choices/0/finish_reason")
-        .and_then(Value::as_str)
-        == Some("length")
-    {
-        bail!(
-            "{}'s reply was cut off at its length limit; nothing was changed",
-            config.provider.short_label()
-        );
-    }
-    envelope
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .context("AI provider response has no choices[0].message.content")
-}
-
 pub(crate) fn connection_error(config: &AiProviderConfig, error: &reqwest::Error) -> anyhow::Error {
     if error.is_timeout() {
         anyhow::anyhow!("{} took too long to answer", config.provider.short_label())
@@ -672,11 +930,11 @@ pub(crate) fn connection_error(config: &AiProviderConfig, error: &reqwest::Error
         anyhow::anyhow!(
             "could not reach {} at {} (offline?)",
             config.provider.short_label(),
-            config.endpoint
+            endpoint_host(&config.endpoint).unwrap_or("configured provider")
         )
     } else {
         anyhow::anyhow!(
-            "request to {} failed: {error}",
+            "request to {} failed; transport details withheld to protect credentials",
             config.provider.short_label()
         )
     }
@@ -720,6 +978,322 @@ fn parse_proposal(content: &str, allow_replacement: bool) -> Result<AiProposal> 
     })
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AiUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+#[derive(Debug)]
+pub struct AiResponse<T> {
+    pub value: T,
+    pub usage: AiUsage,
+}
+
+#[derive(Debug)]
+struct AiTransportFailure {
+    usage: AiUsage,
+    message: String,
+}
+impl std::fmt::Display for AiTransportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for AiTransportFailure {}
+fn with_usage(error: anyhow::Error, usage: AiUsage) -> anyhow::Error {
+    AiTransportFailure {
+        usage,
+        message: error.to_string(),
+    }
+    .into()
+}
+/// Usage observed before a cancellation, refusal or malformed final response.
+/// Missing fields remain unknown; this is not a refund or billing guarantee.
+pub fn error_usage(error: &anyhow::Error) -> AiUsage {
+    error
+        .downcast_ref::<AiTransportFailure>()
+        .map(|error| error.usage)
+        .unwrap_or_default()
+}
+
+async fn await_cancellable<F: std::future::Future>(
+    future: F,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<F::Output> {
+    let mut future = std::pin::pin!(future);
+    loop {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            bail!("AI request cancelled; nothing was changed");
+        }
+        // Timing out a borrowed pinned future leaves it pending for the next
+        // interval; cancellation drops the actual send/read future and client.
+        if let Ok(result) = tokio::time::timeout(Duration::from_millis(25), &mut future).await {
+            return Ok(result);
+        }
+    }
+}
+
+pub(crate) fn exchange_cancellable(
+    config: &AiProviderConfig,
+    exchange: &claude::Exchange<'_>,
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: Option<&std::sync::mpsc::Sender<String>>,
+) -> Result<AiResponse<String>> {
+    if let Some(problem) = endpoint_problem(&config.endpoint) {
+        bail!("AI address refused: {problem}");
+    }
+    if !(1..=16_384).contains(&exchange.max_tokens) {
+        bail!("AI output token limit must be between 1 and 16384");
+    }
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        bail!("AI request cancelled; nothing was changed");
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("could not start AI transport")?;
+    let observed = std::cell::Cell::new(AiUsage::default());
+    let result = runtime.block_on(async {
+        let client = reqwest::Client::builder().timeout(exchange.timeout).redirect(reqwest::redirect::Policy::none()).build().context("failed to build AI HTTP client")?;
+        let mut body = if config.provider == AiProvider::Claude {
+            let first_party = reqwest::Url::parse(&config.endpoint).is_ok_and(|url| url.host_str() == Some("api.anthropic.com"));
+            claude::request_body(&config.model, exchange, first_party)
+        } else {
+            json!({"model": config.model, "messages": [{"role":"system","content":exchange.system},{"role":"user","content":exchange.user}], "temperature":0.2, "max_tokens":exchange.max_tokens, "stream_options":{"include_usage":true}})
+        };
+        body["stream"] = json!(true);
+        let mut http = client.post(&config.endpoint).json(&body);
+        if config.provider == AiProvider::Claude {
+            let key = config.api_key.as_deref().context("Claude needs an API key · open Settings > AI to add one")?;
+            http = http.header("x-api-key", key).header("anthropic-version", claude::API_VERSION);
+            if body.get("fallbacks").is_some() { http = http.header("anthropic-beta", claude::FALLBACK_BETA); }
+        } else if let Some(key) = &config.api_key { http = http.bearer_auth(key); }
+        let mut response = await_cancellable(http.send(), cancelled).await?.map_err(|error| connection_error(config, &error))?;
+        if !response.status().is_success() { return Err(provider_error(config, response.status())); }
+        if response.content_length().is_some_and(|length| length > MAX_ENVELOPE_BYTES as u64) { bail!("AI provider response exceeds the {MAX_ENVELOPE_BYTES}-byte limit"); }
+        let is_sse = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).is_some_and(|value| value.split(';').next().is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/event-stream")));
+        let mut bytes = Vec::new();
+        let mut stream = ProviderStream::new(config.provider);
+        let mut total = 0usize;
+        loop {
+            let chunk = await_cancellable(response.chunk(), cancelled).await?.map_err(|error| connection_error(config, &error))?;
+            let Some(chunk) = chunk else { break; };
+            total = total.saturating_add(chunk.len());
+            if total > MAX_ENVELOPE_BYTES { bail!("AI provider response exceeds the {MAX_ENVELOPE_BYTES}-byte limit"); }
+            if is_sse {
+                let update = stream.push(&chunk, progress);
+                observed.set(stream.usage);
+                update?;
+                if stream.done { return Ok(AiResponse { value: stream.text, usage: stream.usage }); }
+            } else { bytes.extend_from_slice(&chunk); }
+        }
+        if is_sse { bail!("AI stream ended before its completion marker; nothing was changed"); }
+        let value: Value = serde_json::from_slice(&bytes).context("AI provider returned invalid JSON envelope")?;
+        observed.set(usage_from(&value, config.provider));
+        let text = if config.provider == AiProvider::Claude { claude::parse_response(&value)? } else {
+            check_stop_reason(value.pointer("/choices/0/finish_reason").and_then(Value::as_str))?;
+            bounded_output(value.pointer("/choices/0/message/content").and_then(Value::as_str).context("AI provider response has no choices[0].message.content")?.to_owned())?
+        };
+        Ok(AiResponse { value: text, usage: usage_from(&value, config.provider) })
+    });
+    // System DNS resolution may use a blocking OS worker. Do not wait for
+    // that worker during cancellation; dropped HTTP futures own no active
+    // request/body socket after this point. DNS cleanup can finish separately.
+    runtime.shutdown_background();
+    result.map_err(|error| with_usage(error, observed.get()))
+}
+
+fn check_stop_reason(reason: Option<&str>) -> Result<()> {
+    match reason {
+        Some("length" | "max_tokens") => {
+            bail!("AI reply was cut off at its length limit; nothing was changed")
+        }
+        Some("refusal" | "content_filter") => bail!("AI provider declined this request"),
+        _ => Ok(()),
+    }
+}
+
+fn usage_from(value: &Value, provider: AiProvider) -> AiUsage {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/message/usage"));
+    let input = if provider == AiProvider::Claude {
+        "input_tokens"
+    } else {
+        "prompt_tokens"
+    };
+    let output = if provider == AiProvider::Claude {
+        "output_tokens"
+    } else {
+        "completion_tokens"
+    };
+    let input_tokens = usage
+        .and_then(|usage| usage.get(input))
+        .and_then(Value::as_u64)
+        .map(|tokens| {
+            if provider == AiProvider::Claude {
+                tokens
+                    .saturating_add(
+                        usage
+                            .and_then(|usage| usage.get("cache_creation_input_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    )
+                    .saturating_add(
+                        usage
+                            .and_then(|usage| usage.get("cache_read_input_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    )
+            } else {
+                tokens
+            }
+        });
+    AiUsage {
+        input_tokens,
+        output_tokens: usage
+            .and_then(|usage| usage.get(output))
+            .and_then(Value::as_u64),
+    }
+}
+
+struct ProviderStream {
+    provider: AiProvider,
+    pending: Vec<u8>,
+    text: String,
+    text_chars: usize,
+    usage: AiUsage,
+    done: bool,
+}
+
+impl ProviderStream {
+    fn new(provider: AiProvider) -> Self {
+        Self {
+            provider,
+            pending: Vec::new(),
+            text: String::new(),
+            text_chars: 0,
+            usage: AiUsage::default(),
+            done: false,
+        }
+    }
+    fn push(
+        &mut self,
+        bytes: &[u8],
+        progress: Option<&std::sync::mpsc::Sender<String>>,
+    ) -> Result<()> {
+        self.pending.extend_from_slice(bytes);
+        if self.pending.len() > MAX_ENVELOPE_BYTES {
+            bail!("AI stream event exceeds response limit");
+        }
+        loop {
+            let lf = self
+                .pending
+                .windows(2)
+                .position(|pair| pair == b"\n\n")
+                .map(|at| (at, 2));
+            let crlf = self
+                .pending
+                .windows(4)
+                .position(|pair| pair == b"\r\n\r\n")
+                .map(|at| (at, 4));
+            let Some((end, delimiter)) = (match (lf, crlf) {
+                (Some(a), Some(b)) => Some(if a.0 < b.0 { a } else { b }),
+                (a, b) => a.or(b),
+            }) else {
+                break;
+            };
+            let event = String::from_utf8(self.pending.drain(..end + delimiter).collect())
+                .context("AI stream event is not UTF-8")?;
+            let data = event
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("data:")
+                        .map(|data| data.strip_prefix(' ').unwrap_or(data))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if data.is_empty() {
+                continue;
+            }
+            if data == "[DONE]" {
+                if self.provider == AiProvider::Claude {
+                    bail!("unexpected Claude stream completion marker");
+                }
+                self.done = true;
+                break;
+            }
+            let value: Value =
+                serde_json::from_str(&data).context("AI stream event is invalid JSON")?;
+            if value.get("error").is_some()
+                || value.get("type").and_then(Value::as_str) == Some("error")
+            {
+                bail!(
+                    "AI provider reported a stream error; details withheld to protect credentials"
+                );
+            }
+            let usage = usage_from(&value, self.provider);
+            if usage.input_tokens.is_some() {
+                self.usage.input_tokens = usage.input_tokens;
+            }
+            if usage.output_tokens.is_some() {
+                self.usage.output_tokens = usage.output_tokens;
+            }
+            let delta = if self.provider == AiProvider::Claude {
+                match value.get("type").and_then(Value::as_str) {
+                    Some("message_delta") => {
+                        check_stop_reason(
+                            value.pointer("/delta/stop_reason").and_then(Value::as_str),
+                        )?;
+                        None
+                    }
+                    Some("message_stop") => {
+                        self.done = true;
+                        None
+                    }
+                    Some("content_block_delta")
+                        if value.pointer("/delta/type").and_then(Value::as_str)
+                            == Some("text_delta") =>
+                    {
+                        value.pointer("/delta/text").and_then(Value::as_str)
+                    }
+                    Some("content_block_start")
+                        if value.pointer("/content_block/type").and_then(Value::as_str)
+                            == Some("text") =>
+                    {
+                        value.pointer("/content_block/text").and_then(Value::as_str)
+                    }
+                    _ => None,
+                }
+            } else {
+                check_stop_reason(
+                    value
+                        .pointer("/choices/0/finish_reason")
+                        .and_then(Value::as_str),
+                )?;
+                value
+                    .pointer("/choices/0/delta/content")
+                    .and_then(Value::as_str)
+            };
+            if let Some(delta) = delta {
+                self.text_chars = self.text_chars.saturating_add(delta.chars().count());
+                if self.text_chars > MAX_RESPONSE_CHARS {
+                    bail!("AI reply is too long; nothing was changed");
+                }
+                self.text.push_str(delta);
+                if let Some(progress) = progress {
+                    let _ = progress.send(delta.to_owned());
+                }
+            }
+            if self.done {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -729,6 +1303,346 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn additive_deny_globs_match_paths_and_defaults_cannot_be_removed() {
+        let patterns =
+            deny_patterns("# local privacy\n*.private\nprivate/**\n**/customer?.json\n").unwrap();
+        for path in [
+            "demo.private",
+            "/work/demo.private",
+            "/work/private/nested/demo.rs",
+            "customer1.json",
+            "/work/customer2.json",
+        ] {
+            assert!(deny_matches(&patterns, path), "{path}");
+        }
+        for path in ["public.rs", "/work/private-looking/file", "customer12.json"] {
+            assert!(!deny_matches(&patterns, path), "{path}");
+        }
+        assert!(excluded_path(".env"));
+        assert!(excluded_path("/home/user/.ssh/id_ed25519"));
+        assert!(deny_patterns("!**/.env").is_err());
+        assert!(deny_patterns("[broken").is_err());
+    }
+    #[test]
+    fn user_local_policy_is_bounded_and_resolves_file_aliases_fail_closed() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let policy = dir.path().join("ai-deny.conf");
+        let private = dir.path().join("client.private");
+        let alias = dir.path().join("innocent.rs");
+        fs::write(&private, "ordinary fixture").unwrap();
+        symlink(&private, &alias).unwrap();
+        fs::write(&policy, "*.private\n").unwrap();
+        assert!(configured_deny_problem(&policy, alias.to_str().unwrap()).unwrap());
+        assert!(!configured_deny_problem(&policy, "public.rs").unwrap());
+        fs::write(&policy, "[unsupported\n").unwrap();
+        assert!(configured_deny_problem(&policy, "public.rs").is_err());
+        fs::write(&policy, vec![b' '; 65537]).unwrap();
+        assert!(configured_deny_problem(&policy, "public.rs").is_err());
+        fs::write(&policy, "*.private").unwrap();
+        fs::set_permissions(&policy, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(configured_deny_problem(&policy, "public.rs").is_err());
+        fs::remove_file(&policy).unwrap();
+        symlink(&private, &policy).unwrap();
+        assert!(configured_deny_problem(&policy, "public.rs").is_err());
+    }
+
+    #[test]
+    fn staged_alias_privacy_uses_the_repository_root_not_process_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join(".env");
+        let alias = dir.path().join("innocent.rs");
+        fs::write(&secret, "ordinary fixture").unwrap();
+        std::os::unix::fs::symlink(&secret, &alias).unwrap();
+        let error = commit_message_cancellable(
+            &local_config("http://127.0.0.1:9/chat".to_owned()),
+            "diff --git a/innocent.rs b/innocent.rs\n+++ b/innocent.rs\n+ordinary fixture",
+            dir.path(),
+            &std::sync::atomic::AtomicBool::new(false),
+            100,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("excluded"), "{error}");
+    }
+
+    fn stream_fixture(
+        body: String,
+        pause_before_body: bool,
+    ) -> (String, std::thread::JoinHandle<bool>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 32768];
+            let _ = socket.read(&mut request).unwrap();
+            if pause_before_body {
+                // Send headers and keep the body silent: cancellation must
+                // abort a blocked chunk read, not merely suppress application.
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n").unwrap();
+                loop {
+                    match socket.read(&mut request) {
+                        Ok(0) => return true,
+                        Ok(_) => {}
+                        Err(_) => return false,
+                    }
+                }
+            }
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            // Fragment UTF8 and event boundaries intentionally.
+            for bytes in body.as_bytes().chunks(3) {
+                if socket.write_all(bytes).is_err() {
+                    return true;
+                }
+            }
+            false
+        });
+        (format!("http://{address}/chat"), worker)
+    }
+
+    #[test]
+    fn streaming_openai_reports_provider_usage_and_preserves_unicode_deltas() {
+        let proposal = r#"{"summary":"Looks good 🙂","replacement":null}"#;
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content":proposal},"finish_reason":null}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":8}})
+        );
+        let (endpoint, worker) = stream_fixture(body, false);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let response = request_cancellable(
+            &local_config(endpoint),
+            &edit_request("ordinary text".to_owned()),
+            &std::sync::atomic::AtomicBool::new(false),
+            123,
+            Some(&sender),
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert_eq!(response.value.summary, "Looks good 🙂");
+        assert_eq!(
+            response.usage,
+            AiUsage {
+                input_tokens: Some(17),
+                output_tokens: Some(8)
+            }
+        );
+        assert_eq!(receiver.try_iter().collect::<String>(), proposal);
+    }
+
+    #[test]
+    fn streaming_claude_merges_usage_and_refuses_cut_off_text() {
+        let mut stream = ProviderStream::new(AiProvider::Claude);
+        let events = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":0}}}\r\n\r\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"safe 🙂\"}}\r\n\r\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\r\n\r\n",
+            "data: {\"type\":\"message_stop\"}\r\n\r\n"
+        );
+        for byte in events.as_bytes() {
+            stream.push(&[*byte], None).unwrap();
+        }
+        assert!(stream.done);
+        assert_eq!(stream.text, "safe 🙂");
+        assert_eq!(
+            stream.usage,
+            AiUsage {
+                input_tokens: Some(20),
+                output_tokens: Some(7)
+            }
+        );
+        let mut cut = ProviderStream::new(AiProvider::Claude);
+        assert!(cut.push(b"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n",None).is_err());
+        let mut openai = ProviderStream::new(AiProvider::Custom);
+        assert!(
+            openai
+                .push(
+                    b"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n",
+                    None
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn json_usage_and_inline_output_follow_the_same_bounded_transport() {
+        let envelope = json!({"choices":[{"message":{"content":"return 1;"}}],"usage":{"prompt_tokens":12,"completion_tokens":4}}).to_string();
+        let (endpoint, worker) = one_shot_server(envelope);
+        let reply = complete_inline_cancellable(
+            &local_config(endpoint),
+            &InlineRequest {
+                path: "demo.rs".to_owned(),
+                language: "Rust".to_owned(),
+                before: "fn main() {".to_owned(),
+                after: "}".to_owned(),
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+            100,
+            None,
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert_eq!(reply.value, "return 1;");
+        assert_eq!(
+            reply.usage,
+            AiUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(4)
+            }
+        );
+        assert_eq!(
+            usage_from(
+                &json!({"usage":{"input_tokens":3,"cache_creation_input_tokens":4,"cache_read_input_tokens":5,"output_tokens":2}}),
+                AiProvider::Claude
+            ),
+            AiUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(2)
+            }
+        );
+    }
+
+    #[test]
+    fn cancellation_aborts_waiting_for_response_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0; 32768];
+            assert!(socket.read(&mut bytes).unwrap() > 0);
+            loop {
+                match socket.read(&mut bytes) {
+                    Ok(0) => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+        });
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = token.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        let error = request_cancellable(
+            &local_config(format!("http://{address}/chat")),
+            &edit_request("text".to_owned()),
+            &token,
+            100,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        canceller.join().unwrap();
+        assert!(worker.join().unwrap());
+    }
+
+    #[test]
+    fn cancellation_aborts_the_inflight_transport_and_closes_its_socket() {
+        let (endpoint, worker) = stream_fixture(String::new(), true);
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = token.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        let result = request_cancellable(
+            &local_config(endpoint),
+            &edit_request("ordinary text".to_owned()),
+            &token,
+            100,
+            None,
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        canceller.join().unwrap();
+        assert!(
+            worker.join().unwrap(),
+            "cancelled client kept the socket alive"
+        );
+    }
+
+    #[test]
+    fn streaming_missing_completion_marker_never_accepts_partial_proposals() {
+        let body = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"choices":[{"delta":{"content":r#"{"summary":"partial","replacement":"danger"}"#}}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":19,"completion_tokens":7}})
+        );
+        let (endpoint, worker) = stream_fixture(body, false);
+        let result = request_cancellable(
+            &local_config(endpoint),
+            &edit_request("ordinary".to_owned()),
+            &std::sync::atomic::AtomicBool::new(false),
+            100,
+            None,
+        );
+        worker.join().unwrap();
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("completion marker"));
+        assert_eq!(
+            error_usage(&error),
+            AiUsage {
+                input_tokens: Some(19),
+                output_tokens: Some(7)
+            }
+        );
+    }
+
+    #[test]
+    fn stream_errors_and_limits_withhold_credentials_and_reject_hostile_shell_controls() {
+        let mut stream = ProviderStream::new(AiProvider::Custom);
+        let error = stream
+            .push(
+                b"data: {\"error\":{\"message\":\"synthetic-secret\\u001b\"}}\n\n",
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("synthetic-secret"));
+        assert!(!error.contains('\u{1b}'));
+        let mut stream = ProviderStream::new(AiProvider::Custom);
+        let huge =
+            json!({"choices":[{"delta":{"content":"x".repeat(MAX_RESPONSE_CHARS+1)}}]}).to_string();
+        assert!(
+            stream
+                .push(format!("data: {huge}\n\n").as_bytes(), None)
+                .is_err()
+        );
+        let body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content":"echo safe\r# injected"}}]})
+        );
+        let (endpoint, worker) = stream_fixture(body, false);
+        let error = shell_command_cancellable(
+            &local_config(endpoint),
+            "show files",
+            &std::sync::atomic::AtomicBool::new(false),
+            100,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        worker.join().unwrap();
+        assert!(error.contains("Control bytes"));
+        assert_eq!(
+            usage_from(&json!({}), AiProvider::Custom),
+            AiUsage::default()
+        );
+    }
 
     #[test]
     fn proposal_parser_accepts_json_and_never_edits_without_permission() {
@@ -803,6 +1717,97 @@ mod tests {
     }
 
     #[test]
+    fn privacy_policy_denies_secret_files_and_credentials_before_network() {
+        for path in [
+            ".env",
+            ".env.production",
+            "infra/key.pem",
+            "credentials",
+            "keys/id_ed25519",
+            ".ssh/config",
+            ".aws/config",
+            "nested/.ssh/config",
+            "secrets.json",
+            "secrets.yaml",
+        ] {
+            let mut input = edit_request("innocent text".to_owned());
+            input.path = path.to_owned();
+            let error = request(&local_config("http://127.0.0.1:1/chat".to_owned()), &input)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("excluded"), "{path}: {error}");
+        }
+        assert!(context_problem(".env.example", "# Fill in values locally").is_none());
+        assert!(context_problem("demo.rs", "let count = 5;").is_none());
+        for text in [
+            r#"{"api_key":"synthetic-secret","password":"dummy"}"#,
+            "API_KEY=synthetic-secret",
+            "password: dummy-value",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "token AKIA1234567890ABCDEF",
+        ] {
+            assert!(context_problem("demo.rs", text).is_some(), "{text}");
+        }
+        let error = commit_message(
+            &local_config("http://127.0.0.1:1/chat".to_owned()),
+            "diff --git a/.env b/.env\n+++ b/.env\n+innocent",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("excluded"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn privacy_policy_denies_an_innocuous_alias_to_an_excluded_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join(".env");
+        let alias = dir.path().join("innocent.txt");
+        fs::write(&secret, "innocent fixture").unwrap();
+        std::os::unix::fs::symlink(&secret, &alias).unwrap();
+        assert!(context_problem(alias.to_str().unwrap(), "innocent fixture").is_some());
+    }
+
+    #[test]
+    fn instruction_and_http_envelopes_have_hard_limits() {
+        let config = local_config("http://127.0.0.1:1/chat".to_owned());
+        let error = shell_command(&config, &"x".repeat(MAX_INSTRUCTION_CHARS + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too large"), "{error}");
+        let (endpoint, server) = one_shot_server("x".repeat(MAX_ENVELOPE_BYTES + 1));
+        let error = request(&local_config(endpoint), &edit_request("x".to_owned()))
+            .unwrap_err()
+            .to_string();
+        // The connection may close as soon as the announced size is checked.
+        let _ = server.join();
+        assert!(error.contains("byte limit"), "{error}");
+        assert!(bounded_output("x".repeat(MAX_RESPONSE_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn errors_never_echo_provider_credentials_or_terminal_controls() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16384];
+            let _ = stream.read(&mut request).unwrap();
+            let body = "synthetic-secret-key\u{1b}[2J";
+            write!(stream, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let mut config = local_config(format!("http://{address}/chat"));
+        config.api_key = Some("synthetic-secret-key".to_owned());
+        let error = request(&config, &edit_request("x".to_owned()))
+            .unwrap_err()
+            .to_string();
+        server.join().unwrap();
+        assert!(error.contains("500"), "{error}");
+        assert!(!error.contains("synthetic-secret-key"), "{error}");
+        assert!(!error.contains('\u{1b}'), "{error}");
+    }
+
+    #[test]
     fn debug_output_never_shows_the_api_key() {
         let config = super::AiProviderConfig {
             provider: super::AiProvider::Claude,
@@ -814,6 +1819,14 @@ mod tests {
         let shown = format!("{config:?}");
         assert!(!shown.contains("sk-secret-value"), "{shown}");
         assert!(shown.contains("<redacted>"), "{shown}");
+        let mut embedded = config;
+        embedded.endpoint =
+            "https://user:embedded-password@example.invalid/v1?key=embedded-query-secret"
+                .to_owned();
+        let shown = format!("{embedded:?}");
+        assert!(!shown.contains("embedded-password"), "{shown}");
+        assert!(!shown.contains("embedded-query-secret"), "{shown}");
+        assert!(endpoint_problem(&embedded.endpoint).is_some());
     }
 
     fn one_shot_server(envelope: String) -> (String, thread::JoinHandle<()>) {
@@ -823,13 +1836,17 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = vec![0u8; 256 * 1024];
             let _ = stream.read(&mut request).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                envelope.len(),
-                envelope
-            )
-            .unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", envelope.len()).unwrap();
+            if let Err(error) = stream.write_all(envelope.as_bytes()) {
+                // Oversized Content-Length is refused before body draining.
+                assert!(
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                    ),
+                    "{error}"
+                );
+            }
         });
         (format!("http://{address}/chat"), server)
     }
