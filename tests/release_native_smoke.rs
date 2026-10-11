@@ -1441,7 +1441,27 @@ fn smoke_binary() -> std::path::PathBuf {
 
 fn start_editor(master: &mut File, captured: &mut Vec<u8>, queries: &mut usize) {
     wait_for_startup(master, captured, queries);
-    pump(master, captured, queries, Duration::from_millis(200));
+    // Alternate-screen negotiation precedes the first application frame. On a
+    // loaded runner a fixed delay can capture only its prefix, before Welcome
+    // is drawn, and incorrectly decide that onboarding needs no dismissal.
+    // Ratatui emits this frame in row order; its complete footer follows the
+    // onboarding overlay as well as the underlying editor content.
+    wait_for_screen_state(
+        master,
+        captured,
+        queries,
+        "complete initial editor or onboarding frame",
+        |screen| {
+            // Restored sessions initially use a welcome notification in place
+            // of the ordinary line/column footer. Both finish the first frame.
+            let footer_complete =
+                (screen.contains("Ln ") && screen.contains(", Col ") && screen.contains("F1 Help"))
+                    || (screen.contains("Ctrl+P commands") && screen.contains("F1 help"));
+            footer_complete
+                && (!screen.contains("Welcome to Mellow · crafted")
+                    || screen.contains("Start typing, or press Enter"))
+        },
+    );
     let mut parser = vt100::Parser::new(24, 80, 0);
     parser.process(captured);
     if parser.screen().contents().contains("Welcome to Mellow") {

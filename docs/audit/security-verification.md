@@ -232,9 +232,22 @@ hardware, an extracted distribution executable or native Linux ACL behavior.
 ## Remaining qualification gates
 
 - Exact packaged executable PTY/security regressions and executable/archive digests.
-- Native Linux ACLs and cross-owner/group preservation; the Linux VM mount gate above used one synthetic owner/group. The mounted VirtioFS filesystem's xattr branch remains unexercised.
+- Mounted VirtioFS user xattrs remain unsupported; normal Linux filesystem xattrs, actual POSIX ACL preservation and cross-owner refusal have separate final packaged VM evidence in DELIVERY.md.
 - Native macOS Intel and Linux x64/ARM64 candidate gates.
 - Cross-owner preservation where the current user cannot apply ownership; current tests exercised same owner plus supplementary group.
 - Live AI accounts/provider compatibility and provider-side cancellation/billing behavior.
 - Native signing/notarization and distribution install paths, governed by release authorization.
 - Real terminal/SSH/tmux, glyph shaping and assistive-technology evaluation; source/PTY text tests cannot establish those claims.
+
+## Final packaged Linux metadata evaluation
+
+The accepted static musl ARM64 archive from clean `917238f` preserved a real
+`system.posix_acl_access` ACL with named UID65534, owner/group/mode0640 and
+content across atomic inode replacement in an 80×24 PTY. A child UID65534
+then tried to save a root-owned0666 synthetic file in a writable directory:
+Mellow refused ownership loss, retaining original bytes/inode/device/uid/gid/mode
+and no temporary remnants. Explicit error wording was captured at240×24.
+This executes Linux in Docker's ARM64 VM, not macOS or physical Linux hardware.
+[Raw log](evidence/linux-vm-packaged-metadata.log) and
+[reproducible probe](evidence/linux-vm-packaged-metadata-probe.py) retain exact
+archive/binary digests, platform, observer corrections and final zero exit.

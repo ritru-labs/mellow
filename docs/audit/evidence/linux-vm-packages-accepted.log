@@ -1,0 +1,138 @@
+info: syncing channel updates for '1.90.0-aarch64-unknown-linux-gnu'
+info: latest update on 2025-09-18, rust version 1.90.0 (1159e78c4 2025-09-14)
+info: downloading component 'clippy'
+info: downloading component 'rustfmt'
+info: installing component 'clippy'
+info: installing component 'rustfmt'
+info: downloading component 'rust-std' for 'aarch64-unknown-linux-musl'
+info: installing component 'rust-std' for 'aarch64-unknown-linux-musl'
+   Compiling mellow v0.3.0 (/workspace)
+    Finished `release` profile [optimized] target(s) in 9.30s
+mellow 0.3.0
+Building target platforms: aarch64
+Building for target aarch64
+/tmp/mellow-release-acceptance.LpMvxn/mellow-0.3.0-aarch64-unknown-linux-musl/mellow: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, BuildID[sha1]=e80b6639113332e734f3885005c94e768fcce770, not stripped
+source_commit=917238f93ec19a7036bfd7fba777a514c8032bbf
+archive_sha256=5370f422891e098ccdea160a79493389e4247a3e24ac03fc6c87ff20fe32efa0
+binary_sha256=9b370cb14579f6aaa0f6ef14402a32159b01abc8a7053c97d210fe3977a9457b
+tested_executable=/tmp/mellow-release-acceptance.LpMvxn/mellow-0.3.0-aarch64-unknown-linux-musl/mellow
+platform=Linux-ARM64
+host=aarch64-unknown-linux-gnu
+execution_kind=linux-vm
+build_url=local/local/actions/runs/local
+   Compiling mellow v0.3.0 (/workspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.29s
+     Running tests/release_native_smoke.rs (/target/debug/deps/release_native_smoke-8cf8a76e25707c58)
+
+running 24 tests
+test live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o ... ok
+test live_first_key_on_the_welcome_screen_reaches_the_file ... ok
+test release_binary_claude_redirect_never_contacts_key_target ... ok
+test release_binary_cli_piped_stdin_retains_interactive_terminal_and_saves_draft ... ok
+test release_binary_cli_multifile_goto_wait_reaches_the_requested_caret ... ok
+test live_quit_with_unsaved_text_asks_and_discard_exits ... ok
+test live_mouse_click_runs_a_palette_row_at_120_by_34 ... ok
+test release_binary_ai_proposal_disclosure_reject_accept_and_grouped_undo_redo ... ok
+test release_binary_ai_stream_cancel_aborts_socket_and_late_result_cannot_overwrite_edit ... ok
+test live_palette_and_open_file_open_and_close_with_escape ... ok
+test release_binary_recovers_unsaved_unicode_after_crash ... ok
+test release_binary_launch_edit_save_quit_restores_terminal ... ok
+test release_binary_rectangle_paste_distributes_rows_and_undo_restores_all ... ok
+test release_binary_rejects_hostile_ai_shell_before_terminal_input ... ok
+test release_binary_linked_snippet_paste_and_restart_history_restore_are_undoable ... ok
+test release_binary_safe_ai_shell_stays_in_review_copy_and_close_never_execute ... ok
+test release_binary_recovers_every_unnamed_draft_after_crash ... ok
+test release_binary_slow_clipboard_keeps_palette_responsive_and_discards_stale_paste ... ok
+test release_binary_terminal_doctor_omits_paste_contents_and_config_review_does_not_save ... ok
+test release_binary_save_all_multiple_files_and_navigation_back_forward ... ok
+test release_binary_unicode_multicursor_terminal_and_clipboard_paste_are_one_undo ... ok
+test release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases ... ok
+test release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save ... ok
+test release_binary_formatter_deadline_includes_descendants_holding_pipes ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.60s
+
+acceptance=passed
+Selecting previously unselected package mellow.
+(Reading database ... 23940 files and directories currently installed.)
+Preparing to unpack .../linux/mellow_0.3.0_arm64.deb ...
+Unpacking mellow (0.3.0) ...
+Setting up mellow (0.3.0) ...
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running tests/release_native_smoke.rs (/target/debug/deps/release_native_smoke-8cf8a76e25707c58)
+
+running 24 tests
+test live_first_key_on_the_welcome_screen_reaches_the_file ... ok
+test live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o ... ok
+test release_binary_claude_redirect_never_contacts_key_target ... ok
+test release_binary_cli_piped_stdin_retains_interactive_terminal_and_saves_draft ... ok
+test release_binary_cli_multifile_goto_wait_reaches_the_requested_caret ... ok
+test live_quit_with_unsaved_text_asks_and_discard_exits ... ok
+test live_mouse_click_runs_a_palette_row_at_120_by_34 ... ok
+test release_binary_ai_proposal_disclosure_reject_accept_and_grouped_undo_redo ... ok
+test release_binary_ai_stream_cancel_aborts_socket_and_late_result_cannot_overwrite_edit ... ok
+test live_palette_and_open_file_open_and_close_with_escape ... ok
+test release_binary_recovers_unsaved_unicode_after_crash ... ok
+test release_binary_launch_edit_save_quit_restores_terminal ... ok
+test release_binary_rectangle_paste_distributes_rows_and_undo_restores_all ... ok
+test release_binary_rejects_hostile_ai_shell_before_terminal_input ... ok
+test release_binary_linked_snippet_paste_and_restart_history_restore_are_undoable ... ok
+test release_binary_safe_ai_shell_stays_in_review_copy_and_close_never_execute ... ok
+test release_binary_slow_clipboard_keeps_palette_responsive_and_discards_stale_paste ... ok
+test release_binary_recovers_every_unnamed_draft_after_crash ... ok
+test release_binary_terminal_doctor_omits_paste_contents_and_config_review_does_not_save ... ok
+test release_binary_save_all_multiple_files_and_navigation_back_forward ... ok
+test release_binary_unicode_multicursor_terminal_and_clipboard_paste_are_one_undo ... ok
+test release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases ... ok
+test release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save ... ok
+test release_binary_formatter_deadline_includes_descendants_holding_pipes ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.60s
+
+(Reading database ... 23944 files and directories currently installed.)
+Removing mellow (0.3.0) ...
+rpm: RPM should not be used directly install RPM packages, use Alien instead!
+rpm: However assuming you know what you are doing...
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/release_native_smoke.rs (/target/debug/deps/release_native_smoke-8cf8a76e25707c58)
+
+running 24 tests
+test live_first_key_on_the_welcome_screen_reaches_the_file ... ok
+test live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o ... ok
+test release_binary_claude_redirect_never_contacts_key_target ... ok
+test release_binary_cli_piped_stdin_retains_interactive_terminal_and_saves_draft ... ok
+test release_binary_cli_multifile_goto_wait_reaches_the_requested_caret ... ok
+test live_quit_with_unsaved_text_asks_and_discard_exits ... ok
+test live_mouse_click_runs_a_palette_row_at_120_by_34 ... ok
+test release_binary_ai_proposal_disclosure_reject_accept_and_grouped_undo_redo ... ok
+test release_binary_ai_stream_cancel_aborts_socket_and_late_result_cannot_overwrite_edit ... ok
+test live_palette_and_open_file_open_and_close_with_escape ... ok
+test release_binary_recovers_unsaved_unicode_after_crash ... ok
+test release_binary_launch_edit_save_quit_restores_terminal ... ok
+test release_binary_rectangle_paste_distributes_rows_and_undo_restores_all ... ok
+test release_binary_rejects_hostile_ai_shell_before_terminal_input ... ok
+test release_binary_linked_snippet_paste_and_restart_history_restore_are_undoable ... ok
+test release_binary_safe_ai_shell_stays_in_review_copy_and_close_never_execute ... ok
+test release_binary_slow_clipboard_keeps_palette_responsive_and_discards_stale_paste ... ok
+test release_binary_recovers_every_unnamed_draft_after_crash ... ok
+test release_binary_terminal_doctor_omits_paste_contents_and_config_review_does_not_save ... ok
+test release_binary_unicode_multicursor_terminal_and_clipboard_paste_are_one_undo ... ok
+test release_binary_save_all_multiple_files_and_navigation_back_forward ... ok
+test release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases ... ok
+test release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save ... ok
+test release_binary_formatter_deadline_includes_descendants_holding_pipes ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.64s
+
+rpm: RPM should not be used directly install RPM packages, use Alien instead!
+rpm: However assuming you know what you are doing...
+total 27568
+drwxr-xr-x@ 9 rukmini  staff      288 Oct 11 17:31 .
+drwxr-xr-x@ 4 rukmini  staff      128 Oct 11 17:24 ..
+-rw-r--r--@ 1 rukmini  staff      295 Oct 11 17:31 SHA256SUMS
+-rw-r--r--  1 rukmini  staff  4928886 Oct 11 17:30 mellow-0.3.0-1.aarch64.rpm
+-rw-r--r--  1 rukmini  staff      274 Oct 11 17:31 mellow-0.3.0-1.aarch64.rpm.acceptance.txt
+-rw-r--r--  1 rukmini  staff  4967459 Oct 11 17:30 mellow-0.3.0-aarch64-unknown-linux-musl.tar.gz
+-rw-r--r--  1 rukmini  staff     2461 Oct 11 17:30 mellow-0.3.0-aarch64-unknown-linux-musl.tar.gz.acceptance.txt
+-rw-r--r--  1 rukmini  staff  3340700 Oct 11 17:30 mellow_0.3.0_arm64.deb
+-rw-r--r--  1 rukmini  staff      274 Oct 11 17:30 mellow_0.3.0_arm64.deb.acceptance.txt

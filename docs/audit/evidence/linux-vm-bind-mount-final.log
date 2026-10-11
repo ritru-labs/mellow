@@ -1,0 +1,25 @@
+checkout_sha=917238f93ec19a7036bfd7fba777a514c8032bbf
+source_clean=true
+execution_kind=linux-vm-on-macos-arm64
+command_argv=["docker", "run", "--rm", "-e", "CARGO_HOME=/cargo", "-e", "CARGO_TARGET_DIR=/target", "-e", "MELLOW_BIND_MOUNT_FILE=/fixture/mounted.txt", "--mount", "type=bind,source=/Users/rukmini/mellow-audit-20261011,target=/workspace", "--mount", "type=bind,source=/var/folders/_2/416jx4l15fb5tgggzb23l3mm0000gp/T/mellow-final-bind-mount-1kpls9ma/mounted.txt,target=/fixture/mounted.txt", "-v", "mellow-audit-20261011_mellow-cargo-registry:/cargo/registry", "-v", "mellow-audit-20261011_mellow-cargo-git:/cargo/git", "-v", "mellow-audit-20261011_mellow-target:/target", "-w", "/workspace", "mellow-audit-20261011-mellow-dev:latest", "bash", "-euo", "pipefail", "-c", "uname -srm\nrustc --version --verbose\ncargo test --locked --bin mellow buffer::tests::saving_a_bind_mounted_file_rewrites_it_in_place -- --ignored --exact --nocapture"]
+Linux 7.0.12-linuxkit aarch64
+rustc 1.90.0 (1159e78c4 2025-09-14)
+binary: rustc
+commit-hash: 1159e78c4747b02ef996e55082b704c09b970588
+commit-date: 2025-09-14
+host: aarch64-unknown-linux-gnu
+release: 1.90.0
+LLVM version: 20.1.8
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/main.rs (/target/debug/deps/mellow-7cc9b69738471da5)
+
+running 1 test
+bind-mount filesystem does not support user xattrs; this attribute branch was not exercised
+test buffer::tests::saving_a_bind_mounted_file_rewrites_it_in_place ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 528 filtered out; finished in 0.00s
+
+host_fixture_contents='updated mellow-bind-mount-fixture: original\n'
+host_fixture_mode=640
+source_unchanged=true
+exit_code=0

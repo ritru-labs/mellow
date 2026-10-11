@@ -1,0 +1,6 @@
+source_commit=917238f93ec19a7036bfd7fba777a514c8032bbf
+package_sha256=dba4e4739667ddfd4709af2e347fcac53ad35c508bdbb9bccd44094ba40686d8
+binary_sha256=9b370cb14579f6aaa0f6ef14402a32159b01abc8a7053c97d210fe3977a9457b
+execution_kind=linux-vm
+install_pty=passed
+uninstall=passed

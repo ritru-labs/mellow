@@ -1,0 +1,38 @@
+checkout_sha=ecff35f09970250a553747bf6d869f1756cb4088
+working_candidate=file_ops musl syscall fix before commit
+file_ops_sha256=1c61d98f7f8afe1ddf2977539d728b931fc9af665f395058c9aeab557afd4358
+command=rustup target add aarch64-unknown-linux-musl >/dev/null
+cargo test --locked --release --target aarch64-unknown-linux-musl --bin mellow file_ops:: -- --nocapture
+info: syncing channel updates for '1.90.0-aarch64-unknown-linux-gnu'
+info: latest update on 2025-09-18, rust version 1.90.0 (1159e78c4 2025-09-14)
+info: downloading component 'clippy'
+info: downloading component 'rustfmt'
+info: installing component 'clippy'
+info: installing component 'rustfmt'
+info: downloading component 'rust-std' for 'aarch64-unknown-linux-musl'
+info: installing component 'rust-std' for 'aarch64-unknown-linux-musl'
+   Compiling rustix v1.1.5
+   Compiling getrandom v0.4.3
+   Compiling fastrand v2.5.0
+   Compiling crossterm v0.29.0
+   Compiling tempfile v3.27.0
+   Compiling ratatui-crossterm v0.1.2
+   Compiling ratatui v0.30.2
+   Compiling mellow v0.3.0 (/workspace)
+    Finished `release` profile [optimized] target(s) in 20.05s
+     Running unittests src/main.rs (/target/aarch64-unknown-linux-musl/release/deps/mellow-d0dacfb0a0a4aad2)
+
+running 9 tests
+test file_ops::tests::exclusive_rename_preserves_existing_regular_file_and_moves_to_new_path ... ok
+test file_ops::tests::exclusive_rename_never_replaces_a_directory_or_dangling_symlink ... ok
+test file_ops::tests::trash_refuses_nonprivate_or_symlink_root ... ok
+test file_ops::tests::restore_refuses_changed_manifest_or_item_after_review ... ok
+test file_ops::tests::trash_moves_symlink_without_touching_target ... ok
+test file_ops::tests::trash_manifest_never_follows_symlinks_or_reads_unbounded_data ... ok
+test file_ops::tests::trash_refuses_symlink_root_and_nonprivate_entries ... ok
+test file_ops::tests::trash_survives_restart_and_restore_never_overwrites_new_work ... ok
+test file_ops::tests::restore_refuses_a_replaced_original_parent ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 520 filtered out; finished in 0.12s
+
+exit_code=0

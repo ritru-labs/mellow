@@ -7,7 +7,7 @@ All 12 findings, 39 capability rows and six ideas are retained. Status applies t
 
 [Baseline](BASELINE.md) · [Machine-readable tracker](tracker.json) · [Delivery](DELIVERY.md) · [User workflows](../audit-workflows.md) · [Security](security-verification.md) · [Language](language-verification.md) · [Terminal](terminal-verification.md) · [Accessibility](accessibility-evidence.md)
 
-Release readiness: **Not ready for publication: pending exact candidate packaging/platform gates and explicitly unauthorized release/signing/native accessibility validation.**
+Release readiness: **Not ready for publication: exact latest-head native CI rerun pending; patched publication unauthorized; Apple signing/notarization and native accessibility/terminal-family gates unavailable.**
 
 ## Coverage
 
@@ -24,7 +24,7 @@ Release readiness: **Not ready for publication: pending exact candidate packagin
 | [F09: Completion drops supporting edits such as imports](#f09) | F09 Medium · Source-confirmed missing LSP handling · live server impact untested | verified |
 | [F10: Switching language families replaces the language-server process](#f10) | F10 Medium · Source-confirmed limitation | verified |
 | [F11: Version and testing documentation disagree with the release](#f11) | F11 Medium · Source/release evidence | verified |
-| [F12: Published archives lack a complete native artifact acceptance gate](#f12) | F12 Medium · Coverage gap · not a demonstrated broken package | blocked |
+| [F12: Published archives lack a complete native artifact acceptance gate](#f12) | F12 Medium · Coverage gap · not a demonstrated broken package | implemented but unverified |
 | [M01: Save All / close all / close others](#m01) | Next | verified |
 | [M02: Persistent local history](#m02) | Next | verified |
 | [M03: Multi-cursor + rectangle editing](#m03) | Fix now | verified |
@@ -94,7 +94,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -121,7 +121,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; ff6eb860caaaef74fc34d2a3480690f9ea50c89e.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; ff6eb860caaaef74fc34d2a3480690f9ea50c89e · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Publishing/upgrading latest release and distribution install paths requires explicit user authorization; latest 0.3.0 remains vulnerable until publication..
 
@@ -140,7 +140,7 @@ Dependencies: None.
 
 Acceptance: Native metadata fixtures survive atomic save; linked names and concurrent-writer fixtures retain existing work. Actual Linux EBUSY mount uses verified in-place policy..
 
-Tests: atomic_save_preserves_extended_attributes_owner_group_and_mode; atomic_save_preserves_native_acl_and_nondefault_group; saving_a_hard_link_refuses_without_mutating_either_name; save_baseline_cannot_adopt_a_writer_after_the_conflict_check; saving_a_bind_mounted_file_rewrites_it_in_place.
+Tests: atomic_save_preserves_extended_attributes_owner_group_and_mode; atomic_save_preserves_native_acl_and_nondefault_group; saving_a_hard_link_refuses_without_mutating_either_name; save_baseline_cannot_adopt_a_writer_after_the_conflict_check; saving_a_bind_mounted_file_rewrites_it_in_place; Actual extracted Linux musl POSIX ACL preservation and cross-owner refusal PTY (retained probe/log).
 
 Source: `src/buffer.rs`.
 
@@ -148,9 +148,9 @@ Evidence: [security-verification.md](security-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Linux bind-mount VirtioFS user-xattr branch unsupported; normal-filesystem metadata suite separate. Cross-owner denial and uncooperative final-check/rename race limits documented..
+Remaining gates: Mounted VirtioFS does not support user xattrs; normal Linux filesystem xattrs verified. Safe save does not serialize uncooperative writers across final conflict-check/rename; exact claimed-platform results remain separate..
 
 <a id="f04"></a>
 ## F04: Formatter execution freezes the editor and can outlive its timeout
@@ -175,7 +175,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -202,7 +202,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -229,7 +229,7 @@ Evidence: [../audit-workflows.md](../audit-workflows.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -256,7 +256,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: First-time participant/pilot usefulness evaluation unavailable; source and native PTY results cannot establish participant acceptance..
 
@@ -283,7 +283,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Slow-storage/SSH performance not measured; local synthetic cancellation/responsiveness evidence only..
 
@@ -310,7 +310,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -337,7 +337,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -364,14 +364,14 @@ Evidence: [BASELINE.md](BASELINE.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e.
+Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
 <a id="f12"></a>
 ## F12: Published archives lack a complete native artifact acceptance gate
 
-Priority: F12 Medium · Coverage gap · not a demonstrated broken package. Status: **blocked**.
+Priority: F12 Medium · Coverage gap · not a demonstrated broken package. Status: **implemented but unverified**.
 
 Baseline revalidation: CI contains meaningful unit and PTY tests. However, tagged packaging builds separate musl/macOS target binaries and largely checks architecture and --version. The release publish job tests installer version output. The available archive-install PTY gate is not invoked by release.yml; Intel macOS is cross-built without a native Intel test in that workflow..
 
@@ -383,7 +383,7 @@ Dependencies: F01–F11 regressions; Clean committed source.
 
 Acceptance: Each claimed archive must pass all PTY tests on its native architecture with recorded source/archive/binary identity; no cross-build or unexecuted workflow substitutes for acceptance..
 
-Tests: native-ci artifact-install; .deb/.rpm install/uninstall PTY; actionlint and Bash validation; scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused.
+Tests: native-ci artifact-install; .deb/.rpm install/uninstall PTY; actionlint and Bash validation; scripts/test-artifact-provenance.sh: same-version stale-source and incorrect-target archives refused; All 24 PTY tests against extracted native macOS archive, Linux musl archive, installed deb and rpm; uninstall verified.
 
 Source: `.github/workflows/candidate-artifacts.yml`; `.github/workflows/release.yml`; `scripts/native-ci.sh`; `scripts/package-linux.sh`; `scripts/package-macos.sh`.
 
@@ -391,9 +391,9 @@ Evidence: [../RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e.
+Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Execute retained candidate jobs on native macOS Intel, Linux x64 and native Linux ARM runner; local ARM Linux VM is recorded separately. No executed CI claim until actual logs..
+Remaining gates: Local macOS ARM archive and Linux ARM VM archive/deb/rpm accepted at 917238f. Initial native Linux ARM GitHub candidate passed; initial macOS jobs failed incomplete onboarding observer. Corrected complete-frame observer passes locally; exact latest-head four-target rerun must finish..
 
 <a id="m01"></a>
 ## M01: Save All / close all / close others
@@ -418,7 +418,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -445,7 +445,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -472,7 +472,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -499,7 +499,7 @@ Evidence: [../audit-workflows.md](../audit-workflows.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -526,7 +526,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -553,7 +553,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -580,7 +580,7 @@ Evidence: [language-verification.md](language-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -607,7 +607,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -634,7 +634,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -661,7 +661,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -688,7 +688,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -715,7 +715,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Actual real-server stdio/core workflow verified; packaged interactive completion/import/navigation/Problems selection remains unqualified..
 
@@ -742,7 +742,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -769,7 +769,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Slow-storage/SSH performance not measured; local synthetic cancellation/responsiveness evidence only..
 
@@ -796,7 +796,7 @@ Evidence: [language-verification.md](language-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -823,7 +823,7 @@ Evidence: [../audit-workflows.md](../audit-workflows.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -850,7 +850,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -877,7 +877,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -904,7 +904,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -931,7 +931,7 @@ Evidence: [security-verification.md](security-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -958,7 +958,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -985,7 +985,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1012,7 +1012,7 @@ Evidence: [security-verification.md](security-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1039,7 +1039,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1066,7 +1066,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1093,7 +1093,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1120,7 +1120,7 @@ Evidence: [terminal-verification.md](terminal-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1147,7 +1147,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1174,7 +1174,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1201,7 +1201,7 @@ Evidence: [security-verification.md](security-verification.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1228,7 +1228,7 @@ Evidence: [security-verification.md](security-verification.md); [terminal-verifi
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Broader native/integration limits in evidence documents.
 
@@ -1255,7 +1255,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1282,7 +1282,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1309,7 +1309,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1336,7 +1336,7 @@ Evidence: [accessibility-evidence.md](accessibility-evidence.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: Pending focused commits.
+Commit/PR: ecff35f09970250a553747bf6d869f1756cb4088 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Native VoiceOver/braille and real assistive-technology participant evaluation unavailable; Terminal.app/iTerm2/Ghostty, physical fonts/mouse and SSH/tmux not qualified..
 
@@ -1363,7 +1363,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1390,7 +1390,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1417,7 +1417,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1436,7 +1436,7 @@ Dependencies: Stage A foundation.
 
 Acceptance: Release provenance must execute and native signature/notarization must validate with authorized identity before claiming signed distribution..
 
-Tests: workflow actionlint; package digests and extracted PTY; codesign hook validation; Doctor PTY.
+Tests: workflow actionlint; package digests and extracted PTY; codesign hook validation; Doctor PTY; MELLOW_REQUIRE_SIGNING=1 refuses unsigned package creation with explicit missing-identity reason.
 
 Source: `.github/workflows/release.yml`; `scripts/package-macos.sh`; `src/app.rs`.
 
@@ -1444,7 +1444,7 @@ Evidence: [../RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md).
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e.
+Commit/PR: ff6eb860caaaef74fc34d2a3480690f9ea50c89e; 917238f93ec19a7036bfd7fba777a514c8032bbf · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Apple signing identity and notarization credentials unavailable; no signature/notarization/provenance publication executed..
 
@@ -1471,7 +1471,7 @@ Evidence: [terminal-verification.md](terminal-verification.md); [../audit-workfl
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: First-time participant/pilot usefulness evaluation unavailable; source and native PTY results cannot establish participant acceptance..
 
@@ -1498,7 +1498,7 @@ Evidence: [terminal-verification.md](terminal-verification.md); [accessibility-e
 
 Verification scope: Source/module/protocol and recorded native PTY evidence as applicable; packaged exact-commit gates recorded separately..
 
-Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9.
+Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9 · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Native Terminal.app, iTerm2, Ghostty, WSL/Windows Terminal and SSH/tmux comparison remains unperformed..
 
@@ -1525,7 +1525,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1552,7 +1552,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1579,7 +1579,7 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
 
@@ -1606,6 +1606,6 @@ Evidence: No new capability acceptance claimed.
 
 Verification scope: No new capability acceptance claimed..
 
-Commit/PR: Pending focused commits.
+Commit/PR: Pending focused commits · https://github.com/ritru-labs/mellow/pull/11.
 
 Remaining gates: Requires future product-scope decision; not part of current audit implementation..
