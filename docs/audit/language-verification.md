@@ -208,3 +208,15 @@ preceding edit endpoints (including normalized CRLF), and update history/service
 only for applied edits. Provider commands remain unexecuted and disclosed.
 [RED](evidence/completion-noop-red.log) and [GREEN](evidence/completion-noop-green.log)
 identify this source regression separately from packaged real-server workflows.
+
+## Exact Unicode edit boundaries
+
+The final adverse check reproduced a provider range inside an emoji replacing
+the wrong grapheme. The shared LSP edit validator now requires both converted
+endpoints to round-trip to their original UTF-16 offsets before any mutation or
+no-op filtering. Whole-array refusal preserves text, revision and caret.
+LSP offsets count UTF-16 units; a position inside a combining/ZWJ cluster can be
+valid protocol input but is unsupported by Mellow's whole-grapheme edit model.
+The visible refusal describes that limit instead of rounding and changing nearby
+text. The regression covers primary and supporting positions inside emoji and
+combining clusters; valid full-grapheme completion/import cases still pass.

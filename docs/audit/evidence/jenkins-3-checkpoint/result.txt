@@ -1,0 +1,8 @@
+source_commit=759a34bea2103ded5d2092467cfa779bc56aee0b
+target=aarch64-apple-darwin
+mode=acceptance
+started=2026-10-11T13:18:37Z
+finished=2026-10-11T13:22:23Z
+exit_code=0
+build_url=http://127.0.0.1:8082/job/mellow-audit-acceptance/3/
+candidate_acceptance=passed

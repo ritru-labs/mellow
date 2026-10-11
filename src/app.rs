@@ -5241,6 +5241,15 @@ impl App {
             let start_cursor =
                 Cursor::new(start.0, buffer.grapheme_col_for_utf16(start.0, start.1));
             let end_cursor = Cursor::new(end.0, buffer.grapheme_col_for_utf16(end.0, end.1));
+            // Cursor edits operate on whole graphemes. Refuse a provider range
+            // that cannot round-trip instead of changing neighboring text.
+            if buffer.utf16_col_for_grapheme(start_cursor.row, start_cursor.col) != start.1
+                || buffer.utf16_col_for_grapheme(end_cursor.row, end_cursor.col) != end.1
+            {
+                return Err(
+                    "language server edit is not on a supported grapheme boundary".to_owned(),
+                );
+            }
             replacements.push((start_cursor, end_cursor, edit.new_text.clone()));
             previous = Some((start, end));
         }
@@ -15145,6 +15154,54 @@ mod tests {
         app.apply_completion_item(item);
         assert_eq!(app.buffer.contents(), before);
         assert!(app.status.as_deref().unwrap().contains("overlapping"));
+    }
+
+    #[test]
+    fn f09_completion_refuses_utf16_positions_inside_a_grapheme() {
+        for source in ["🦀audit_sy", "e\u{301}audit_sy"] {
+            for invalid_primary in [Some((1, 2)), Some((0, 1)), None] {
+                let mut app = App::new(Buffer::empty(None));
+                app.handle_paste(source);
+                let before = app.cursor;
+                let revision = app.buffer.revision();
+                let range = |start, end| crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: start,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: end,
+                    },
+                };
+                app.apply_completion_item(CompletionItem {
+                    label: "audit_symbol".to_owned(),
+                    insert_text: "audit_symbol".to_owned(),
+                    edit_range: Some(if let Some((start, end)) = invalid_primary {
+                        range(start, end)
+                    } else {
+                        range(2, 10)
+                    }),
+                    additional_text_edits: if invalid_primary.is_some() {
+                        Vec::new()
+                    } else {
+                        vec![crate::lsp::CompletionTextEdit {
+                            range: range(1, 1),
+                            new_text: String::new(),
+                        }]
+                    },
+                    ..CompletionItem::default()
+                });
+                assert_eq!(
+                    app.buffer.contents(),
+                    source,
+                    "unsupported boundary must not round and change text"
+                );
+                assert_eq!(app.buffer.revision(), revision);
+                assert_eq!(app.cursor, before);
+                assert!(app.status.as_deref().unwrap().contains("grapheme boundary"));
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,21 @@
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.19s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 1 test
+
+thread 'app::tests::f09_completion_refuses_utf16_positions_inside_a_grapheme' panicked at src/app.rs:15174:17:
+assertion `left == right` failed: unsupported boundary must not round and change text
+  left: "audit_symbolaudit_sy"
+ right: "🦀audit_sy"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::tests::f09_completion_refuses_utf16_positions_inside_a_grapheme ... FAILED
+
+failures:
+
+failures:
+    app::tests::f09_completion_refuses_utf16_positions_inside_a_grapheme
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 538 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin mellow`

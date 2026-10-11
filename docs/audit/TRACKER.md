@@ -294,7 +294,7 @@ Priority: F09 Medium · Source-confirmed missing LSP handling · live server imp
 
 Baseline revalidation: Completion parsing retains a label, insertion text and primary range. It does not retain additionalTextEdits or a completion command, and no completion-item resolve path was found. Some servers use those mechanisms to add imports or finish an edit..
 
-Current implementation/evidence: Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions..
+Current implementation/evidence: Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions. Exact UTF-16 round-trip validation refuses unsupported internal grapheme boundaries without changing text, revision or caret; whole-grapheme real-server workflows remain separately qualified..
 
 Required change: Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false..
 
@@ -302,7 +302,7 @@ Dependencies: Shared atomic buffer transactions.
 
 Acceptance: Real Python and TypeScript imports plus symbol insertion undo/redo together; stale, overlapping and malformed edits apply neither..
 
-Tests: f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command; f09_stale_completion_import_applies_neither_edit; f09_overlapping_completion_import_applies_neither_edit; actual Pyright and TypeScript workflows; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed; f09_completion_noop_supporting_edits_preserve_primary_caret_and_history; f09_completion_noop_primary_follows_supporting_import_and_history; f09_completion_noop_only_preserves_revision_and_existing_history_caret; f09_completion_noop_overlap_is_rejected_before_filtering.
+Tests: f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command; f09_stale_completion_import_applies_neither_edit; f09_overlapping_completion_import_applies_neither_edit; actual Pyright and TypeScript workflows; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed; f09_completion_noop_supporting_edits_preserve_primary_caret_and_history; f09_completion_noop_primary_follows_supporting_import_and_history; f09_completion_noop_only_preserves_revision_and_existing_history_caret; f09_completion_noop_overlap_is_rejected_before_filtering; f09_completion_refuses_utf16_positions_inside_a_grapheme.
 
 Source: `src/lsp.rs`; `src/app.rs`; `src/buffer.rs`.
 
@@ -312,7 +312,7 @@ Verification scope: Source/module/protocol plus actual extracted macOS ARM64 cd5
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; cd5e74754db95abfd622a3ab7608588e424102b1 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified..
+Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified.; Provider edits inside combining/ZWJ graphemes are explicitly refused because the edit model cannot safely represent them; no character-granularity rewrite is included..
 
 <a id="f10"></a>
 ## F10: Switching language families replaces the language-server process
@@ -672,7 +672,7 @@ Priority: Next. Status: **verified**.
 
 Baseline revalidation: Partial; baseline src/lsp.rs.
 
-Current implementation/evidence: F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions..
+Current implementation/evidence: F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions. Exact UTF-16 round-trip validation refuses unsupported internal grapheme boundaries without changing text, revision or caret; whole-grapheme real-server workflows remain separately qualified..
 
 Required change: Complete the LSP edit lifecycle; add snippet support separately..
 
@@ -680,7 +680,7 @@ Dependencies: Stage A foundation.
 
 Acceptance: Primary and supporting edits succeed or refuse as one undo group..
 
-Tests: F09 synthetic and actual Python/TypeScript tests; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed; f09_completion_noop_supporting_edits_preserve_primary_caret_and_history; f09_completion_noop_primary_follows_supporting_import_and_history; f09_completion_noop_only_preserves_revision_and_existing_history_caret; f09_completion_noop_overlap_is_rejected_before_filtering.
+Tests: F09 synthetic and actual Python/TypeScript tests; f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable; f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points; evidence/real-lsp-cd5/results.json: both packaged real-server keyboard workflows passed; f09_completion_noop_supporting_edits_preserve_primary_caret_and_history; f09_completion_noop_primary_follows_supporting_import_and_history; f09_completion_noop_only_preserves_revision_and_existing_history_caret; f09_completion_noop_overlap_is_rejected_before_filtering; f09_completion_refuses_utf16_positions_inside_a_grapheme.
 
 Source: `src/lsp.rs`; `src/app.rs`; `src/buffer.rs`.
 
@@ -690,7 +690,7 @@ Verification scope: Source/module/protocol plus actual extracted macOS ARM64 cd5
 
 Commit/PR: e324b7f0e64080f8c911ae41230e99ebb40313a9; cd5e74754db95abfd622a3ab7608588e424102b1 · https://github.com/ritru-labs/mellow/pull/11.
 
-Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified..
+Remaining gates: Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified.; Provider edits inside combining/ZWJ graphemes are explicitly refused because the edit model cannot safely represent them; no character-granularity rewrite is included..
 
 <a id="m12"></a>
 ## M12: Warm language services

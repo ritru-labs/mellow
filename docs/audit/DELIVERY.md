@@ -21,9 +21,9 @@ Later/Defer capabilities and expanded multi-file replacement remain deferred.
 | Gate | Result | Scope |
 | --- | --- | --- |
 | Pinned Rust formatting, check and all-target/all-feature Clippy with warnings denied | Passed | Native macOS ARM64 and Linux ARM64 Docker VM |
-| Native source tests | 535 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
+| Native source tests | 536 passed, 0 failed, 3 explicit ignores | macOS 26.6.2 ARM64, Rust 1.90.0 |
 | Native real-PTY suite | 24 passed, 0 failed/ignored | Cargo executable, 80×24/120×34, synthetic files/providers |
-| Linux source tests | 532 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
+| Linux source tests | 533 passed, 0 failed, 4 explicit ignores | Docker Linux VM ARM64, Rust 1.90.0 |
 | Linux real-PTY suite | 24 passed, 0 failed/ignored | Linux VM Cargo executable, separate from macOS |
 | Explicit real-language gates | 3 passed, 0 failed/ignored | Pyright 1.1.414 and TS language server 6.0.2/TypeScript 5.9.3 over stdio/core buffers |
 | Explicit actual Linux bind mount | 1 passed, 0 failed/ignored | Observed EBUSY→in-place save; mounted VirtioFS xattrs unsupported |
@@ -157,3 +157,12 @@ three REDs plus the overlap refusal control; all 14 F09 tests pass after the
 app-only correction. Child signal reset was independently reviewed with no
 remaining blocker found. The final candidate still requires its own full source
 and actual package run; earlier `cd5e747`/`8cfc546` receipts are checkpoints.
+
+Jenkins #3 at `759a34b` SUCCESS qualified the normal-clone correction with
+all native macOS gates and Linux ARM64 VM archive/deb/rpm 24-PTY acceptance,
+including both installer removals. [Checkpoint receipts](evidence/jenkins-3-checkpoint/run.json)
+retain that exact SHA. The subsequent Unicode round-trip guard refuses provider
+ranges inside graphemes instead of changing neighboring text; its final local
+gates passed 536 native / 533 Linux VM unit tests plus all 24 PTY tests.
+The final clean-commit Jenkins receipt linked in PR #11 supersedes the checkpoint
+for the accepted candidate.

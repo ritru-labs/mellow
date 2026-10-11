@@ -1,0 +1,4 @@
+fad8e41ca1a02319e481b61807765ebc5089e205f567311c9700c76cc40cafd6  dist/macos/mellow-0.3.0-aarch64-apple-darwin.tar.gz
+41160331870f61d0116a73d99b9d3a1458a11f2d613871645076c0ac436100b3  dist/linux/mellow_0.3.0_arm64.deb
+07ffc686f18dc4b63f720a2f02640d26a0d80f682a6091dcb3bff00f99731a6f  dist/linux/mellow-0.3.0-aarch64-unknown-linux-musl.tar.gz
+1340c696687737d4a8c13f35ea230bac3d6cef8b7f3eaaec4d87c3eea9fd37be  dist/linux/mellow-0.3.0-1.aarch64.rpm

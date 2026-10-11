@@ -302,7 +302,7 @@
       "id": "F09",
       "name": "Completion drops supporting edits such as imports",
       "priority": "F09 Medium · Source-confirmed missing LSP handling · live server impact untested",
-      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions.",
+      "current_evidence": "Completion resolve retains opaque provider data; primary/import edits validate and apply atomically. Unsupported completion commands are disclosed and never executed. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions. Exact UTF-16 round-trip validation refuses unsupported internal grapheme boundaries without changing text, revision or caret; whole-grapheme real-server workflows remain separately qualified.",
       "required_change": "Recommended change. Support the advertised LSP completion contract or clearly constrain capabilities. Apply supporting text edits atomically with stale-document and overlap checks. Add completion-item resolution when requested by the server. Snippet support is a separate feature and currently advertised false.",
       "acceptance": "Acceptance. A fixture completion that inserts a symbol and adds an import applies both in one undo group. Stale or conflicting edits apply neither. Validate with at least one real Python and TypeScript server.",
       "status": "verified",
@@ -320,7 +320,8 @@
         "f09_completion_noop_supporting_edits_preserve_primary_caret_and_history",
         "f09_completion_noop_primary_follows_supporting_import_and_history",
         "f09_completion_noop_only_preserves_revision_and_existing_history_caret",
-        "f09_completion_noop_overlap_is_rejected_before_filtering"
+        "f09_completion_noop_overlap_is_rejected_before_filtering",
+        "f09_completion_refuses_utf16_positions_inside_a_grapheme"
       ],
       "commits": [
         "e324b7f0e64080f8c911ae41230e99ebb40313a9",
@@ -328,7 +329,8 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified."
+        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified.",
+        "Provider edits inside combining/ZWJ graphemes are explicitly refused because the edit model cannot safely represent them; no character-granularity rewrite is included."
       ],
       "baseline_evidence": "Completion parsing retains a label, insertion text and primary range. It does not retain additionalTextEdits or a completion command, and no completion-item resolve path was found. Some servers use those mechanisms to add imports or finish an edit.",
       "source_evidence": [
@@ -795,7 +797,7 @@
       "id": "M11",
       "name": "Completion imports and resolution",
       "priority": "Next",
-      "current_evidence": "F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions.",
+      "current_evidence": "F09 atomic completion/import/resolve implementation. Packaged real Python/TypeScript tests exposed rejection of an import insertion at the primary replacement start. Narrow guard correction permits that boundary, preserves true-overlap/duplicate-point refusal, and checks grouped undo/redo plus exact caret. Actual extracted cd5 macOS ARM64 80×24 keyboard workflows passed with real Pyright 1.1.414 and TypeScript server 6.0.2/TypeScript 5.9.3: trust, completion/import, grouped undo/redo, definition/back, actual Problems diagnostic, save and exit code 0. Independent review additionally corrected empty supporting-edit caret indices, empty-primary import mapping, and all-no-op history preservation; validation still precedes filtering, with three decisive REDs and four passing regressions. Exact UTF-16 round-trip validation refuses unsupported internal grapheme boundaries without changing text, revision or caret; whole-grapheme real-server workflows remain separately qualified.",
       "required_change": "Complete the LSP edit lifecycle; add snippet support separately.",
       "acceptance": "Complete the LSP edit lifecycle; add snippet support separately.",
       "status": "verified",
@@ -810,7 +812,8 @@
         "f09_completion_noop_supporting_edits_preserve_primary_caret_and_history",
         "f09_completion_noop_primary_follows_supporting_import_and_history",
         "f09_completion_noop_only_preserves_revision_and_existing_history_caret",
-        "f09_completion_noop_overlap_is_rejected_before_filtering"
+        "f09_completion_noop_overlap_is_rejected_before_filtering",
+        "f09_completion_refuses_utf16_positions_inside_a_grapheme"
       ],
       "commits": [
         "e324b7f0e64080f8c911ae41230e99ebb40313a9",
@@ -818,7 +821,8 @@
       ],
       "pr": "https://github.com/ritru-labs/mellow/pull/11",
       "remaining_gates": [
-        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified."
+        "Native macOS ARM64 real-server packaged workflows verified. Intel macOS/Linux real-LSP UI, native accessibility and remote SSH remain unqualified.",
+        "Provider edits inside combining/ZWJ graphemes are explicitly refused because the edit model cannot safely represent them; no character-granularity rewrite is included."
       ],
       "baseline_evidence": "Partial; baseline src/lsp.rs",
       "source_evidence": [
@@ -1833,18 +1837,18 @@
   ],
   "final_source_gates": {
     "macOS_ARM64": {
-      "unit_passed": 535,
+      "unit_passed": 536,
       "ignored": 3,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/native-review-closure.log"
+      "log": "evidence/native-utf16-final.log"
     },
     "Linux_ARM64_VM": {
-      "unit_passed": 532,
+      "unit_passed": 533,
       "ignored": 4,
       "pty_passed": 24,
       "pty_ignored": 0,
-      "log": "evidence/linux-vm-review-closure.log"
+      "log": "evidence/linux-vm-utf16-final.log"
     },
     "explicit_optional_gates": {
       "real_language_servers": "3 passed; 0 failed/ignored",
@@ -1863,5 +1867,6 @@
     "evidence": "evidence/jenkins-preflight-regressions.json",
     "scope": "Synthetic preflight only; cannot establish product acceptance"
   },
-  "workflow_corrections_commit": "cd5e74754db95abfd622a3ab7608588e424102b1"
+  "workflow_corrections_commit": "cd5e74754db95abfd622a3ab7608588e424102b1",
+  "review_corrections_commit": "759a34bea2103ded5d2092467cfa779bc56aee0b"
 }
