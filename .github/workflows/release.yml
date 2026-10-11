@@ -33,6 +33,7 @@ jobs:
             "$version" | "$version"-dryrun*) ;;
             *) echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2; exit 1 ;;
           esac
+          python3 scripts/version-docs.py --check
           grep -q "^## $version" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -53,21 +54,62 @@ jobs:
 
   macos:
     needs: check
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-macos
-      - run: bash scripts/package-macos.sh
+          shared-key: release-${{ matrix.target }}
+      - name: Optional Apple signing keychain
+        env:
+          SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$SIGNING_P12" ]; then
+            keychain="$RUNNER_TEMP/mellow-signing.keychain-db"
+            keychain_password=$(openssl rand -hex 24)
+            printf '%s' "$SIGNING_P12" | base64 -D > "$RUNNER_TEMP/mellow-signing.p12"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            security import "$RUNNER_TEMP/mellow-signing.p12" -k "$keychain" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+            security list-keychains -d user -s "$keychain"
+          fi
+      - name: Build native archive
+        env:
+          MELLOW_MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: bash scripts/package-macos.sh '${{ matrix.target }}'
+      - name: Extracted archive acceptance, including security regressions
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          bash scripts/native-ci.sh artifact-install "dist/macos/mellow-$version-${{ matrix.target }}.tar.gz"
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/mellow-signing.keychain-db"
+          if [ -f "$keychain" ]; then security delete-keychain "$keychain"; fi
+          rm -f "$RUNNER_TEMP/mellow-signing.p12"
       - uses: actions/upload-artifact@v4
         with:
-          name: macos
-          path: dist/macos/*.tar.gz
+          name: macos-${{ matrix.target }}
+          path: |
+            dist/macos/*.tar.gz
+            dist/macos/*.acceptance.txt
           if-no-files-found: error
 
   linux:
@@ -82,7 +124,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Static binary, .tar.gz, .deb and .rpm
+      - name: Static binary, .tar.gz, .deb and .rpm with extracted/install/uninstall PTY gates
+        timeout-minutes: 40
+        env:
+          MELLOW_EXECUTION_KIND: native-container
         run: bash scripts/package-linux.sh ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
@@ -91,6 +136,7 @@ jobs:
             dist/linux/*.tar.gz
             dist/linux/*.deb
             dist/linux/*.rpm
+            dist/linux/*.acceptance.txt
           if-no-files-found: error
 
   release:
@@ -98,6 +144,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     outputs:
       version: ${{ steps.files.outputs.version }}
     steps:
@@ -122,6 +170,32 @@ jobs:
           heading=$(grep -m1 "^## $version" CHANGELOG.md)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "title=Mellow ${heading#\#\# }" >> "$GITHUB_OUTPUT"
+      - name: Every asset has execution-backed acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in dist/*.tar.gz; do
+            test -f "$archive.acceptance.txt"
+            grep -qx 'acceptance=passed' "$archive.acceptance.txt"
+            digest=$(sha256sum "$archive" | awk '{print $1}')
+            grep -qx "archive_sha256=$digest" "$archive.acceptance.txt"
+            grep -qx "source_commit=$(git rev-parse HEAD)" "$archive.acceptance.txt"
+          done
+          for package in dist/*.deb dist/*.rpm; do
+            test -f "$package.acceptance.txt"
+            grep -qx 'install_pty=passed' "$package.acceptance.txt"
+            grep -qx 'uninstall=passed' "$package.acceptance.txt"
+            digest=$(sha256sum "$package" | awk '{print $1}')
+            grep -qx "package_sha256=$digest" "$package.acceptance.txt"
+            grep -qx "source_commit=$(git rev-parse HEAD)" "$package.acceptance.txt"
+          done
+      - name: Attest the exact accepted release assets
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
       - name: Install script installs this release
         run: |
           set -euo pipefail
@@ -138,7 +212,7 @@ jobs:
           # Never --prerelease: releases/latest (used by install.sh) skips those.
           gh release create "$GITHUB_REF_NAME" "${draft[@]}" --verify-tag \
             --title "$TITLE" --notes-file notes.md \
-            dist/*.tar.gz dist/*.deb dist/*.rpm dist/install.sh dist/SHA256SUMS
+            dist/*.tar.gz dist/*.deb dist/*.rpm dist/install.sh dist/SHA256SUMS dist/*.acceptance.txt
       - uses: actions/upload-artifact@v4
         with:
           name: checksums

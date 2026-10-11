@@ -1,0 +1,154 @@
+name: candidate artifacts
+
+# Native qualification only. No release, tag, signing secrets or tap writes.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-artifacts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: candidate (${{ matrix.target }})
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            family: macos
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            family: macos
+            target: x86_64-apple-darwin
+            arch: x86_64
+          - runner: ubuntu-24.04
+            family: linux
+            target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            family: linux
+            target: aarch64-unknown-linux-musl
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: candidate-${{ matrix.target }}
+      - name: Record the tested checkout and native host
+        shell: bash
+        env:
+          CANDIDATE_TARGET: ${{ matrix.target }}
+          CANDIDATE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "$CANDIDATE_ARCH" ]] || { echo 'Runner architecture differs from the candidate target' >&2; exit 1; }
+          mkdir -p dist/candidate-evidence
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "target=$CANDIDATE_TARGET"
+            echo "workflow_ref=$GITHUB_WORKFLOW_REF"
+            echo "build_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            uname -sm
+            rustc -vV
+          } | tee dist/candidate-evidence/host.txt
+      - name: Native formatting, lint, source tests and crate gates
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/native-ci.sh verify 2>&1 | tee dist/candidate-evidence/source-verify.log
+          bash scripts/native-ci.sh crate 2>&1 | tee dist/candidate-evidence/crate.log
+      - name: Shellcheck
+        if: matrix.family == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck scripts/*.sh
+          shellcheck -s sh scripts/install.sh
+      - name: Build unsigned native macOS archive and test its extracted executable
+        if: matrix.family == 'macos'
+        timeout-minutes: 35
+        shell: bash
+        env:
+          CANDIDATE_TARGET: ${{ matrix.target }}
+          MELLOW_EXECUTION_KIND: native
+        run: |
+          set -euo pipefail
+          bash scripts/package-macos.sh "$CANDIDATE_TARGET" 2>&1 | tee dist/candidate-evidence/package.log
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          bash scripts/native-ci.sh artifact-install "dist/macos/mellow-$version-$CANDIDATE_TARGET.tar.gz" \
+            2>&1 | tee dist/candidate-evidence/artifact-install.log
+      - name: Native Linux archive, deb and rpm build/install/PTY/uninstall gates
+        if: matrix.family == 'linux'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          CANDIDATE_ARCH: ${{ matrix.arch }}
+          MELLOW_EXECUTION_KIND: native-container
+        run: |
+          set -euo pipefail
+          bash scripts/package-linux.sh "$CANDIDATE_ARCH" 2>&1 | tee dist/candidate-evidence/package.log
+      - name: Bind every successful acceptance report to this source and artifact
+        shell: bash
+        env:
+          CANDIDATE_FAMILY: ${{ matrix.family }}
+          CANDIDATE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          archive="dist/$CANDIDATE_FAMILY/mellow-$version-$CANDIDATE_TARGET.tar.gz"
+          report="$archive.acceptance.txt"
+          grep -qx 'acceptance=passed' "$report"
+          grep -qx "source_commit=$(git rev-parse HEAD)" "$report"
+          grep -qx "archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')" "$report"
+          if [[ "$CANDIDATE_FAMILY" == linux ]]; then
+            packages=(dist/linux/*.deb dist/linux/*.rpm)
+            [[ "${#packages[@]}" == 2 ]]
+            for package in "${packages[@]}"; do
+              report="$package.acceptance.txt"
+              grep -qx 'install_pty=passed' "$report"
+              grep -qx 'uninstall=passed' "$report"
+              grep -qx 'execution_kind=native-container' "$report"
+              grep -qx "source_commit=$(git rev-parse HEAD)" "$report"
+              grep -qx "package_sha256=$(shasum -a 256 "$package" | awk '{print $1}')" "$report"
+            done
+          else
+            grep -qx 'execution_kind=native' "$report"
+          fi
+      - name: Preserve acceptance reports and logs, including failed attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-evidence-${{ matrix.target }}
+          path: |
+            dist/candidate-evidence/
+            dist/${{ matrix.family }}/*.acceptance.txt
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload qualified candidate packages for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-packages-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.family }}/*.tar.gz
+            dist/${{ matrix.family }}/*.deb
+            dist/${{ matrix.family }}/*.rpm
+            dist/${{ matrix.family }}/*.acceptance.txt
+          if-no-files-found: error
+          retention-days: 14

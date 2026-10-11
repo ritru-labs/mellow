@@ -3,13 +3,23 @@
 #   scripts/package-linux.sh            # both x86_64 and aarch64
 #   scripts/package-linux.sh x86_64     # one architecture
 # x86_64 on an ARM Mac (or aarch64 on an x86 host) runs under Docker's
-# emulation: slower, same result.
+# emulation: useful for packaging, but not native release acceptance.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -z "$(git -C "$root" status --porcelain --untracked-files=all)" ]] || {
+  echo 'Packaging requires a clean source checkout for exact-commit provenance' >&2; exit 1;
+}
 archs=("${@:-x86_64 aarch64}")
 read -r -a archs <<<"${archs[*]}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+# Linked worktrees reference their common Git directory by an absolute path.
+# Expose only that metadata read-only; builds never mutate repository refs.
+git_mount=()
+if [[ -f "$root/.git" ]]; then
+  git_common=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+  git_mount=(-v "$git_common:$git_common:ro")
+fi
 out="$root/dist/linux"
 mkdir -p "$out"
 
@@ -19,15 +29,25 @@ for arch in "${archs[@]}"; do
     aarch64) platform=linux/arm64 deb_arch=arm64 ;;
     *) echo "unknown architecture: $arch" >&2; exit 2 ;;
   esac
+  host_arch=$(uname -m)
+  [[ "$host_arch" != arm64 ]] || host_arch=aarch64
+  execution_kind=${MELLOW_EXECUTION_KIND:-native-container}
+  if [[ "$host_arch" != "$arch" ]]; then
+    execution_kind=emulated
+  elif [[ "$(uname -s)" != Linux ]]; then
+    execution_kind=linux-vm
+  fi
   image="mellow-linux-package:$arch"
   docker build -q --platform "$platform" -t "$image" -f "$root/packaging/linux/Dockerfile" "$root/packaging/linux" >/dev/null
 
   docker run --rm --platform "$platform" \
     -v "$root:/workspace" \
+    "${git_mount[@]}" \
     -v "mellow-package-target-$arch:/target" \
     -v "mellow-package-cargo-$arch:/usr/local/cargo/registry" \
     -e CARGO_TARGET_DIR=/target \
     -e ARCH="$arch" -e DEB_ARCH="$deb_arch" -e VERSION="$version" \
+    -e MELLOW_EXECUTION_KIND="$execution_kind" \
     "$image" bash -euo pipefail -c '
       target="$ARCH-unknown-linux-musl"
       rustup target add "$target" >/dev/null
@@ -43,6 +63,12 @@ for arch in "${archs[@]}"; do
       # Plain tarball
       mkdir -p "$stage/$name"
       cp "$bin" README.md LICENSE "$stage/$name/"
+      {
+        echo "source_commit=$(git rev-parse HEAD)"
+        echo "target=$target"
+        echo "execution_kind=$MELLOW_EXECUTION_KIND"
+        rustc -vV
+      } > "$stage/$name/BUILD.txt"
       tar -C "$stage" -czf "$out/$name.tar.gz" "$name"
 
       # .deb
@@ -95,6 +121,39 @@ install -D -m 0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/mellow/README.
 SPEC
       rpmbuild --quiet --define "_topdir $rpmtop" --target "$ARCH" -bb "$rpmtop/SPECS/mellow.spec"
       cp "$rpmtop"/RPMS/*/mellow-*.rpm "$out/"
+      # Test the extracted musl archive on this runner, then independently
+      # install/remove both package formats in this disposable container.
+      if [ "$MELLOW_EXECUTION_KIND" != emulated ]; then
+      bash scripts/native-ci.sh artifact-install "$out/$name.tar.gz"
+      dpkg --install "$out/mellow_${VERSION}_${DEB_ARCH}.deb"
+      MELLOW_SMOKE_BINARY=/usr/bin/mellow cargo test --locked --test release_native_smoke -- --nocapture
+      {
+        echo "source_commit=$(git rev-parse HEAD)"
+        echo "package_sha256=$(sha256sum "$out/mellow_${VERSION}_${DEB_ARCH}.deb" | awk "{print \$1}")"
+        echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
+        echo "execution_kind=$MELLOW_EXECUTION_KIND"
+        echo "install_pty=passed"
+      } > "$out/mellow_${VERSION}_${DEB_ARCH}.deb.acceptance.txt"
+      dpkg --remove mellow
+      test ! -e /usr/bin/mellow
+      echo "uninstall=passed" >> "$out/mellow_${VERSION}_${DEB_ARCH}.deb.acceptance.txt"
+      rpm_package=$(find "$out" -maxdepth 1 -name "mellow-${VERSION}-*.${ARCH}.rpm" -print -quit)
+      test -n "$rpm_package"
+      rpm --install "$rpm_package"
+      MELLOW_SMOKE_BINARY=/usr/bin/mellow cargo test --locked --test release_native_smoke -- --nocapture
+      {
+        echo "source_commit=$(git rev-parse HEAD)"
+        echo "package_sha256=$(sha256sum "$rpm_package" | awk "{print \$1}")"
+        echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
+        echo "execution_kind=$MELLOW_EXECUTION_KIND"
+        echo "install_pty=passed"
+      } > "$rpm_package.acceptance.txt"
+      rpm --erase mellow
+      test ! -e /usr/bin/mellow
+      echo "uninstall=passed" >> "$rpm_package.acceptance.txt"
+      else
+        echo "Cross/emulated packages were built; native artifact acceptance was not run" >&2
+      fi
       rm -rf "$stage"
     '
 done

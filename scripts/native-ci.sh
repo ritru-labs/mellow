@@ -5,21 +5,18 @@ cd "$(dirname "$0")/.."
 mode=${1:-verify}
 toolchain=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
 case "$(uname -s)/$(uname -m)" in
-  Darwin/arm64) platform=macOS-ARM64; expected_host=aarch64-apple-darwin ;;
-  Linux/x86_64) platform=Linux-X64; expected_host=x86_64-unknown-linux-gnu ;;
-  Linux/aarch64) platform=Linux-ARM64; expected_host=aarch64-unknown-linux-gnu ;;
+  Darwin/arm64) platform=macOS-ARM64; expected_host=aarch64-apple-darwin; artifact_target=aarch64-apple-darwin ;;
+  Darwin/x86_64) platform=macOS-Intel; expected_host=x86_64-apple-darwin; artifact_target=x86_64-apple-darwin ;;
+  Linux/x86_64) platform=Linux-X64; expected_host=x86_64-unknown-linux-gnu; artifact_target=x86_64-unknown-linux-musl ;;
+  Linux/aarch64) platform=Linux-ARM64; expected_host=aarch64-unknown-linux-gnu; artifact_target=aarch64-unknown-linux-musl ;;
   *) echo "Unsupported native release host: $(uname -sm)" >&2; exit 1 ;;
-esac
-case "$mode/$platform" in
-  archive/Linux-ARM64|archive-install/Linux-ARM64)
-    echo 'Linux ARM64 development does not satisfy the Linux x64 release gate' >&2; exit 1 ;;
 esac
 if [[ "$(rustc --version | awk '{print $2}')" != "$toolchain" ]]; then
   echo "Required Rust $toolchain; found $(rustc --version)" >&2; exit 1
 fi
 host=$(rustc -vV | sed -n 's/^host: //p')
 [[ "$host" == "$expected_host" ]] || { echo "Toolchain host mismatch: $host" >&2; exit 1; }
-if [[ "$platform" == macOS-ARM64 ]]; then
+if [[ "$platform" == macOS-* ]]; then
   # Validate the agent's selected SDK against its linker. Some hosts retain an
   # older linker alongside a newer SDK. Use an installed compatible SDK only.
   probe=$(mktemp -d "${TMPDIR:-/tmp}/mellow-sdk-probe.XXXXXX")
@@ -50,12 +47,16 @@ pty_smoke() {
 }
 case "$mode" in
   verify)
+    python3 scripts/version-docs.py --check
     cargo fmt --all -- --check
     cargo check --locked --all-targets
     cargo clippy --locked --all-targets --all-features -- -D warnings
     cargo test --locked --all-targets
     ;;
-  release) cargo build --locked --release ;;
+  release)
+    cargo build --locked --release
+    bash scripts/test-artifact-provenance.sh
+    ;;
   crate) cargo package --locked ;;
   install)
     install_root=$(mktemp -d "${TMPDIR:-/tmp}/mellow-source-install.XXXXXX")
@@ -83,11 +84,47 @@ case "$mode" in
     tar -C dist -czf "dist/$artifact.tar.gz" "$artifact"
     (cd dist && shasum -a 256 "$artifact.tar.gz" > "$artifact.tar.gz.sha256")
     ;;
+  artifact-install)
+    archive=${2:?usage: native-ci.sh artifact-install path/to/release.tar.gz}
+    version=$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -1)
+    expected="mellow-$version-$artifact_target"
+    [[ "$(basename "$archive")" == "$expected.tar.gz" ]] || { echo "Archive target does not match native host $platform" >&2; exit 1; }
+    [[ "${MELLOW_EXECUTION_KIND:-native}" != emulated ]] || { echo 'Emulated execution does not satisfy native artifact acceptance' >&2; exit 1; }
+    install_root=$(mktemp -d "${TMPDIR:-/tmp}/mellow-release-acceptance.XXXXXX")
+    # Release archives are built by these jobs, not arbitrary downloaded input.
+    tar -xzf "$archive" -C "$install_root"
+    build_record="$install_root/$expected/BUILD.txt"
+    grep -qx "source_commit=$(git rev-parse HEAD)" "$build_record" || {
+      echo 'Archive source commit differs from the checkout under test' >&2; exit 1;
+    }
+    grep -qx "target=$artifact_target" "$build_record" || {
+      echo 'Archive build target differs from the native host' >&2; exit 1;
+    }
+    binary="$install_root/$expected/mellow"
+    [[ "$("$binary" --version)" == "mellow $version" ]]
+    file "$binary"
+    report="$archive.acceptance.txt"
+    {
+      echo "source_commit=$(git rev-parse HEAD)"
+      echo "archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')"
+      echo "binary_sha256=$(shasum -a 256 "$binary" | awk '{print $1}')"
+      echo "tested_executable=$binary"
+      echo "platform=$platform"
+      echo "host=$host"
+      echo "execution_kind=${MELLOW_EXECUTION_KIND:-native}"
+      echo "build_url=${GITHUB_SERVER_URL:-local}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-local}"
+      pty_smoke "$binary"
+      echo 'acceptance=passed'
+    } | tee "$report"
+    ;;
   archive-install)
     artifact="mellow-$platform"
     (cd dist && shasum -a 256 -c "$artifact.tar.gz.sha256")
     install_root=$(mktemp -d "${TMPDIR:-/tmp}/mellow-archive-install.XXXXXX")
     tar -xzf "dist/$artifact.tar.gz" -C "$install_root"
+    grep -qx "source_commit=$(git rev-parse HEAD)" "$install_root/$artifact/BUILD.txt" || {
+      echo 'Archive source commit differs from the checkout under test' >&2; exit 1;
+    }
     binary="$install_root/$artifact/mellow"
     version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
     [[ "$("$binary" --version)" == "mellow $version" ]]

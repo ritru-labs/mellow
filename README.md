@@ -9,7 +9,7 @@ away.
 
 ![Mellow editing a Rust project: file tree, Git changes in the gutter and the built-in terminal](docs/images/hero.png)
 
-**Version 0.2.1, beta.** Runs on macOS and Linux. Documentation:
+**Version 0.3.0, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
 
 ## Understand the project
@@ -135,3 +135,14 @@ built by `.github/workflows/release.yml` when a `vX.Y.Z` tag is pushed; see
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) ·
   [Code of conduct](CODE_OF_CONDUCT.md)
 - License: [Apache-2.0](LICENSE)
+
+## Unreleased audit candidate
+
+The `audit/mellow-20261011` candidate adds execution safeguards, responsive
+formatting/search/clipboard, consistent multi-cursor paste, indentation controls,
+Save All, private checkpoints/trash, snippets and reliable language workflows.
+[Candidate workflows](docs/audit-workflows.md) explain the controls;
+[the complete 57-item tracker](docs/audit/TRACKER.md) records evidence and gates.
+These changes have not been published as a release. Published 0.3.0 predates the
+AI shell-review and Claude redirect protections; do not infer an installed
+release is patched from this branch's source tests.

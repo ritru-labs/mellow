@@ -3,7 +3,10 @@
 FROM rust:1.90-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends musl-tools rpm file \
+    && apt-get install -y --no-install-recommends musl-tools rpm file python3 git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
+
+# The disposable container builds the runner-owned bind mount.
+RUN git config --global --add safe.directory /workspace
