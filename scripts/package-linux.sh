@@ -10,6 +10,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 [[ -z "$(git -C "$root" status --porcelain --untracked-files=all)" ]] || {
   echo 'Packaging requires a clean source checkout for exact-commit provenance' >&2; exit 1;
 }
+source_commit=$(git -C "$root" rev-parse HEAD)
 archs=("${@:-x86_64 aarch64}")
 read -r -a archs <<<"${archs[*]}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
@@ -47,11 +48,16 @@ for arch in "${archs[@]}"; do
     -v "mellow-package-cargo-$arch:/usr/local/cargo/registry" \
     -e CARGO_TARGET_DIR=/target \
     -e ARCH="$arch" -e DEB_ARCH="$deb_arch" -e VERSION="$version" \
+    -e MELLOW_PACKAGE_SOURCE_COMMIT="$source_commit" \
     -e MELLOW_EXECUTION_KIND="$execution_kind" \
     "$image" bash -euo pipefail -c '
       target="$ARCH-unknown-linux-musl"
       rustup target add "$target" >/dev/null
       cargo build --locked --release --target "$target"
+      [[ "$(git rev-parse HEAD)" == "$MELLOW_PACKAGE_SOURCE_COMMIT" &&
+         -z "$(git status --porcelain --untracked-files=all)" ]] || {
+        echo "Source changed during packaging; candidate is not qualified" >&2; exit 1;
+      }
       bin="/target/$target/release/mellow"
       file "$bin" | grep -qE "static(ally|-pie) linked" || { echo "not static: $(file "$bin")" >&2; exit 1; }
       "$bin" --version
@@ -64,7 +70,7 @@ for arch in "${archs[@]}"; do
       mkdir -p "$stage/$name"
       cp "$bin" README.md LICENSE "$stage/$name/"
       {
-        echo "source_commit=$(git rev-parse HEAD)"
+        echo "source_commit=$MELLOW_PACKAGE_SOURCE_COMMIT"
         echo "target=$target"
         echo "execution_kind=$MELLOW_EXECUTION_KIND"
         rustc -vV
@@ -128,7 +134,7 @@ SPEC
       dpkg --install "$out/mellow_${VERSION}_${DEB_ARCH}.deb"
       MELLOW_SMOKE_BINARY=/usr/bin/mellow cargo test --locked --test release_native_smoke -- --nocapture
       {
-        echo "source_commit=$(git rev-parse HEAD)"
+        echo "source_commit=$MELLOW_PACKAGE_SOURCE_COMMIT"
         echo "package_sha256=$(sha256sum "$out/mellow_${VERSION}_${DEB_ARCH}.deb" | awk "{print \$1}")"
         echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
         echo "execution_kind=$MELLOW_EXECUTION_KIND"
@@ -142,7 +148,7 @@ SPEC
       rpm --install "$rpm_package"
       MELLOW_SMOKE_BINARY=/usr/bin/mellow cargo test --locked --test release_native_smoke -- --nocapture
       {
-        echo "source_commit=$(git rev-parse HEAD)"
+        echo "source_commit=$MELLOW_PACKAGE_SOURCE_COMMIT"
         echo "package_sha256=$(sha256sum "$rpm_package" | awk "{print \$1}")"
         echo "binary_sha256=$(sha256sum /usr/bin/mellow | awk "{print \$1}")"
         echo "execution_kind=$MELLOW_EXECUTION_KIND"
@@ -155,6 +161,10 @@ SPEC
         echo "Cross/emulated packages were built; native artifact acceptance was not run" >&2
       fi
       rm -rf "$stage"
+      [[ "$(git rev-parse HEAD)" == "$MELLOW_PACKAGE_SOURCE_COMMIT" &&
+         -z "$(git status --porcelain --untracked-files=all)" ]] || {
+        echo "Source changed during packaging; candidate is not qualified" >&2; exit 1;
+      }
     '
 done
 

@@ -265,8 +265,12 @@ pub fn rename_exclusive(source: &Path, destination: &Path) -> Result<()> {
         )
     };
     #[cfg(target_os = "linux")]
+    // Some supported static musl toolchains do not export the renameat2 libc
+    // wrapper. Invoke the same kernel operation directly; unsupported kernels
+    // still fail closed rather than fall back to an overwriting rename.
     let result = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source.as_ptr(),
             libc::AT_FDCWD,
@@ -397,6 +401,29 @@ mod tests {
         fs::create_dir(&destination).unwrap();
         assert!(rename_exclusive(&source, &destination).is_err());
         assert!(destination.is_dir());
+    }
+    #[test]
+    fn exclusive_rename_preserves_existing_regular_file_and_moves_to_new_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let destination = dir.path().join("destination");
+        fs::write(&source, "preserve source").unwrap();
+        fs::write(&destination, "newer destination").unwrap();
+        let source_identity = identity(&fs::metadata(&source).unwrap());
+        assert!(rename_exclusive(&source, &destination).is_err());
+        assert_eq!(fs::read_to_string(&source).unwrap(), "preserve source");
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            "newer destination"
+        );
+        fs::remove_file(&destination).unwrap();
+        rename_exclusive(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "preserve source");
+        assert_eq!(
+            identity(&fs::metadata(&destination).unwrap()),
+            source_identity
+        );
     }
     #[cfg(target_os = "macos")]
     #[test]
