@@ -11,7 +11,8 @@
 - Version labels checked from Cargo; native candidate/artifact acceptance and provenance/signing hooks documented. Published release/install channels are unchanged.
 - File tree refreshes while visible, so files created from the built-in terminal appear without saving or reopening the tree.
 - Scripts without a file extension are highlighted as Shell when their first line is a `#!` line for sh, bash, zsh, dash or ksh.
-- Mellow exits when the shell or SSH session that started it ends. Previously a session left behind after a disconnect kept redrawing at full CPU.
+- Mellow exits when the shell or SSH session that started it ends, or when its terminal hangs up. Previously a session left behind after a disconnect kept spinning at full CPU.
+- Tests no longer depend on the host umask, kernel timestamp resolution or Ctrl+C timing under load; the AI exclusions doc states the file-permission rule.
 - Welcome start page redesigned: a rounded card, a RECENT section for recently opened files, and a rule under the title. The first-run help box no longer covers it.
 
 See [audit tracker](docs/audit/TRACKER.md) for actual platforms, integration versions, deferred items and remaining release gates.

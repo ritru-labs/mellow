@@ -118,6 +118,9 @@ Add exclusions in your user-owned `~/.config/mellow/ai-deny.conf` (or
 `$XDG_CONFIG_HOME/mellow/ai-deny.conf`); see the
 [security evidence](audit/security-verification.md) for glob syntax and limits.
 Defaults remain mandatory. Unreadable or invalid policy fails closed.
+The file must not be writable by group or others. Where the default umask is
+`0002` (Ubuntu, for example), a new file is group-writable, so run
+`chmod 600 ~/.config/mellow/ai-deny.conf` after creating it.
 Context is refused before transmission rather than silently rewritten.
 Transport timeouts are 120 seconds for Ask AI/commit messages, 60 seconds for
 shell suggestions and 20 seconds for inline suggestions. Live hosted-provider

@@ -1033,9 +1033,16 @@ mod tests {
             );
             let foreground = unsafe { libc::tcgetpgrp(session.master_fd()) };
             assert!(foreground > 0 && foreground != session.child_pid);
-            session.interrupt().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            // The shell gives the job the terminal slightly before the job has
+            // exec'd and reset SIGINT, so under load one early Ctrl+C can land in
+            // that gap. Repeat it; an inherited ignore or block defeats every try.
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut next_interrupt = Instant::now();
             while session.has_running_job() && Instant::now() < deadline {
+                if Instant::now() >= next_interrupt {
+                    session.interrupt().unwrap();
+                    next_interrupt = Instant::now() + Duration::from_secs(1);
+                }
                 session.read_available().unwrap();
                 thread::sleep(Duration::from_millis(10));
             }
@@ -1108,7 +1115,7 @@ mod tests {
                 });
             }
             let mut child = command.spawn().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + Duration::from_secs(30);
             while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
             }

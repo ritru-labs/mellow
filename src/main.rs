@@ -66,7 +66,7 @@ struct Cli {
 fn main() -> Result<()> {
     terminal::install_panic_hook();
     terminal::install_signal_handlers()?;
-    exit_when_launcher_is_gone();
+    exit_when_session_ends();
     let cli = Cli::parse();
     let mut paths = cli.paths;
     let goto = cli.goto.as_deref().map(parse_goto).transpose()?;
@@ -109,20 +109,50 @@ fn main() -> Result<()> {
     app.run(terminal.terminal_mut())
 }
 
-/// Ends Mellow when the process that started it has gone, which is what an SSH
-/// disconnect or a closed window does to a shell. A dead terminal makes the event
-/// library spin inside its own reads, so this watches from a separate thread.
-/// Unsaved text is already in the crash journal.
-fn exit_when_launcher_is_gone() {
+/// Ends Mellow once its terminal session is over. An SSH disconnect or a closed
+/// window hangs up the terminal: the launching shell usually exits, and if it
+/// ignores hangups the terminal still stops being ours. Either way the event
+/// library spins inside its own reads of the dead terminal, where the main loop
+/// never gets to act, so this watches from a separate thread. Unsaved text is
+/// already in the crash journal.
+fn exit_when_session_ends() {
+    use std::time::{Duration, Instant};
     let launcher = unsafe { libc::getppid() };
+    let had_terminal = has_controlling_terminal();
     std::thread::spawn(move || {
+        let mut requested_at: Option<Instant> = None;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if unsafe { libc::getppid() } != launcher {
+            std::thread::sleep(Duration::from_millis(250));
+            if unsafe { libc::getppid() } != launcher
+                || (had_terminal && !has_controlling_terminal())
+            {
+                std::process::exit(0);
+            }
+            // The main loop saves and stops within a frame of a signal; only a
+            // dead terminal keeps it running past this grace period.
+            if terminal::termination_requested()
+                && requested_at.get_or_insert_with(Instant::now).elapsed() >= Duration::from_secs(2)
+            {
                 std::process::exit(0);
             }
         }
     });
+}
+
+/// Whether this process still has a controlling terminal. A hangup removes it, and
+/// then `/dev/tty` fails with ENXIO; any other failure is not taken as a hangup.
+fn has_controlling_terminal() -> bool {
+    let fd = unsafe {
+        libc::open(
+            c"/dev/tty".as_ptr(),
+            libc::O_RDONLY | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ENXIO)
 }
 
 /// Stdin supplied the draft. Terminal negotiation and subsequent key input must

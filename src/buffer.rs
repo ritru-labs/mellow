@@ -2466,6 +2466,9 @@ mod tests {
 
         // A same-size rewrite that restores mtime still changes Unix ctime.
         // The poll may detect that; the full-content save check must always.
+        // Kernels without fine-grained timestamps stamp ctime at clock-tick
+        // resolution (up to 10 ms), so wait out one tick before rewriting.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let file = fs::File::options().write(true).open(&path).unwrap();
         (&file).write_all(b"bravo\n").unwrap();
         file.set_modified(old).unwrap();
