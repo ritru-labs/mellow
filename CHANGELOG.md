@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — deep audit candidate
+## 0.3.1 (beta)
+
+The October deep audit, plus fixes found while testing it on Ubuntu and CentOS.
+
+### Security
+
+- AI requests no longer follow redirects, so the API key header cannot be sent to a redirect target.
+- The AI configuration prints the key as `<redacted>` in debug output.
+
+### Changed
 
 - AI shell suggestions stay in read-only review; copy is explicit and no suggestion enters a PTY. All provider redirects are refused, context excludes credentials, streamed proposals validate before review, and local transport is cancellable with session limits/unknown usage shown.
 - Safe saves retain supported metadata and refuse hard-link splitting; filesystem conflict/publication checks strengthened.
@@ -8,7 +17,7 @@
 - Shared Unicode multi-cursor/rectangle paste, configurable indentation/EditorConfig, Save All/close batches, local history/privacy controls, trash restore, navigation, outline, linked snippets and discoverable explorer/binding commands.
 - Pooled language servers, resolved completion/import edits, synchronized multi-file edits and scoped Problems.
 - Small local Safe Configuration Change and Terminal Doctor workflows; no automatic deployment or shell execution.
-- Version labels checked from Cargo; native candidate/artifact acceptance and provenance/signing hooks documented. Published release/install channels are unchanged.
+- Version labels checked from Cargo; native candidate/artifact acceptance and provenance/signing hooks documented.
 - File tree refreshes while visible, so files created from the built-in terminal appear without saving or reopening the tree.
 - Scripts without a file extension are highlighted as Shell when their first line is a `#!` line for sh, bash, zsh, dash or ksh.
 - Mellow exits when the shell or SSH session that started it ends, or when its terminal hangs up. Previously a session left behind after a disconnect kept spinning at full CPU.

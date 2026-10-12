@@ -98,9 +98,9 @@ contracts describe intended experience; they are not guarantees of support.
 See [limitations](faq.md) and the repository's
 [changelog](https://github.com/ritru-labs/mellow/blob/main/CHANGELOG.md).
 
-## Unreleased audit implementation
+## October audit implementation (0.3.1)
 
-The candidate retains App orchestration and the shared Buffer edit/undo path.
+The audit retains App orchestration and the shared Buffer edit/undo path.
 `format::run_process` supplies bounded, cancellable process-group execution for
 formatters, reviewed tasks and clipboard adapters. Search/discovery own workers
 with cancellation and query generations. Editor workers bind results to buffer

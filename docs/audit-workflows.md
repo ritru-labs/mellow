@@ -1,7 +1,7 @@
 # Audit candidate workflows
 
-These controls belong to the unreleased `audit/mellow-20261011` candidate.
-Published 0.3.0 does not include them all. Core editing remains offline,
+These controls arrived in 0.3.1 with the October audit (`audit/mellow-20261011`).
+0.3.0 does not include them all. Core editing remains offline,
 modeless and usable at 80×24; AI remains optional. The
 [57-item tracker](audit/TRACKER.md) records verification and deferred scope.
 

@@ -1,7 +1,7 @@
 # Settings
 
-New controls below describe the unreleased audit candidate; published 0.3.0
-does not include all of them. See the [candidate workflows](audit-workflows.md).
+Some controls below arrived with the October audit in 0.3.1; 0.3.0 does not
+include all of them. See the [audit workflows](audit-workflows.md).
 
 Most people change settings in the Settings screen (`Ctrl+P`, then "Open settings").
 They are saved to a plain text file you can also edit:
