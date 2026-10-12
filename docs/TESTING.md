@@ -42,6 +42,24 @@ outcome to an adjacent `.acceptance.txt` file. A failed or unexecuted test fails
 the gate. Native macOS Intel, macOS ARM64, Linux x64 and Linux ARM64 are separate
 targets; emulated runs do not satisfy a native artifact gate.
 
+## PTY feature checks
+
+`scripts/pty-feature-checks.py` drives an installed binary through workflows the
+Rust smoke tests do not cover: the terminal panel and file tree, palette
+commands, themes, Git changes, project search, format on save and SSH,
+including exit after an SSH disconnect. Each check asserts on saved files or on
+the rendered screen.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install pyte
+MELLOW_BIN=~/.cargo/bin/mellow .venv/bin/python scripts/pty-feature-checks.py
+```
+
+Name checks as arguments to run a subset. Checks that need `rustfmt` or
+passwordless `ssh localhost` report SKIP without them. A failing check leaves its
+last screen in `~/.cache/mellow-feature-checks/<check>/screen.txt`, and the exit
+status is 1. These are local evidence, not a CI gate.
+
 ## Manual terminal and integration evaluation
 
 Open `fixtures/unicode.txt` and verify Telugu, CJK, emoji, combining marks and
