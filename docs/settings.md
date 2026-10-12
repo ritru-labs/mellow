@@ -1,5 +1,8 @@
 # Settings
 
+New controls below describe the unreleased audit candidate; published 0.3.0
+does not include all of them. See the [candidate workflows](audit-workflows.md).
+
 Most people change settings in the Settings screen (`Ctrl+P`, then "Open settings").
 They are saved to a plain text file you can also edit:
 
@@ -29,6 +32,11 @@ copy_on_select = false
 | `auto_completion` | `true` | Suggest completions while typing |
 | `copy_on_select` | `false` | Copy to the clipboard when you select with the mouse |
 | `format_on_save` | `false` | Tidy the file with its language's formatter when you save ([details](#format-on-save)) |
+| `indent_width` | `4` | Fallback width (1–8); file inference and supported EditorConfig values take precedence |
+| `history_enabled` | `true` | Create local checkpoints; false stops future recording without deleting existing history or recovery |
+| `ai_max_requests` | `20` | Session attempt ceiling, including failed/cancelled requests (1–1,000) |
+| `ai_max_output_tokens` | `4096` | Provider output cap per request (1–16,000) |
+| `ai_session_token_budget` | `100000` | Stop new requests after this many observed provider tokens (1–10,000,000); unknown usage/cost is explicit |
 
 Lines starting with `#` are comments. An unknown setting or theme name is
 reported with its line number. Mellow writes the file only when you change a
@@ -47,7 +55,7 @@ setting; starting Mellow never rewrites it.
 ## Format on save
 
 Turn it on in Settings ("Format on save") or with `format_on_save = true`.
-When you save, Mellow runs the file's standard formatter and saves the tidied
+After explicitly trusting workspace execution, when you save Mellow runs the file's standard formatter and saves the tidied
 text. It never guesses indentation itself: in Python or YAML, indentation is
 part of the meaning, so only the language's own formatter may change it.
 
@@ -72,6 +80,10 @@ part of the meaning, so only the language's own formatter may change it.
 - If the formatter is missing, fails (for example on a syntax error) or takes
   over 10 seconds, the file is saved exactly as typed and the status line says
   why.
+- Formatting runs in the background. Keep typing or open the palette; a changed
+  document rejects stale output. Escape cancels without saving. The 10-second
+  deadline covers stdin, process descendants and inherited output pipes.
+- Restricted workspaces save the text as typed and run no formatter.
 - Windows (CRLF) line endings are kept.
 - To use another formatter, set `MELLOW_FORMAT_<LANGUAGE>` to a command that
   reads the file on stdin and prints the result; `{path}` is replaced by the
@@ -88,6 +100,11 @@ level after `{`, `(` or `[` (and after `:` in Python and YAML), in every file.
 
 | Option | Effect |
 | --- | --- |
+| `file1 file2` | Open multiple files in tabs |
+| `--goto path:line[:column]` | Select that file and a one-based position |
+| `--wait` | Remain in the foreground until editing ends (also the default) |
+| `-` | Read a bounded UTF-8 draft from stdin, then use the controlling terminal for editing |
+| `--trust` | Explicitly trust execution for this workspace session |
 | `--no-mouse` | Leave the mouse to your terminal, so its own text selection works |
 | `--version` | Print the version |
 | `--help` | Show all options |
@@ -96,8 +113,8 @@ level after `{`, `(` or `[` (and after `:` in Python and YAML), in every file.
 
 | Folder | Contents |
 | --- | --- |
-| `~/.config/mellow` | `settings.conf`, optional `keybindings.conf`, and `ai.conf` if you set up AI |
-| `~/.local/state/mellow` | Open tabs per project, and recovery copies of unsaved edits |
+| `~/.config/mellow` | `settings.conf`, optional `keybindings.conf`, `ai-deny.conf` exclusions, and `ai.conf` if you set up AI |
+| `~/.local/state/mellow` | Open tabs per project, recovery copies, bounded private history, and recoverable trash |
 
 Set `XDG_CONFIG_HOME` or `XDG_STATE_HOME` to change the corresponding base
 folder; Mellow appends `/mellow`. `MELLOW_SETTINGS` overrides only the settings

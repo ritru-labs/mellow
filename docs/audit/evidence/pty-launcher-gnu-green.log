@@ -1,0 +1,20 @@
+ Container mellow-audit-20261011-mellow-dev-run-6df01e36b61f Creating
+ Container mellow-audit-20261011-mellow-dev-run-6df01e36b61f Created
+   Compiling mellow v0.3.0 (/workspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.19s
+     Running unittests src/main.rs (/target/debug/deps/mellow-7cc9b69738471da5)
+
+running 11 tests
+test pty::tests::sgr_mouse_encoder_respects_terminal_mode_and_coordinates ... ok
+test pty::tests::the_shell_is_told_an_honest_terminal_type ... ok
+test pty::tests::terminal_key_encoding_keeps_ctrl_c_as_sigint_byte ... ok
+test pty::tests::vt_screen_tracks_cursor_color_and_terminal_modes ... ok
+test pty::tests::real_pty_shell_keeps_working_directory_and_resizes ... ok
+test pty::tests::scrolled_view_reads_back_through_history_then_follows_output ... ok
+test pty::tests::terminals_do_not_leak_into_other_programs_and_set_term ... ok
+test pty::tests::ctrl_c_interrupts_foreground_process_without_killing_shell_session ... ok
+test pty::tests::terminal_children_restore_signals_without_changing_the_parent ... ok
+test pty::tests::continuously_writing_terminal_job_yields_to_editor_input ... ok
+test pty::tests::a_foreground_job_is_detected_until_it_ends ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 521 filtered out; finished in 2.07s

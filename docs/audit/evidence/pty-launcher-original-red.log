@@ -1,0 +1,16 @@
+
+running 1 test
+
+thread 'pty::tests::a_foreground_job_is_detected_until_it_ends' panicked at src/pty.rs:806:9:
+back at the prompt
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pty::tests::a_foreground_job_is_detected_until_it_ends ... FAILED
+
+failures:
+
+failures:
+    pty::tests::a_foreground_job_is_detected_until_it_ends
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 530 filtered out; finished in 15.09s
+
+isolated subprocess exit: 101

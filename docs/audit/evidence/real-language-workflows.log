@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+   Compiling mellow v0.3.0 (/Users/rukmini/mellow-audit-20261011)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.77s
+     Running unittests src/main.rs (target/debug/deps/mellow-6b0c25c762149de5)
+
+running 3 tests
+test lsp::tests::real_mixed_language_pool_preserves_unsaved_diagnostics_and_processes ... real mixed pool retained Pyright pid 45841, TypeScript pid 45842; both inactive unsaved diagnostic updates retained file identity
+ok
+test lsp::tests::real_pyright_completion_resolves_workspace_auto_import ... real python auto-import retained 1 supporting edits; command retained=false (never executed)
+ok
+test lsp::tests::real_typescript_completion_resolves_workspace_auto_import ... real typescript auto-import retained 1 supporting edits; command retained=false (never executed)
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 526 filtered out; finished in 3.28s
+

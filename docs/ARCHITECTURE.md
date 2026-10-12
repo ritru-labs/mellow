@@ -68,7 +68,8 @@ basic editing works offline.
 
 **AI proposals do not execute tools.** Requests use the configured provider.
 Selected-text changes require review and enter the ordinary undoable buffer
-path. AI does not directly execute shell or Git actions. Optional inline
+path. Shell commands appear in read-only review with an explicit copy action;
+no AI response is written into the PTY. AI does not execute shell or Git actions. Optional inline
 suggestions send nearby code after typing pauses; they are off by default.
 
 ## Storage and failure handling
@@ -88,7 +89,7 @@ version control.
 The [capability table](index.md#what-works-today) describes implemented features.
 Older milestone lists mixed implemented work with aspirations; they should not
 be used as a release checklist. Key configuration, Tree-sitter, LSP, Git and AI
-adapters already exist in 0.2.1.
+adapters already exist in the current release.
 
 Native Windows support, autonomous agent/tool execution and comprehensive
 hard-link, ACL, extended-attribute and locking hardening are not promised by
@@ -96,3 +97,27 @@ this release. Live LSP/provider compatibility also varies. Product and design
 contracts describe intended experience; they are not guarantees of support.
 See [limitations](faq.md) and the repository's
 [changelog](https://github.com/ritru-labs/mellow/blob/main/CHANGELOG.md).
+
+## Unreleased audit implementation
+
+The candidate retains App orchestration and the shared Buffer edit/undo path.
+`format::run_process` supplies bounded, cancellable process-group execution for
+formatters, reviewed tasks and clipboard adapters. Search/discovery own workers
+with cancellation and query generations. Editor workers bind results to buffer
+identity/revision and interaction state rather than accepting whichever tab is
+active when a response arrives.
+
+`history`, `file_ops`, `snippets` and `config_change` are small modules for
+private checkpoints, recoverable file operations, linked local templates and
+structural configuration review. They reuse ordinary editing/save/recovery.
+AI transport streams only a read-only preview, validates before review, and
+never writes suggestions into a PTY. Language clients are pooled by workspace
+and server identity, synchronize open documents and reject stale/ambiguous edits.
+Session trust constrains automatic integrations to the resolved workspace;
+reviewed tools remain unsandboxed. This is additive implementation, with no
+plugin marketplace, autonomous agent loop or multi-root IDE expansion.
+
+The candidate's [workflows](audit-workflows.md) and [tracker](audit/TRACKER.md)
+record exact behavior and verification limits. The current published release
+predates this work; metadata races, native accessibility/font validation and
+signing/distribution gates must be assessed from evidence, not source presence.

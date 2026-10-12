@@ -1,0 +1,40 @@
+{
+  "_class": "org.jenkinsci.plugins.workflow.job.WorkflowRun",
+  "artifacts": [
+    {
+      "fileName": "bootstrap.log",
+      "relativePath": "evidence/bootstrap.log"
+    },
+    {
+      "fileName": "checkout.log",
+      "relativePath": "evidence/checkout.log"
+    },
+    {
+      "fileName": "console.log",
+      "relativePath": "source/dist/jenkins-evidence/console.log"
+    },
+    {
+      "fileName": "gates.txt",
+      "relativePath": "source/dist/jenkins-evidence/gates.txt"
+    },
+    {
+      "fileName": "host.txt",
+      "relativePath": "source/dist/jenkins-evidence/host.txt"
+    },
+    {
+      "fileName": "preflight-regressions.log",
+      "relativePath": "source/dist/jenkins-evidence/preflight-regressions.log"
+    },
+    {
+      "fileName": "result.txt",
+      "relativePath": "source/dist/jenkins-evidence/result.txt"
+    },
+    {
+      "fileName": "verify.log",
+      "relativePath": "source/dist/jenkins-evidence/verify.log"
+    }
+  ],
+  "number": 1,
+  "result": "FAILURE",
+  "url": "http://127.0.0.1:8082/job/mellow-audit-acceptance/1/"
+}

@@ -1,0 +1,7 @@
+source_commit=759a34bea2103ded5d2092467cfa779bc56aee0b
+package_sha256=41160331870f61d0116a73d99b9d3a1458a11f2d613871645076c0ac436100b3
+binary_sha256=593515395a063070c5c40e07bd7b3bce5db5adfb9e958f95c91331c8524003c8
+execution_kind=linux-vm
+install_pty=passed
+build_url=http://127.0.0.1:8082/job/mellow-audit-acceptance/3/
+uninstall=passed

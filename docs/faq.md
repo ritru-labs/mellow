@@ -53,7 +53,7 @@ recovery journal keeps a copy of your text until the save succeeds.
 
 ## Can Mellow damage my files?
 
-Saves are atomic: the new text is written to a temporary file and moved into
+Ordinary saves use atomic replacement: the new text is written to a temporary file and moved into
 place, to reduce the risk of partial writes. Filesystem-specific fallbacks exist, so
 this is not a universal durability guarantee or a replacement for backups. If a file changed on disk
 since you opened it, Mellow asks before overwriting. Files that are not UTF-8,
@@ -104,7 +104,8 @@ Install the matching [language server](language-servers.md), ensure its
 executable is on the PATH inherited by Mellow, and reopen the file. Use
 **Language server status** or **Restart language server** in the palette.
 Server capabilities vary; syntax highlighting alone does not imply an LSP
-server is running. Files over 5 MiB do not use language servers.
+server is running. In the audit candidate, explicitly trust workspace execution
+before starting an installed server. Files over 5 MiB do not use language servers.
 
 ## Format on save did not change my file
 
@@ -117,8 +118,9 @@ is a separate language-server command and may not be supported by your server.
 
 Check the workspace folder, Git ignore rules and the search summary. The search
 uses unsaved text for discovered open files and disk content for the others.
-It skips binary, unreadable and over-2-MiB files and stops at its scan/result
-limits. Save a newly created file so it can be discovered. See
+It skips binary, unreadable and over-limit files and stops at its scan/result
+limits. The audit candidate supports `.mellow/search.json` filters/limits and
+includes named unsaved open files; unnamed drafts have no project path. See
 [project search behavior](usage.md#find-files-and-text-across-a-project).
 
 ## Git pull or push failed
@@ -134,8 +136,15 @@ will merge or force-push it.
 
 Files must be UTF-8 and at most 100 MiB. Files over 5 MiB open with reduced
 functionality, without parsing or language servers. Native Windows is not
-supported; WSL uses the Linux build. Unix file metadata edge cases such as hard
-links, ACLs and extended attributes still need further hardening.
+supported; WSL uses the Linux build. The audit candidate preserves supported ownership/group, ACLs and extended
+attributes during replacement and refuses metadata transitions it cannot preserve.
+Saving an existing multiply linked file is refused with Save As guidance, so
+other hard links are never silently split. Save As creates an independent file
+and never replaces a newly appearing target. Symlink saves target the resolved
+file. Bind-mount in-place fallback retains its partial-write risk and is reported.
+Conflict checks cannot serialize an uncooperative external writer through the
+last check/rename interval; keep backups and review disk conflicts. Filesystem
+and platform validation limits are in the [audit tracker](audit/TRACKER.md).
 
 When reporting a problem, include the Mellow version, OS/architecture, terminal
 name, command used and a small synthetic reproduction. Remove credentials and

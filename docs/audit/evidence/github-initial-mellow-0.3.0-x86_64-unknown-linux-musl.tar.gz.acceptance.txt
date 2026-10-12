@@ -1,0 +1,38 @@
+source_commit=917238f93ec19a7036bfd7fba777a514c8032bbf
+archive_sha256=3e6c92893c87fe1980ee42e3e65cd7e0750b098bc021730c97229684c04cff94
+binary_sha256=b0827bf47f7ae67d5cb8fd17424c27b2833151a240c9f18e667c07146d387087
+tested_executable=/tmp/mellow-release-acceptance.YZpGVN/mellow-0.3.0-x86_64-unknown-linux-musl/mellow
+platform=Linux-X64
+host=x86_64-unknown-linux-gnu
+execution_kind=native-container
+build_url=local/local/actions/runs/local
+
+running 24 tests
+test live_legacy_terminal_sends_ctrl_shift_o_as_ctrl_o ... ok
+test live_first_key_on_the_welcome_screen_reaches_the_file ... ok
+test live_mouse_click_runs_a_palette_row_at_120_by_34 ... ok
+test live_quit_with_unsaved_text_asks_and_discard_exits ... ok
+test live_palette_and_open_file_open_and_close_with_escape ... ok
+test release_binary_ai_proposal_disclosure_reject_accept_and_grouped_undo_redo ... ok
+test release_binary_claude_redirect_never_contacts_key_target ... ok
+test release_binary_cli_multifile_goto_wait_reaches_the_requested_caret ... ok
+test release_binary_ai_stream_cancel_aborts_socket_and_late_result_cannot_overwrite_edit ... ok
+test release_binary_cli_piped_stdin_retains_interactive_terminal_and_saves_draft ... ok
+test release_binary_launch_edit_save_quit_restores_terminal ... ok
+test release_binary_linked_snippet_paste_and_restart_history_restore_are_undoable ... ok
+test release_binary_recovers_unsaved_unicode_after_crash ... ok
+test release_binary_recovers_every_unnamed_draft_after_crash ... ok
+test release_binary_rectangle_paste_distributes_rows_and_undo_restores_all ... ok
+test release_binary_rejects_hostile_ai_shell_before_terminal_input ... ok
+test release_binary_formatter_palette_is_responsive_stale_result_and_cancel_do_not_save ... ok
+test release_binary_safe_ai_shell_stays_in_review_copy_and_close_never_execute ... ok
+test release_binary_slow_clipboard_keeps_palette_responsive_and_discards_stale_paste ... ok
+test release_binary_save_all_multiple_files_and_navigation_back_forward ... ok
+test release_binary_terminal_doctor_omits_paste_contents_and_config_review_does_not_save ... ok
+test release_binary_unicode_multicursor_terminal_and_clipboard_paste_are_one_undo ... ok
+test release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases ... ok
+test release_binary_formatter_deadline_includes_descendants_holding_pipes ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.39s
+
+acceptance=passed

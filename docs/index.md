@@ -4,7 +4,7 @@ title: Mellow terminal editor
 
 <div class="mellow-intro" markdown>
 
-<p class="mellow-eyebrow">MELLOW · DOCUMENTATION · 0.2.1 BETA</p>
+<p class="mellow-eyebrow">MELLOW · DOCUMENTATION · 0.3.0 BETA</p>
 
 # Edit files in your terminal. Start with the keys you know.
 
@@ -64,7 +64,7 @@ language server. It is an Apache-2.0 open-source project, currently in beta.
 
 ## What works today?
 
-| Capability in 0.2.1 | What you need |
+| Capability in 0.3.0 | What you need |
 | --- | --- |
 | Editing, undo/redo, mouse selection, tabs, split panes, file search and replace | The Mellow binary and an interactive terminal |
 | Project file picker, file tree, project search, session restore and crash journals | A local project folder; UTF-8 text files |
@@ -96,3 +96,10 @@ are identified separately in the [architecture](ARCHITECTURE.md).
 - **Something did not work:** [Troubleshooting](faq.md).
 - **Contributing or publishing docs:** [Development guide](development.md).
 - **A bug to report:** [GitHub issues](https://github.com/ritru-labs/mellow/issues).
+
+## Unreleased audit candidate
+
+[Candidate workflows](audit-workflows.md) describe the new editing and trust
+controls. [The complete audit tracker](audit/TRACKER.md) separates implemented
+work, local evidence, native validation gates and deliberately deferred ideas.
+These changes are not included in the currently published 0.3.0 download.

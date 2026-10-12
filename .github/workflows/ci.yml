@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   rust:
+    # This audit is qualified by the owner's local Jenkins; allocate no Actions runner.
+    if: github.event_name != 'pull_request' || github.head_ref != 'audit/mellow-20261011'
     name: rust (${{ matrix.os }})
     strategy:
       fail-fast: false

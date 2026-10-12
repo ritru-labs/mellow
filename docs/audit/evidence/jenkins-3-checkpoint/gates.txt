@@ -1,0 +1,9 @@
+preflight-regressions=passed
+verify=passed
+release=passed
+crate=passed
+isolated-install=passed
+package=passed
+extracted-archive-pty=passed
+linux-vm-packages=passed
+linux_vm_packages=passed; native_linux_acceptance=not-established

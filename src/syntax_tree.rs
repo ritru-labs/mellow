@@ -267,6 +267,9 @@ fn symbol_kinds(language_name: &str) -> &'static [(&'static str, &'static str)] 
             ("class_definition", "class"),
         ],
         "Shell" => &[("function_definition", "fn")],
+        "JSON" => &[("pair", "key")],
+        "YAML" => &[("block_mapping_pair", "key"), ("flow_pair", "key")],
+        "HCL" | "Terraform" => &[("block", "block"), ("attribute", "key")],
         _ => &[],
     }
 }
@@ -304,6 +307,14 @@ fn collect_symbols(
             node.child_by_field_name("type")
         } else {
             node.child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("key"))
+                .or_else(|| {
+                    if matches!(node.kind(), "block" | "attribute") {
+                        node.named_child(0)
+                    } else {
+                        None
+                    }
+                })
         };
         if let Some(name) = name_node.and_then(|name| name.utf8_text(source).ok()) {
             found.push(SyntaxSymbol {
@@ -585,11 +596,38 @@ mod tests {
     }
 
     #[test]
-    fn languages_without_definitions_have_an_empty_outline() {
+    fn yaml_and_terraform_have_local_key_and_block_outlines() {
+        for (language, source, expected) in [
+            ("YAML", "service:\n  port: 8080\n", vec!["service", "port"]),
+            (
+                "Terraform",
+                "resource \"local_file\" \"demo\" {\n  content = \"hello\"\n}\n",
+                vec!["resource", "content"],
+            ),
+        ] {
+            let document = SyntaxDocument::new(language, source, 1).unwrap().unwrap();
+            let names: Vec<_> = document.symbols().into_iter().map(|s| s.name).collect();
+            for expected in expected {
+                assert!(
+                    names.iter().any(|name| name.contains(expected)),
+                    "{language}: {names:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn json_has_key_outline_even_without_function_definitions() {
         let json = SyntaxDocument::new("JSON", "{\"a\": 1}\n", 1)
             .unwrap()
             .unwrap();
-        assert!(json.symbols().is_empty());
+        assert_eq!(
+            json.symbols()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["\"a\""]
+        );
     }
 
     #[test]

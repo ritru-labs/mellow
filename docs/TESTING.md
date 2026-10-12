@@ -1,60 +1,86 @@
-# Docker-first testing contract
+# Testing and evidence
 
-## Canonical local loop
-
-Every change should pass locally before push:
+Run the native gates before each commit with Rust 1.90.0:
 
 ```bash
-make verify
+bash scripts/native-ci.sh verify
+bash scripts/native-ci.sh release
+bash scripts/native-ci.sh crate
 ```
 
-which runs formatting, compile checks, Clippy and tests inside the same Rust Docker image.
+`verify` checks release documentation labels, formatting, all-target compilation,
+Clippy and all-target tests. `make verify` remains the Docker alternative; Linux
+container results describe Linux, even when Docker runs on a Mac.
 
-## Why Docker
+The October audit uses local Jenkins for CI, with immutable source selection and
+actual agent-platform validation. Automatic Actions jobs skip this audit branch;
+the optional four-target candidate workflow is manual-only. Do not trigger it
+without the owner's explicit request. Keep native-agent, Docker VM and unavailable
+platform results distinct in the acceptance record.
 
-- deterministic Rust/toolchain version
-- no developer-machine dependency drift
-- fast incremental rebuilds through named Cargo/target volumes
-- Linux behavior is exercised even when development happens on macOS
-- easy CI parity
+## Real PTY regressions
 
-## Manual TTY smoke test
+`tests/release_native_smoke.rs` starts the executable under a real Unix PTY at
+80×24 and other fixture sizes. It exercises editing, selection, Unicode paste,
+save, dirty-file protection, crash recovery, terminal restoration, compact
+layout and mouse/keyboard interactions. Its AI security fixtures use loopback
+mock providers and dummy credentials: a hostile shell response cannot create a
+marker, and a Claude redirect cannot contact the second endpoint with its key.
+These are transport and editor regressions, not live-provider qualification.
 
 ```bash
-make run FILE=fixtures/demo.rs
+cargo test --locked --test release_native_smoke
+MELLOW_SMOKE_BINARY=/absolute/path/to/extracted/mellow \
+  cargo test --locked --test release_native_smoke -- --nocapture
 ```
 
-Verify:
+The second command tests exactly the selected executable. Source unit tests do
+not establish archive acceptance. `native-ci.sh artifact-install` extracts a
+version/target-matching release archive, verifies the executable version, runs
+all PTY regressions and writes archive/binary SHA-256, source commit, host and
+outcome to an adjacent `.acceptance.txt` file. A failed or unexecuted test fails
+the gate. Native macOS Intel, macOS ARM64, Linux x64 and Linux ARM64 are separate
+targets; emulated runs do not satisfy a native artifact gate.
 
-1. alternate screen opens cleanly
-2. typing edits text without a mode switch
-3. arrows/Home/End/PageUp/PageDown work
-4. line numbers and cursor stay aligned
-5. `Ctrl+S` persists changes
-6. `Ctrl+Q` protects dirty content
-7. terminal is restored after exit
-8. resize the terminal through compact/comfortable/expanded sizes
+## Manual terminal and integration evaluation
 
-## Unicode smoke test
+Open `fixtures/unicode.txt` and verify Telugu, CJK, emoji, combining marks and
+tabs with actual fonts. Exercise Terminal.app, iTerm2, Ghostty and Linux/WSL
+terminals; SSH with and without tmux; legacy and enhanced keys; 16/256/true
+color; bracketed paste on/off; mouse and keyboard-only navigation. Record
+terminal version, OS/architecture, font, transport and exact executable digest.
+PTY text parsing does not establish native glyph shaping or screen-reader
+usability.
 
-```bash
-make run FILE=fixtures/unicode.txt
-```
+Live Python/TypeScript language-server completion/imports, mixed-language
+navigation/diagnostics and live AI provider/account compatibility require their
+own named integration results. Mocks establish only their protocol fixtures.
+VoiceOver or other screen-reader acceptance requires a real assistive-technology
+session and user evaluation; keyboard/color tests alone are insufficient.
 
-Explicitly verify Telugu, Japanese, emoji, combining marks, wide characters and tabs. A terminal editor that counts JavaScript/Rust code units as screen cells is not production-correct.
+## Evidence status
 
-## Later PTY integration suite
+The automated gates are implemented; their presence is not a passing run.
+Release evidence must link the actual logs and archive digests for each target.
+Native Intel/Linux jobs, real SSH/tmux, live provider accounts, native font
+rendering and screen-reader/user evaluations remain unverified until recorded
+for the candidate. See the implementation tracker for current local results.
 
-We will add PTY-driven tests for:
+## Manual Jenkins job
 
-- resize events
-- raw mode restoration
-- mouse sequences
-- bracketed paste
-- clipboard adapters (OSC 52 where available)
-- terminal capability fallbacks
-- key conflicts across common terminal emulators
+Create a manual Pipeline using the reviewed `Jenkinsfile`, without SCM polling.
+`SOURCE_SHA` is mandatory and immutable; use the public Mellow repository or an
+absolute agent-local checkout for `SOURCE_REPOSITORY`. The default agent is the
+existing `vidhur-mac && darwin-arm64`, with command-scoped Rust 1.90.0. The job
+does not change global toolchains, credentials, other jobs or installed Mellow.
+When the controller root URL is unset, `JENKINS_BASE_URL` supplies the evidence
+URL without changing controller settings. It runs formatting/lint/source tests,
+release/crate, isolated installation, and
+all PTY tests against the extracted native archive. Optional Linux VM packages
+are labeled separately and include deb/rpm install/test/uninstall. Failure logs
+and source/archive/binary receipts are always archived.
 
-## CI / non-interactive behavior
-
-The verification script uses `docker compose run -T` so formatting, checks and tests do not require a pseudo-TTY. Interactive editor runs intentionally keep a TTY.
+Only enable optional Intel or native Linux gates when a correctly labeled agent
+exists. Host/toolchain/target mismatches fail before product tests. A timeout or
+missing agent is an unavailable gate, never a passing target. Check the actual
+Jenkins build result and artifact receipts linked in PR #11.

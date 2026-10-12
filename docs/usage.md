@@ -38,13 +38,15 @@ to write the correction.
 
 In a Git repository, file discovery uses tracked and untracked, non-ignored
 files. For discovered files already open with unsaved edits, project search
-uses the editor's text; other files are read from disk. An unnamed draft or a
-new file not yet discovered is not a substitute for a saved project file.
+uses the editor's text; other files are read from disk. The audit candidate also includes named unsaved open files. Unnamed drafts
+have no project path and are outside project discovery.
 
-Search is deliberately bounded: files over 2 MiB, binary files and unreadable
+Default search is deliberately bounded: files over 2 MiB, binary files and unreadable
 files are skipped; the scan has a 64 MiB total budget and a 2,000-result cap.
 Watch the search summary for skipped or truncated results. A partial scan does
-not prove a term is absent from the project.
+not prove a term is absent from the project. The candidate searches in a
+cancellable worker, with query generations and include/exclude filters in
+`.mellow/search.json`; see [candidate workflows](audit-workflows.md).
 
 ## Keep two views open
 
@@ -94,8 +96,8 @@ In a Rust, Python or shell file, `Ctrl+Shift+O` (on terminals that send it; the
 palette has **Go to symbol** everywhere) opens the list of functions, types and
 other definitions. Type part of a name to filter it, then press `Enter` or click
 a row. The breadcrumb above the editor ends with the definition the cursor is in,
-so you always know where you are. Other languages report that the file has no
-symbols to jump to.
+so you always know where you are. The audit candidate also lists JSON/YAML keys and Terraform/HCL blocks and
+attributes locally. Workspace symbols require a supporting trusted language server.
 
 ## Resolve a merge conflict
 
@@ -129,3 +131,6 @@ external formatter and is configured separately.
 [AI](ai.md) is optional. Explanations and selected-text proposals require a
 configured provider; proposed edits go through review. Inline suggestions are
 a separate opt-in feature that sends nearby code while you type.
+
+See [audit candidate workflows](audit-workflows.md) for Save All, checkpoints,
+trash restore, snippets, execution trust and the two new local tools.

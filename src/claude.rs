@@ -9,12 +9,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::ai::{AiProviderConfig, connection_error};
+#[cfg(test)]
+use crate::ai::AiProviderConfig;
+use crate::ai::bounded_output;
 
 pub const MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
-const API_VERSION: &str = "2023-06-01";
-const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+pub(crate) const API_VERSION: &str = "2023-06-01";
+pub(crate) const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 
 /// One request/response round trip.
 pub struct Exchange<'a> {
@@ -69,63 +71,21 @@ pub fn request_body(model: &str, exchange: &Exchange<'_>, first_party: bool) -> 
 }
 
 /// Sends one message and returns the concatenated text blocks.
+#[cfg(test)]
 pub fn send(config: &AiProviderConfig, exchange: &Exchange<'_>) -> Result<String> {
-    let Some(api_key) = config.api_key.as_deref() else {
-        bail!("Claude needs an API key · open Settings > AI to add one");
-    };
-    let first_party = config.endpoint.starts_with(MESSAGES_ENDPOINT);
-    let body = request_body(&config.model, exchange, first_party);
-
-    // Never follow redirects: the key header would go to wherever they point.
-    let client = reqwest::blocking::Client::builder()
-        .timeout(exchange.timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .context("failed to build AI HTTP client")?;
-    let mut http = client
-        .post(&config.endpoint)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", API_VERSION)
-        .json(&body);
-    if body.get("fallbacks").is_some() {
-        http = http.header("anthropic-beta", FALLBACK_BETA);
-    }
-    let response = http
-        .send()
-        .map_err(|error| connection_error(config, &error))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .context("failed to read Claude's response")?;
-    let envelope: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-
-    if !status.is_success() {
-        let message = envelope
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| text.chars().take(300).collect());
-        match status.as_u16() {
-            401 => bail!("Claude rejected the API key · check it in Settings > AI"),
-            429 => bail!("Claude is rate limiting requests · try again in a moment"),
-            529 => bail!("Claude is overloaded right now · try again shortly"),
-            _ => bail!("Claude returned {status}: {message}"),
-        }
-    }
-
-    parse_response(&envelope)
+    Ok(crate::ai::exchange_cancellable(
+        config,
+        exchange,
+        &std::sync::atomic::AtomicBool::new(false),
+        None,
+    )?
+    .value)
 }
 
-fn parse_response(envelope: &Value) -> Result<String> {
+pub(crate) fn parse_response(envelope: &Value) -> Result<String> {
     // Always check the stop reason before reading content.
     if envelope.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
-        let category = envelope
-            .pointer("/stop_details/category")
-            .and_then(Value::as_str);
-        match category {
-            Some(category) => bail!("Claude declined this request ({category})"),
-            None => bail!("Claude declined this request"),
-        }
+        bail!("Claude declined this request");
     }
     if envelope.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
         bail!("Claude's reply was cut off at its length limit; nothing was changed");
@@ -134,12 +94,14 @@ fn parse_response(envelope: &Value) -> Result<String> {
         .get("content")
         .and_then(Value::as_array)
         .context("Claude's response has no content")?;
-    Ok(blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join(""))
+    bounded_output(
+        blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+    )
 }
 
 #[cfg(test)]
@@ -205,7 +167,41 @@ mod tests {
         });
         let error = parse_response(&refused).unwrap_err().to_string();
         assert!(error.contains("declined"), "{error}");
-        assert!(error.contains("cyber"), "{error}");
+        assert!(
+            !error.contains("cyber"),
+            "provider details are withheld: {error}"
+        );
+    }
+
+    #[test]
+    fn redirects_never_receive_the_claude_key() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let port = destination.local_addr().unwrap().port();
+        let source = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = source.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = source.accept().unwrap();
+            let mut request = [0u8; 16384];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..read])
+                    .contains("x-api-key: synthetic-audit-key")
+            );
+            write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://localhost:{port}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let config = AiProviderConfig {
+            provider: AiProvider::Claude,
+            endpoint: format!("http://{address}/v1/messages"),
+            model: "test-model".to_owned(),
+            api_key: Some("synthetic-audit-key".to_owned()),
+            inline_suggestions: false,
+        };
+        assert!(send(&config, &exchange()).is_err());
+        server.join().unwrap();
+        assert!(
+            matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
     }
 
     #[test]

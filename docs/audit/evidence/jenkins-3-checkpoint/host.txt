@@ -1,0 +1,17 @@
+source_commit=759a34bea2103ded5d2092467cfa779bc56aee0b
+target=aarch64-apple-darwin
+execution_kind=native
+build_url=http://127.0.0.1:8082/job/mellow-audit-acceptance/3/
+Darwin arm64
+rustc 1.90.0 (1159e78c4 2025-09-14)
+binary: rustc
+commit-hash: 1159e78c4747b02ef996e55082b704c09b970588
+commit-date: 2025-09-14
+host: aarch64-apple-darwin
+release: 1.90.0
+LLVM version: 20.1.8
+jenkinsfile_sha256=5bf3938ef740069e2c1c0fbf76ca2762914d1710618f1b6730280d1f959ba5ca
+helper_sha256=0c5d1ed83c5468627d4adba9538751fb31abc90192fb5022d5137713518e1276
+launcher_SIGINT=ignored; blocked=False
+launcher_SIGQUIT=ignored; blocked=False
+compiler_cache=/Users/rukmini/.cache/mellow-jenkins/aarch64-apple-darwin-rust-1.90.0

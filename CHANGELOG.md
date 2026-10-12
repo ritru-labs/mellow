@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — deep audit candidate
+
+- AI shell suggestions stay in read-only review; copy is explicit and no suggestion enters a PTY. All provider redirects are refused, context excludes credentials, streamed proposals validate before review, and local transport is cancellable with session limits/unknown usage shown.
+- Safe saves retain supported metadata and refuse hard-link splitting; filesystem conflict/publication checks strengthened.
+- Formatting, discovery, search and clipboard adapters run off the interaction path with deadlines, cancellation or stale-result guards.
+- Shared Unicode multi-cursor/rectangle paste, configurable indentation/EditorConfig, Save All/close batches, local history/privacy controls, trash restore, navigation, outline, linked snippets and discoverable explorer/binding commands.
+- Pooled language servers, resolved completion/import edits, synchronized multi-file edits and scoped Problems.
+- Small local Safe Configuration Change and Terminal Doctor workflows; no automatic deployment or shell execution.
+- Version labels checked from Cargo; native candidate/artifact acceptance and provenance/signing hooks documented. Published release/install channels are unchanged.
+
+See [audit tracker](docs/audit/TRACKER.md) for actual platforms, integration versions, deferred items and remaining release gates.
+
 ## 0.3.0 (beta)
 
 An agent-style look, mouse support across overlays, and a set of editing features.

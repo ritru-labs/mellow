@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/release_native_smoke.rs (target/debug/deps/release_native_smoke-3801462941a0a5cf)
+
+running 1 test
+test release_binary_workspace_trust_does_not_execute_tools_for_outside_files_or_aliases ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 4.41s
+

@@ -1,0 +1,16 @@
+
+running 1 test
+
+thread 'pty::tests::terminal_children_restore_signals_without_changing_the_parent' panicked at src/pty.rs:987:17:
+blocked launcher mask prevented direct PTY program interruption
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pty::tests::terminal_children_restore_signals_without_changing_the_parent ... FAILED
+
+failures:
+
+failures:
+    pty::tests::terminal_children_restore_signals_without_changing_the_parent
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 531 filtered out; finished in 3.37s
+
+isolated blocked-mask subprocess exit: 101

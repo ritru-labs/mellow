@@ -38,11 +38,17 @@ use crate::{
     workspace,
 };
 
-const TAB_WIDTH: usize = 4;
 const MOUSE_SCROLL_LINES: usize = 3;
 const LAUNCH_BANNER_DURATION: Duration = Duration::from_secs(6);
 /// While typing, a dirty buffer's journal is rewritten at most this often.
 const JOURNAL_INTERVAL: Duration = Duration::from_secs(1);
+
+type AiTransport = (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    u32,
+    mpsc::Sender<ai::AiUsage>,
+    mpsc::Sender<String>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -88,6 +94,7 @@ pub enum AppMode {
     GitBlame,
     GitConflicts,
     Symbols,
+    Utility,
 }
 
 #[derive(Debug)]
@@ -258,6 +265,7 @@ pub struct RectangularSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProblemItem {
+    pub path: Option<PathBuf>,
     pub severity: ProblemSeverity,
     pub source: String,
     pub message: String,
@@ -295,6 +303,7 @@ enum PostSaveAction {
     None,
     Quit,
     CloseTab,
+    SaveAll,
 }
 
 /// One row of the language-server change preview.
@@ -305,6 +314,58 @@ pub enum LspPreviewRow {
     Removed(String),
     Added(String),
     Note(String),
+}
+
+#[derive(Clone)]
+struct NavigationPoint {
+    identity: u64,
+    path: Option<PathBuf>,
+    cursor: Cursor,
+}
+
+#[derive(Clone)]
+enum UtilityAction {
+    Trust,
+    SaveAll,
+    ForgetHistory(PathBuf),
+    Restore(crate::history::HistoryEntry),
+    Task(Vec<String>),
+    Snippet(usize),
+    RestoreTrash(crate::file_ops::TrashEntry),
+    Navigate(PathBuf, Cursor),
+    ValidateConfig(Vec<String>, u64, u64),
+    SaveConfig(u64, u64),
+}
+struct PendingClipboardCopy {
+    text: String,
+    verb: String,
+    receiver: Receiver<bool>,
+}
+struct PendingClipboardPaste {
+    identity: u64,
+    revision: u64,
+    cursor: Cursor,
+    anchor: Option<Cursor>,
+    secondary: Vec<Cursor>,
+    rectangle: Option<RectangularSelection>,
+    occurrences: Vec<(Cursor, Cursor)>,
+    receiver: Receiver<Option<String>>,
+}
+struct PendingTask {
+    config_snapshot: Option<(u64, u64)>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    receiver: Receiver<Result<crate::format::ProcessOutput, String>>,
+}
+
+struct PendingFormat {
+    identity: u64,
+    revision: u64,
+    path: PathBuf,
+    save_as: bool,
+    program: String,
+    post_action: PostSaveAction,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    receiver: Receiver<Result<String, String>>,
 }
 
 struct BackgroundGitRefresh {
@@ -392,6 +453,7 @@ struct WorkspaceEditHistory {
 
 #[derive(Debug, Clone)]
 struct AiContextSnapshot {
+    buffer_identity: u64,
     revision: u64,
     range: Option<(Cursor, Cursor)>,
     before: String,
@@ -410,6 +472,13 @@ struct CompletionRequestState {
     manual: bool,
 }
 
+#[derive(Clone)]
+struct LspInteractionState {
+    identity: u64,
+    revision: u64,
+    cursor: Cursor,
+}
+
 pub struct App {
     pub buffer: Buffer,
     pub cursor: Cursor,
@@ -417,6 +486,9 @@ pub struct App {
     pub secondary_cursors: Vec<Cursor>,
     pub rectangular_selection: Option<RectangularSelection>,
     pub clipboard: String,
+    history_enabled: bool,
+    pending_clipboard_copy: Option<PendingClipboardCopy>,
+    pending_clipboard_paste: Option<PendingClipboardPaste>,
     #[cfg(test)]
     clipboard_reader: Option<fn() -> Option<String>>,
     pub scroll_row: usize,
@@ -438,8 +510,48 @@ pub struct App {
     pub format_on_save: bool,
     /// `MELLOW_FORMAT_<LANGUAGE>` overrides, read once at startup.
     formatter_overrides: std::collections::HashMap<String, String>,
+    pending_format: Option<PendingFormat>,
+    completion_resolve_request: Option<u64>,
+    completion_resolve_cursor: Option<Cursor>,
+    definition_intent: Option<LspInteractionState>,
+    references_intent: Option<LspInteractionState>,
+    hover_intent: Option<LspInteractionState>,
+    signature_intent: Option<LspInteractionState>,
+    pub utility_title: String,
+    pub utility_lines: Vec<String>,
+    pub utility_selected: usize,
+    utility_actions: Vec<Option<UtilityAction>>,
+    workspace_trusted: bool,
+    pending_task: Option<PendingTask>,
+    save_all_queue: Vec<u64>,
+    batch_return: Option<u64>,
+    close_queue: Vec<u64>,
+    navigation_back: Vec<NavigationPoint>,
+    navigation_forward: Vec<NavigationPoint>,
+    occurrence_ranges: Vec<(Cursor, Cursor)>,
+    quick_open_worker: workspace::QuickOpenWorker,
+    quick_open_generation: u64,
+    quick_open_ready: bool,
+    project_search_worker: search::ProjectSearchWorker,
+    project_search_due: Option<Instant>,
+    project_search_generation: u64,
+    pub project_search_running: bool,
+    workspace_symbol_search: bool,
+    snippet_session: Option<crate::snippets::Session>,
+    lsp_symbols: Vec<crate::lsp::SymbolLocation>,
     pub settings_selected: usize,
     pub ai_query: TextInput,
+    pub ai_stream_preview: String,
+    ai_requests_used: u32,
+    ai_max_requests: u32,
+    ai_max_output_tokens: u32,
+    ai_session_token_budget: u64,
+    ai_known_tokens: u64,
+    ai_unknown_requests: u32,
+    ai_usage_sender: mpsc::Sender<ai::AiUsage>,
+    ai_usage_receiver: Receiver<ai::AiUsage>,
+    ai_progress_receiver: Receiver<String>,
+    ai_cancel_tokens: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ai_context: Option<AiContextSnapshot>,
     pub ai_proposal: Option<AiProposal>,
     ai_receiver: Option<Receiver<Result<AiProposal, String>>>,
@@ -748,6 +860,8 @@ impl App {
             (None, None) => None,
         };
 
+        let (ai_usage_sender, ai_usage_receiver) = mpsc::channel();
+        let (_, ai_progress_receiver) = mpsc::channel();
         Self {
             buffer,
             cursor: Cursor::new(0, 0),
@@ -755,6 +869,8 @@ impl App {
             secondary_cursors: Vec::new(),
             rectangular_selection: None,
             clipboard: String::new(),
+            pending_clipboard_copy: None,
+            pending_clipboard_paste: None,
             #[cfg(test)]
             clipboard_reader: None,
             scroll_row: 0,
@@ -772,10 +888,51 @@ impl App {
             show_indent_guides: editor_settings.show_indent_guides,
             auto_completion_enabled: editor_settings.auto_completion,
             copy_on_select: editor_settings.copy_on_select,
+            pending_format: None,
+            completion_resolve_request: None,
+            completion_resolve_cursor: None,
+            definition_intent: None,
+            references_intent: None,
+            hover_intent: None,
+            signature_intent: None,
+            utility_title: String::new(),
+            utility_lines: Vec::new(),
+            utility_selected: 0,
+            utility_actions: Vec::new(),
+            workspace_trusted: cfg!(test),
+            pending_task: None,
+            save_all_queue: Vec::new(),
+            batch_return: None,
+            close_queue: Vec::new(),
+            navigation_back: Vec::new(),
+            navigation_forward: Vec::new(),
+            occurrence_ranges: Vec::new(),
+            quick_open_worker: workspace::QuickOpenWorker::default(),
+            quick_open_generation: 0,
+            quick_open_ready: false,
+            project_search_worker: search::ProjectSearchWorker::default(),
+            project_search_due: None,
+            project_search_generation: 0,
+            project_search_running: false,
+            workspace_symbol_search: false,
+            snippet_session: None,
+            lsp_symbols: Vec::new(),
             format_on_save: editor_settings.format_on_save,
+            history_enabled: editor_settings.history_enabled,
             formatter_overrides: crate::format::overrides_from_env(),
             settings_selected: 0,
             ai_query: TextInput::default(),
+            ai_stream_preview: String::new(),
+            ai_requests_used: 0,
+            ai_max_requests: editor_settings.ai_max_requests,
+            ai_max_output_tokens: editor_settings.ai_max_output_tokens,
+            ai_session_token_budget: editor_settings.ai_session_token_budget,
+            ai_known_tokens: 0,
+            ai_unknown_requests: 0,
+            ai_usage_sender,
+            ai_usage_receiver,
+            ai_progress_receiver,
+            ai_cancel_tokens: Vec::new(),
             ai_context: None,
             ai_proposal: None,
             ai_receiver: None,
@@ -917,6 +1074,23 @@ impl App {
         }
     }
 
+    pub fn configure_cli(
+        &mut self,
+        trust: bool,
+        cursor: Option<(usize, usize)>,
+        stdin: Option<String>,
+    ) {
+        self.workspace_trusted = trust;
+        if let Some(text) = stdin {
+            self.new_untitled_tab();
+            self.paste_editor_text(&text);
+        }
+        if let Some((row, col)) = cursor {
+            self.cursor = Cursor::new(row.saturating_sub(1), col.saturating_sub(1));
+            self.clamp_cursor();
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut MellowTerminal) -> Result<()> {
         self.language_service_active = true;
         self.restart_language_server(false);
@@ -929,9 +1103,15 @@ impl App {
             {
                 self.launch_banner_until = None;
             }
+            self.poll_quick_open();
+            self.poll_project_search();
+            self.poll_task();
+            self.poll_clipboard();
+            self.poll_format_save();
             self.poll_terminal_sessions();
             self.poll_auto_completion();
             self.poll_language_service();
+            self.poll_ai_transport();
             self.poll_ai_request();
             self.poll_commit_message();
             self.poll_shell_command();
@@ -995,6 +1175,12 @@ impl App {
                 Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {}
             }
         }
+        self.cancel_format_save();
+        self.cancel_ai_transports();
+        if let Some(job) = self.pending_task.take() {
+            job.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         // Queued clears must land, or the next start would offer stale drafts.
         self.flush_journal();
         self.sync_session_state();
@@ -1051,6 +1237,14 @@ impl App {
             return;
         }
 
+        if key.code == KeyCode::Esc {
+            self.cancel_lsp_interactions();
+        }
+
+        if key.code == KeyCode::Esc && self.pending_format.is_some() {
+            self.cancel_format_save();
+            return;
+        }
         self.should_scroll_to_cursor = true;
         self.launch_banner_until = None;
 
@@ -1073,6 +1267,7 @@ impl App {
         }
 
         match self.mode {
+            AppMode::Utility => self.handle_utility_key(key),
             AppMode::ConfirmQuit => self.handle_quit_confirmation(key),
             AppMode::ConfirmCloseTab => self.handle_close_tab_confirmation(key),
             AppMode::ConfirmCloseTerminal => match key.code {
@@ -1176,6 +1371,11 @@ impl App {
             auto_completion: self.auto_completion_enabled,
             copy_on_select: self.copy_on_select,
             format_on_save: self.format_on_save,
+            history_enabled: self.history_enabled,
+            indent_width: self.buffer.indent_width(),
+            ai_max_requests: self.ai_max_requests,
+            ai_max_output_tokens: self.ai_max_output_tokens,
+            ai_session_token_budget: self.ai_session_token_budget,
         }
     }
 
@@ -1274,6 +1474,7 @@ impl App {
                 format!("lines {}–{} of {short_path}", start.row + 1, end.row + 1)
             };
             return AiContextSnapshot {
+                buffer_identity: self.buffer.identity(),
                 revision,
                 range: Some((start, end)),
                 request_context: before.clone(),
@@ -1295,6 +1496,7 @@ impl App {
             request_context.push_str(&format!("{}: {}\n", row + 1, self.buffer.line_text(row)));
         }
         AiContextSnapshot {
+            buffer_identity: self.buffer.identity(),
             revision,
             range: None,
             before: String::new(),
@@ -1417,6 +1619,7 @@ impl App {
             return;
         }
         self.ai_config = None;
+        self.cancel_ai_transports();
         self.ghost = None;
         self.ghost_receiver = None;
         self.ghost_generation += 1;
@@ -1604,17 +1807,28 @@ impl App {
             after.push_str(&self.buffer.line_text(row));
         }
         let request = ai::InlineRequest {
-            path: self.active_short_path(),
+            path: self.buffer.display_path(),
             language: self.buffer.language().to_owned(),
             before,
             after,
         };
         let config = config.clone();
+        let Some((cancelled, cap, usage, _)) = self.begin_ai_transport() else {
+            return;
+        };
         let cursor = self.cursor;
         let generation = self.ghost_generation;
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = ai::complete_inline(&config, &request).map_err(|error| error.to_string());
+            let result = ai::complete_inline_cancellable(&config, &request, &cancelled, cap, None)
+                .map(|response| {
+                    let _ = usage.send(response.usage);
+                    response.value
+                })
+                .map_err(|error| {
+                    let _ = usage.send(ai::error_usage(&error));
+                    error.to_string()
+                });
             let _ = sender.send(GhostReply {
                 buffer,
                 generation,
@@ -1649,6 +1863,10 @@ impl App {
         }
     }
 
+    pub fn ai_shell_prompt(&self) -> bool {
+        self.ai_shell_request
+    }
+
     pub fn ai_context_label(&self) -> &str {
         self.ai_context
             .as_ref()
@@ -1661,6 +1879,96 @@ impl App {
             .as_ref()
             .map(|context| context.before.as_str())
             .unwrap_or("")
+    }
+
+    fn begin_ai_transport(&mut self) -> Option<AiTransport> {
+        self.poll_ai_transport();
+        if self.ai_requests_used >= self.ai_max_requests
+            || self.ai_known_tokens >= self.ai_session_token_budget
+        {
+            self.fail("AI session limit reached; inspect AI request usage and limits. Editing remains available".to_owned());
+            return None;
+        }
+        self.ai_requests_used += 1;
+        self.ai_stream_preview.clear();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.ai_cancel_tokens.push(cancelled.clone());
+        let remaining = self
+            .ai_session_token_budget
+            .saturating_sub(self.ai_known_tokens);
+        let (progress, receiver) = mpsc::channel();
+        self.ai_progress_receiver = receiver;
+        Some((
+            cancelled,
+            self.ai_max_output_tokens
+                .min(remaining.min(u32::MAX as u64) as u32),
+            self.ai_usage_sender.clone(),
+            progress,
+        ))
+    }
+    fn cancel_ai_transports(&mut self) {
+        for token in self.ai_cancel_tokens.drain(..) {
+            token.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.ai_stream_preview.clear();
+    }
+    fn poll_ai_transport(&mut self) {
+        while let Ok(usage) = self.ai_usage_receiver.try_recv() {
+            self.ai_known_tokens = self
+                .ai_known_tokens
+                .saturating_add(usage.input_tokens.unwrap_or(0))
+                .saturating_add(usage.output_tokens.unwrap_or(0));
+            if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
+                self.ai_unknown_requests += 1;
+            }
+        }
+        while let Ok(delta) = self.ai_progress_receiver.try_recv() {
+            if self.mode == AppMode::AiWaiting {
+                let clean: String = delta
+                    .chars()
+                    .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                    .collect();
+                self.ai_stream_preview.extend(
+                    clean
+                        .chars()
+                        .take(8192usize.saturating_sub(self.ai_stream_preview.chars().count())),
+                );
+            }
+        }
+    }
+    fn show_ai_usage(&mut self) {
+        self.poll_ai_transport();
+        self.show_utility("AI request usage and limits",vec![
+            format!("Requests used: {} / {} this session (cancelled and failed attempts count)",self.ai_requests_used,self.ai_max_requests),
+            format!("Provider-reported tokens observed: {} / {} post-response budget",self.ai_known_tokens,self.ai_session_token_budget),
+            format!("{} requests have incomplete/unknown usage. Cost is unknown; no prices or refunds are assumed.",self.ai_unknown_requests),
+            format!("Per-request output cap: {} tokens; provider compliance and reported usage may differ.",self.ai_max_output_tokens),
+            "Limits are configured in settings.conf. Unknown usage cannot prove a monetary spending ceiling.".to_owned(),
+            "Escape aborts local transport; provider-side processing/billing may already have occurred.".to_owned(),
+        ],Vec::new());
+    }
+    fn show_bindings(&mut self) {
+        let path = self
+            .keymap_config
+            .source()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| settings::config_root().join("keybindings.conf"));
+        let mut lines=vec!["Effective bindings; Enter on the first row opens keybindings.conf for ordinary editing.".to_owned(),"Use Terminal Doctor to record delivered key events. Escape returns.".to_owned()];
+        let mut actions = vec![Some(UtilityAction::Navigate(path, Cursor::new(0, 0))), None];
+        for spec in crate::command::COMMAND_SPECS {
+            let bindings = self.keymap_config.bindings_for(spec);
+            lines.push(format!(
+                "{}: {}",
+                spec.label,
+                bindings
+                    .iter()
+                    .map(|b| b.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            actions.push(None);
+        }
+        self.show_utility("Keyboard bindings", lines, actions);
     }
 
     fn start_ai_request(&mut self) {
@@ -1690,9 +1998,21 @@ impl App {
             context: context.request_context,
             allow_replacement: context.range.is_some(),
         };
+        let Some((cancelled, cap, usage, progress)) = self.begin_ai_transport() else {
+            return;
+        };
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = ai::request(&config, &request).map_err(|error| error.to_string());
+            let result =
+                ai::request_cancellable(&config, &request, &cancelled, cap, Some(&progress))
+                    .map(|response| {
+                        let _ = usage.send(response.usage);
+                        response.value
+                    })
+                    .map_err(|error| {
+                        let _ = usage.send(ai::error_usage(&error));
+                        error.to_string()
+                    });
             let _ = sender.send(result);
         });
         self.ai_receiver = Some(receiver);
@@ -1780,10 +2100,16 @@ impl App {
 
     fn handle_ai_waiting_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
+            self.cancel_ai_transports();
             self.ai_receiver = None;
             self.ai_context = None;
             self.mode = AppMode::Editing;
-            self.notify("AI response dismissed".to_owned());
+            self.shell_receiver = None;
+            self.ai_shell_request = false;
+            self.notify(
+                "AI local transport cancelled · provider processing/billing may continue; usage is unknown"
+                    .to_owned(),
+            );
         }
     }
 
@@ -1860,7 +2186,8 @@ impl App {
             self.notify("AI replacement ignored: no selected edit target".to_owned());
             return;
         };
-        if self.buffer.display_path() != context.path
+        if self.buffer.identity() != context.buffer_identity
+            || self.buffer.display_path() != context.path
             || self.buffer.revision() != context.revision
             || self.buffer.get_text_range(start, end) != context.before
         {
@@ -1871,6 +2198,9 @@ impl App {
             return;
         }
 
+        if let Some(path) = self.buffer.path().cloned() {
+            self.record_history(&path, &self.buffer.contents(), "ai-accept");
+        }
         let pre_cursor = self.cursor;
         let pre_selection_anchor = self.selection_anchor;
         self.buffer
@@ -1974,6 +2304,7 @@ impl App {
                     let target_row = line_num.saturating_sub(1).min(max_line);
                     let max_col = self.buffer.grapheme_count(target_row);
                     let target_col = col_num.saturating_sub(1).min(max_col);
+                    self.remember_navigation();
                     self.cursor = Cursor::new(target_row, target_col);
                     self.selection_anchor = None;
                     self.preferred_col = None;
@@ -2034,6 +2365,7 @@ impl App {
     }
 
     pub fn jump_to_find_match(&mut self, idx: usize) {
+        self.remember_navigation();
         if let Some(&(row, start_col, end_col)) = self.find_matches.get(idx) {
             self.find_selected = idx;
             self.cursor.row = row;
@@ -2321,47 +2653,78 @@ impl App {
             self.project_search_query.set(self.find_query.as_str());
         }
 
-        match workspace::discover_file_list(&self.workspace_root) {
-            Ok(list) => {
-                self.project_search_files = list.files;
-                self.project_search_list_truncated = list.truncated;
-                self.project_search_selected = 0;
-                self.mode = AppMode::ProjectSearch;
-                self.recalculate_project_search();
-            }
-            Err(error) => {
-                self.fail(format!("Project search failed: {error}"));
-            }
-        }
+        self.project_search_files.clear();
+        self.project_search_selected = 0;
+        self.mode = AppMode::ProjectSearch;
+        self.recalculate_project_search();
     }
 
     fn recalculate_project_search(&mut self) {
+        self.project_search_worker.cancel();
+        self.project_search_report = ProjectSearchReport::default();
+        self.project_search_selected = 0;
         if self.project_search_query.is_empty() {
-            self.project_search_report = ProjectSearchReport::default();
-            self.project_search_selected = 0;
+            self.project_search_due = None;
+            self.project_search_running = false;
             self.clear_status();
             return;
         }
+        self.project_search_due = Some(Instant::now() + Duration::from_millis(120));
+        self.project_search_running = true;
+        self.notify("Search pending; typing and Escape stay available".to_owned());
+    }
 
-        let unsaved = self.unsaved_workspace_texts();
-        match search::search_project(
-            &self.workspace_root,
-            &self.project_search_files,
-            self.project_search_query.as_str(),
-            self.project_search_options,
-            &unsaved,
-        ) {
-            Ok(report) => {
-                self.project_search_report = report;
-                self.project_search_selected = self
-                    .project_search_selected
-                    .min(self.project_search_report.results.len().saturating_sub(1));
-                self.clear_status();
+    fn poll_project_search(&mut self) {
+        if self.mode != AppMode::ProjectSearch {
+            if self.project_search_running {
+                self.project_search_worker.cancel();
             }
-            Err(error) => {
-                self.project_search_report = ProjectSearchReport::default();
-                self.project_search_selected = 0;
-                self.notify(format!("Project search pattern: {error}"));
+            self.project_search_due = None;
+            self.project_search_running = false;
+            return;
+        }
+        if self
+            .project_search_due
+            .is_some_and(|at| Instant::now() >= at)
+        {
+            self.project_search_due = None;
+            let request = search::ProjectSearchRequest {
+                root: self.workspace_root.clone(),
+                files: if self.project_search_files.is_empty() {
+                    None
+                } else {
+                    Some(self.project_search_files.clone())
+                },
+                query: self.project_search_query.as_str().to_owned(),
+                options: self.project_search_options,
+                unsaved: self.unsaved_workspace_texts(),
+                scope: search::ProjectSearchScope::default(),
+            };
+            self.project_search_generation = self.project_search_worker.submit(request);
+        }
+        for update in self.project_search_worker.poll() {
+            if update.generation != self.project_search_generation
+                || self.project_search_due.is_some()
+            {
+                continue;
+            }
+            if update.finished {
+                self.project_search_running = false;
+            }
+            match update.report {
+                Ok(report) => {
+                    self.project_search_report = report;
+                    self.project_search_selected = self
+                        .project_search_selected
+                        .min(self.project_search_report.results.len().saturating_sub(1));
+                    if update.finished {
+                        self.clear_status();
+                    }
+                }
+                Err(error) => {
+                    self.project_search_running = false;
+                    self.fail(format!("Project search: {error}"));
+                }
             }
         }
     }
@@ -2457,6 +2820,7 @@ impl App {
     }
 
     fn open_selected_project_search_result(&mut self) {
+        self.remember_navigation();
         let Some(result) = self
             .project_search_report
             .results
@@ -2499,7 +2863,53 @@ impl App {
         }
     }
 
+    /// Both clipboard transports share the same undoable edit semantics.
+    /// A multiline payload is repeated at each cursor; rectangle rows use the
+    /// existing per-row distribution contract.
+    fn paste_editor_text(&mut self, text: &str) {
+        if let Some(mut session) = self.snippet_session.take()
+            && session.replace(&mut self.buffer, &mut self.cursor, text)
+        {
+            self.secondary_cursors = session
+                .ranges(&self.buffer)
+                .iter()
+                .skip(1)
+                .map(|r| r.1)
+                .collect();
+            self.snippet_session = Some(session);
+            self.selection_anchor = None;
+            return;
+        }
+        if !self.occurrence_ranges.is_empty() {
+            self.replace_occurrences(text);
+            return;
+        }
+        if self.rectangular_selection.is_some() {
+            let _ = self.replace_rectangular_selection(text);
+        } else if !self.secondary_cursors.is_empty() && self.selection_anchor.is_none() {
+            let _ = self.apply_text_to_all_cursors(text, false);
+        } else if let Some((start, end)) = self.selection_range() {
+            let before = self.cursor;
+            let anchor = self.selection_anchor;
+            self.buffer
+                .replace_range(start, end, text, &mut self.cursor);
+            self.selection_anchor = None;
+            self.buffer
+                .set_last_history_state(before, anchor, self.cursor, None);
+        } else {
+            self.buffer.insert_text(&mut self.cursor, text);
+        }
+    }
+
     fn handle_paste(&mut self, text: &str) {
+        if self.mode == AppMode::Utility && self.utility_title == "Terminal Doctor" {
+            self.utility_lines.push(format!(
+                "Delivered bracketed paste: {} UTF-8 bytes; content omitted",
+                text.len()
+            ));
+            self.utility_selected = self.utility_lines.len().saturating_sub(1);
+            return;
+        }
         if self.mode == AppMode::Onboarding {
             self.dismiss_onboarding();
         }
@@ -2518,21 +2928,7 @@ impl App {
                 self.clear_status();
                 self.preferred_col = None;
                 self.should_scroll_to_cursor = true;
-                if let Some((start, end)) = self.selection_range() {
-                    let pre_cursor = self.cursor;
-                    let pre_selection_anchor = self.selection_anchor;
-                    self.buffer
-                        .replace_range(start, end, text, &mut self.cursor);
-                    self.selection_anchor = None;
-                    self.buffer.set_last_history_state(
-                        pre_cursor,
-                        pre_selection_anchor,
-                        self.cursor,
-                        self.selection_anchor,
-                    );
-                } else {
-                    self.buffer.insert_text(&mut self.cursor, text);
-                }
+                self.paste_editor_text(text);
             }
             AppMode::Palette => {
                 self.palette_query.insert_text(text);
@@ -2603,6 +2999,7 @@ impl App {
             | AppMode::GitHistory
             | AppMode::GitBlame
             | AppMode::GitConflicts
+            | AppMode::Utility
             | AppMode::Symbols => {}
         }
 
@@ -2617,6 +3014,7 @@ impl App {
                 self.post_save_action = PostSaveAction::None;
                 self.save_as_query.clear();
                 self.mode = AppMode::Editing;
+                self.save_all_queue.clear();
                 self.notify("Save As cancelled".to_owned());
             }
             KeyCode::Left => self.save_as_query.move_left(),
@@ -2640,27 +3038,11 @@ impl App {
                 if path.is_relative() {
                     path = self.workspace_root.join(path);
                 }
-                let prior_key = self.buffer.recovery_key();
-                let note = self.format_before_save(&path);
-                match self.buffer.save_as(path.clone()) {
-                    Ok(()) => {
-                        let _ = self.journal.clear_now(&prior_key);
-                        let _ = self.journal.clear_now(&self.buffer.recovery_key());
-                        let post_action = self.post_save_action;
-                        self.post_save_action = PostSaveAction::None;
-                        self.save_as_query.clear();
-                        self.mode = AppMode::Editing;
-                        self.notify(match note {
-                            Some(note) => format!("Saved as {} · {note}", self.short_path(&path)),
-                            None => format!("Saved as {}", self.short_path(&path)),
-                        });
-                        self.reset_active_code_intelligence();
-                        self.finish_post_save(post_action);
-                    }
-                    Err(error) => {
-                        self.fail(format!("Save As failed: {error}"));
-                    }
-                }
+                let action = self.post_save_action;
+                self.post_save_action = PostSaveAction::None;
+                self.save_as_query.clear();
+                self.mode = AppMode::Editing;
+                self.start_format_save(path, true, action);
             }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
@@ -2701,27 +3083,8 @@ impl App {
                 self.clear_status();
             }
             Ok(None) => {
-                let note = self
-                    .buffer
-                    .path()
-                    .cloned()
-                    .and_then(|path| self.format_before_save(&path));
-                match self.buffer.save() {
-                    Ok(()) => {
-                        let _ = self.journal.clear_now(&self.buffer.recovery_key());
-                        self.last_journal_revision = None;
-                        self.notify(match (note, self.buffer.last_save_mode()) {
-                            (_, SaveMode::InPlace) => {
-                                "Saved in place: this file cannot be replaced, so a crash during save could damage it".to_owned()
-                            }
-                            (Some(note), SaveMode::Atomic) => format!("Saved · {note}"),
-                            (None, SaveMode::Atomic) => "Saved".to_owned(),
-                        });
-                        self.finish_post_save(post_action);
-                    }
-                    Err(error) => {
-                        self.fail(format!("Save failed: {error}"));
-                    }
+                if let Some(path) = self.buffer.path().cloned() {
+                    self.start_format_save(path, false, post_action);
                 }
             }
             Err(error) => {
@@ -2774,43 +3137,179 @@ impl App {
         }
     }
 
-    /// With format on save on, runs the file's formatter over the buffer as
-    /// one undoable edit. Returns a note for the status line; any problem
-    /// leaves the text exactly as typed.
-    fn format_before_save(&mut self, path: &std::path::Path) -> Option<String> {
+    fn start_format_save(&mut self, path: PathBuf, save_as: bool, action: PostSaveAction) {
+        if self.pending_format.is_some() {
+            self.fail("Formatting is still running; Escape cancels it".to_owned());
+            return;
+        }
         if !self.format_on_save {
-            return None;
+            self.finish_disk_save(path, save_as, action, None);
+            return;
         }
-        let language = crate::buffer::language_for_path(Some(path));
-        let command = match crate::format::formatter_for(language, path, &self.formatter_overrides)
-        {
+        if !self.workspace_trusted || !self.workspace_execution_allows(&path) {
+            self.finish_disk_save(
+                path,
+                save_as,
+                action,
+                Some("not formatted: execution restricted outside trusted workspace".to_owned()),
+            );
+            return;
+        }
+        let command = match crate::format::formatter_for(
+            crate::buffer::language_for_path(Some(&path)),
+            &path,
+            &self.formatter_overrides,
+        ) {
             Ok(command) => command,
-            Err(reason) => return Some(format!("not formatted: {reason}")),
+            Err(reason) => {
+                self.finish_disk_save(
+                    path,
+                    save_as,
+                    action,
+                    Some(format!("not formatted: {reason}")),
+                );
+                return;
+            }
         };
-        let program = std::path::Path::new(&command[0]).file_name().map_or_else(
-            || command[0].clone(),
-            |name| name.to_string_lossy().into_owned(),
-        );
+        let program = PathBuf::from(&command[0])
+            .file_name()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| command[0].clone());
         let original = self.buffer.contents();
-        let formatted = match crate::format::run(&command, &original, path) {
-            Ok(formatted) => formatted,
-            Err(error) => return Some(format!("not formatted: {error}")),
-        };
-        let crlf = matches!(self.buffer.line_ending(), crate::buffer::LineEnding::CrLf);
-        if crate::format::match_line_endings(&formatted, crlf) == original {
-            return Some(format!("already tidy ({program})"));
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = cancelled.clone();
+        let target = path.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::format::run_cancellable(&command, &original, &target, &token)
+                .map_err(|e| e.to_string());
+            let _ = sender.send(result);
+        });
+        self.pending_format = Some(PendingFormat {
+            identity: self.buffer.identity(),
+            revision: self.buffer.revision(),
+            path,
+            save_as,
+            program,
+            post_action: action,
+            cancelled,
+            receiver,
+        });
+        self.notify("Formatting in background; Escape cancels. Edits remain available".to_owned());
+    }
+
+    fn cancel_format_save(&mut self) {
+        if let Some(job) = self.pending_format.take() {
+            job.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.notify("Formatting and save cancelled; unsaved edits retained".to_owned());
         }
-        let cursor = self.cursor;
-        let last_row = self.buffer.line_count().saturating_sub(1);
-        let end = Cursor::new(last_row, self.buffer.grapheme_count(last_row));
-        self.buffer
-            .replace_range(Cursor::new(0, 0), end, &formatted, &mut self.cursor);
-        // Stay on the same line; formatting moves text, not the reader.
-        self.cursor.row = cursor.row.min(self.buffer.line_count().saturating_sub(1));
-        self.cursor.col = cursor.col.min(self.buffer.grapheme_count(self.cursor.row));
-        self.selection_anchor = None;
-        self.sync_code_intelligence_after_edit();
-        Some(format!("formatted with {program}"))
+    }
+
+    fn poll_format_save(&mut self) {
+        let result = match self
+            .pending_format
+            .as_ref()
+            .map(|job| job.receiver.try_recv())
+        {
+            Some(Ok(result)) => result,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                Err("formatter worker stopped".to_owned())
+            }
+            _ => return,
+        };
+        let Some(job) = self.pending_format.take() else {
+            return;
+        };
+        if self.buffer.identity() != job.identity || self.buffer.revision() != job.revision {
+            self.notify(
+                "Formatting discarded: the document changed or another tab is active; save again"
+                    .to_owned(),
+            );
+            return;
+        }
+        match result {
+            Ok(text) => {
+                let text = crate::format::match_line_endings(
+                    &text,
+                    matches!(self.buffer.line_ending(), crate::buffer::LineEnding::CrLf),
+                );
+                if text != self.buffer.contents() {
+                    let before = self.cursor;
+                    let row = self.buffer.line_count().saturating_sub(1);
+                    let end = Cursor::new(row, self.buffer.grapheme_count(row));
+                    self.buffer
+                        .replace_range(Cursor::new(0, 0), end, &text, &mut self.cursor);
+                    self.cursor = Cursor::new(
+                        before.row.min(self.buffer.line_count().saturating_sub(1)),
+                        0,
+                    );
+                    self.cursor.col = before.col.min(self.buffer.grapheme_count(self.cursor.row));
+                    self.selection_anchor = None;
+                    self.sync_code_intelligence_after_edit();
+                }
+                self.finish_disk_save(
+                    job.path,
+                    job.save_as,
+                    job.post_action,
+                    Some(format!("formatted with {}", job.program)),
+                );
+            }
+            Err(error) => self.finish_disk_save(
+                job.path,
+                job.save_as,
+                job.post_action,
+                Some(format!("not formatted: {error}")),
+            ),
+        }
+    }
+
+    fn finish_disk_save(
+        &mut self,
+        path: PathBuf,
+        save_as: bool,
+        action: PostSaveAction,
+        note: Option<String>,
+    ) {
+        let prior_key = self.buffer.recovery_key();
+        if let Some(old_path) = self.buffer.path().cloned()
+            && let Ok(before) = std::fs::read_to_string(&old_path)
+        {
+            self.record_history(&old_path, &before, "before-save");
+        }
+        let saved_label = if save_as {
+            format!("Saved as {}", self.short_path(&path))
+        } else {
+            "Saved".to_owned()
+        };
+        let result = if save_as {
+            self.buffer.save_as(path)
+        } else {
+            self.buffer.save()
+        };
+        match result {
+            Ok(()) => {
+                let _ = self.journal.clear_now(&prior_key);
+                let _ = self.journal.clear_now(&self.buffer.recovery_key());
+                self.last_journal_revision = None;
+                if let Some(path) = self.buffer.path().cloned() {
+                    self.record_history(&path, &self.buffer.contents(), "save");
+                }
+                self.notify(match self.buffer.last_save_mode() {
+                    SaveMode::InPlace => {
+                        "Saved in place: a crash during save could damage this file".to_owned()
+                    }
+                    SaveMode::Atomic => {
+                        note.map_or_else(|| saved_label.clone(), |n| format!("{saved_label} · {n}"))
+                    }
+                });
+                if save_as {
+                    self.reset_active_code_intelligence();
+                }
+                self.finish_post_save(action);
+            }
+            Err(error) => self.fail(format!("Save failed; edits retained: {error}")),
+        }
     }
 
     fn handle_save_conflict_key(&mut self, key: KeyEvent) {
@@ -2818,6 +3317,7 @@ impl App {
             KeyCode::Esc => {
                 self.post_save_action = PostSaveAction::None;
                 self.conflict_reason = None;
+                self.save_all_queue.clear();
                 self.mode = AppMode::Editing;
                 self.notify(if self.conflict_read_only {
                     "Save cancelled; the read-only file is unchanged and your edits are kept"
@@ -3526,14 +4026,75 @@ impl App {
         }
     }
 
+    /// Trust covers the canonical workspace, including new Save As targets
+    /// whose existing parent resolves within it. It does not follow an alias
+    /// into another project or guess a boundary for an unresolved path.
+    fn workspace_execution_allows(&self, path: &std::path::Path) -> bool {
+        let Ok(root) = std::fs::canonicalize(&self.workspace_root) else {
+            return false;
+        };
+        if !root.is_dir() {
+            return false;
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let Ok(parent) = std::fs::canonicalize(parent) else {
+            return false;
+        };
+        // Formatters run in the displayed file's parent. An outside directory
+        // with a symlink back to a trusted file must not lend its configuration.
+        if !parent.is_dir() || !parent.starts_with(&root) {
+            return false;
+        }
+        let target = match std::fs::canonicalize(path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    return false;
+                }
+                let Some(name) = path.file_name() else {
+                    return false;
+                };
+                parent.join(name)
+            }
+            Err(_) => return false,
+        };
+        target.starts_with(root)
+    }
+
     fn restart_language_server(&mut self, user_initiated: bool) {
-        if self.buffer.reduced_intelligence_mode() {
+        if !self.workspace_trusted {
             self.language_service.stop();
+            if user_initiated {
+                self.fail(
+                    "Restricted workspace: review Trust workspace execution first".to_owned(),
+                );
+            }
+            return;
+        }
+        if self.buffer.reduced_intelligence_mode() {
+            self.language_service.stop_current();
             if user_initiated {
                 self.notify(format!(
                     "Code intelligence paused for large file ({:.1} MiB); editing remains available",
                     self.buffer.byte_len() as f64 / (1024.0 * 1024.0)
                 ));
+            }
+            return;
+        }
+        if !self
+            .buffer
+            .path()
+            .is_some_and(|path| self.workspace_execution_allows(path))
+        {
+            self.language_service.stop_current();
+            if user_initiated {
+                self.fail(
+                    "Code intelligence execution restricted outside trusted workspace".to_owned(),
+                );
             }
             return;
         }
@@ -3577,10 +4138,38 @@ impl App {
         }
     }
 
+    fn sync_all_open_language_documents(&mut self) {
+        if !self.workspace_trusted || !self.language_service_active {
+            return;
+        }
+        let documents: Vec<_> = (0..self.tabs.len())
+            .filter_map(|i| self.tab_buffer(i))
+            .filter(|b| !b.reduced_intelligence_mode())
+            .filter(|b| {
+                b.path()
+                    .is_some_and(|path| self.workspace_execution_allows(path))
+            })
+            .filter_map(|b| b.path().map(|p| (p.clone(), b.contents(), b.revision())))
+            .collect();
+        for (path, text, revision) in documents {
+            self.language_service
+                .sync_document(Some(&path), &text, revision);
+        }
+    }
+
     fn sync_code_intelligence_after_edit(&mut self) {
         self.sync_syntax_document();
         if self.buffer.reduced_intelligence_mode() {
-            self.language_service.stop();
+            self.language_service.stop_current();
+            return;
+        }
+        if !self.workspace_trusted
+            || !self
+                .buffer
+                .path()
+                .is_some_and(|path| self.workspace_execution_allows(path))
+        {
+            self.language_service.stop_current();
             return;
         }
         if self.language_service_active {
@@ -3721,6 +4310,7 @@ impl App {
                 sort_text: Some(format!("{rank:04}")),
                 insert_text: word,
                 edit_range: Some(range),
+                ..CompletionItem::default()
             })
             .collect();
         self.completion_selected = 0;
@@ -3884,6 +4474,7 @@ impl App {
     }
 
     fn dismiss_completion(&mut self) {
+        self.completion_resolve_request = None;
         self.auto_completion_due = None;
         self.auto_completion_trigger = None;
         self.completion_request = None;
@@ -3906,6 +4497,7 @@ impl App {
             .request_definition(self.lsp_cursor_position())
         {
             Ok(true) => {
+                self.definition_intent = Some(self.lsp_interaction_state());
                 self.notify("Looking up definition…".to_owned());
             }
             Ok(false) => {
@@ -3927,6 +4519,10 @@ impl App {
     }
 
     fn ensure_language_service(&mut self) {
+        if !self.workspace_trusted {
+            self.fail("Restricted workspace: language server execution requires trust".to_owned());
+            return;
+        }
         if !self.language_service_active {
             self.language_service_active = true;
             self.restart_language_server(true);
@@ -3939,7 +4535,10 @@ impl App {
             .language_service
             .request_hover(self.lsp_cursor_position())
         {
-            Ok(true) => self.notify("Hover requested…".to_owned()),
+            Ok(true) => {
+                self.hover_intent = Some(self.lsp_interaction_state());
+                self.notify("Hover requested…".to_owned());
+            }
             Ok(false) => self.fail(
                 "Hover unavailable while language server starts or is not configured".to_owned(),
             ),
@@ -3953,7 +4552,10 @@ impl App {
             .language_service
             .request_signature_help(self.lsp_cursor_position())
         {
-            Ok(true) => self.notify("Signature help requested…".to_owned()),
+            Ok(true) => {
+                self.signature_intent = Some(self.lsp_interaction_state());
+                self.notify("Signature help requested…".to_owned());
+            }
             Ok(false) => self.fail("Signature help unavailable".to_owned()),
             Err(error) => self.fail(format!("Signature request failed: {error}")),
         }
@@ -3965,7 +4567,10 @@ impl App {
             .language_service
             .request_references(self.lsp_cursor_position())
         {
-            Ok(true) => self.notify("Finding references…".to_owned()),
+            Ok(true) => {
+                self.references_intent = Some(self.lsp_interaction_state());
+                self.notify("Finding references…".to_owned());
+            }
             Ok(false) => self.fail("References unavailable".to_owned()),
             Err(error) => self.fail(format!("References request failed: {error}")),
         }
@@ -3975,7 +4580,7 @@ impl App {
         self.ensure_language_service();
         match self
             .language_service
-            .request_formatting(TAB_WIDTH, !self.buffer.uses_tab_indent())
+            .request_formatting(self.buffer.indent_width(), !self.buffer.uses_tab_indent())
         {
             Ok(true) => self.notify("Formatting preview requested…".to_owned()),
             Ok(false) => self.fail("Formatting unavailable".to_owned()),
@@ -4014,7 +4619,51 @@ impl App {
     }
 
     fn poll_language_service(&mut self) {
+        self.discard_stale_lsp_interactions();
         let events = self.language_service.poll();
+        self.apply_language_service_events(events);
+    }
+
+    fn lsp_interaction_state(&self) -> LspInteractionState {
+        LspInteractionState {
+            identity: self.buffer.identity(),
+            revision: self.buffer.revision(),
+            cursor: self.cursor,
+        }
+    }
+
+    fn lsp_interaction_is_current(&self, intent: &LspInteractionState) -> bool {
+        self.mode == AppMode::Editing
+            && intent.identity == self.buffer.identity()
+            && intent.revision == self.buffer.revision()
+            && intent.cursor == self.cursor
+    }
+
+    fn cancel_lsp_interactions(&mut self) {
+        self.definition_intent = None;
+        self.references_intent = None;
+        self.hover_intent = None;
+        self.signature_intent = None;
+        self.language_service.cancel_interactions();
+    }
+
+    fn discard_stale_lsp_interactions(&mut self) {
+        if [
+            self.definition_intent.as_ref(),
+            self.references_intent.as_ref(),
+            self.hover_intent.as_ref(),
+            self.signature_intent.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|intent| !self.lsp_interaction_is_current(intent))
+        {
+            self.cancel_lsp_interactions();
+        }
+    }
+
+    fn apply_language_service_events(&mut self, events: Vec<LanguageServiceEvent>) {
+        self.discard_stale_lsp_interactions();
         for event in events {
             match event {
                 LanguageServiceEvent::Ready(label) => {
@@ -4046,6 +4695,14 @@ impl App {
                     }
                 }
                 LanguageServiceEvent::CompletionError { request_id, error } => {
+                    if self.completion_resolve_request == Some(request_id) {
+                        self.completion_resolve_request = None;
+                        self.dismiss_completion();
+                        self.fail(format!(
+                            "Completion resolution failed: {error}; nothing changed"
+                        ));
+                        continue;
+                    }
                     let Some(request) = self.take_matching_completion_request(request_id) else {
                         continue;
                     };
@@ -4057,7 +4714,34 @@ impl App {
                         self.fail(format!("Completion failed: {error}"));
                     }
                 }
+                LanguageServiceEvent::CompletionResolved { request_id, item } => {
+                    if self.completion_resolve_request == Some(request_id) {
+                        self.completion_resolve_request = None;
+                        if self.completion_resolve_cursor.take() == Some(self.cursor) {
+                            self.apply_completion_item(*item);
+                        } else {
+                            self.dismiss_completion();
+                            self.fail(
+                                "Completion discarded: cursor moved during resolution".to_owned(),
+                            );
+                        }
+                    }
+                }
+                LanguageServiceEvent::Symbols(items) => {
+                    self.lsp_symbols = items;
+                    self.symbol_selected = 0;
+                    if self.mode == AppMode::Symbols {
+                        self.clear_status();
+                    }
+                }
                 LanguageServiceEvent::Definition(location) => {
+                    if !self
+                        .definition_intent
+                        .take()
+                        .is_some_and(|intent| self.lsp_interaction_is_current(&intent))
+                    {
+                        continue;
+                    }
                     self.mode = AppMode::Editing;
                     if let Some(location) = location {
                         self.apply_definition_location(location);
@@ -4066,10 +4750,24 @@ impl App {
                     }
                 }
                 LanguageServiceEvent::Hover(contents) => {
+                    if !self
+                        .hover_intent
+                        .take()
+                        .is_some_and(|intent| self.lsp_interaction_is_current(&intent))
+                    {
+                        continue;
+                    }
                     self.status =
                         Some(contents.unwrap_or_else(|| "No hover information".to_owned()));
                 }
                 LanguageServiceEvent::SignatureHelp(signatures) => {
+                    if !self
+                        .signature_intent
+                        .take()
+                        .is_some_and(|intent| self.lsp_interaction_is_current(&intent))
+                    {
+                        continue;
+                    }
                     self.notify(
                         signatures
                             .first()
@@ -4078,6 +4776,13 @@ impl App {
                     );
                 }
                 LanguageServiceEvent::References(locations) => {
+                    if !self
+                        .references_intent
+                        .take()
+                        .is_some_and(|intent| self.lsp_interaction_is_current(&intent))
+                    {
+                        continue;
+                    }
                     self.reference_items = locations;
                     self.reference_selected = 0;
                     if self.reference_items.is_empty() {
@@ -4126,6 +4831,7 @@ impl App {
     }
 
     fn apply_definition_location(&mut self, location: DefinitionLocation) {
+        self.remember_navigation();
         if self.buffer.path() != Some(&location.path)
             && let Err(error) = self.open_path_in_tab(location.path.clone())
         {
@@ -4153,55 +4859,156 @@ impl App {
             return;
         };
 
-        let pre_cursor = self.cursor;
-        let pre_selection_anchor = self.selection_anchor;
-        if let Some(range) = item.edit_range {
-            let start_row = range
-                .start
-                .line
-                .min(self.buffer.line_count().saturating_sub(1));
-            let end_row = range
-                .end
-                .line
-                .min(self.buffer.line_count().saturating_sub(1));
-            let start = Cursor::new(
-                start_row,
-                self.buffer
-                    .grapheme_col_for_utf16(start_row, range.start.character),
-            );
-            let end = Cursor::new(
-                end_row,
-                self.buffer
-                    .grapheme_col_for_utf16(end_row, range.end.character),
-            );
-
-            self.cursor = start;
-            self.selection_anchor = None;
-            if start == end {
-                self.buffer.insert_text(&mut self.cursor, &item.insert_text);
-            } else {
-                self.buffer
-                    .replace_range(start, end, &item.insert_text, &mut self.cursor);
-                self.buffer.set_last_history_state(
-                    pre_cursor,
-                    pre_selection_anchor,
-                    self.cursor,
-                    self.selection_anchor,
-                );
+        if item.needs_resolve {
+            match self.language_service.request_completion_resolve(&item) {
+                Ok(Some(id)) => {
+                    self.completion_resolve_request = Some(id);
+                    self.completion_resolve_cursor = Some(self.cursor);
+                    self.notify("Resolving completion… Escape cancels".to_owned());
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.fail(format!("Completion resolve failed: {error}"));
+                    return;
+                }
             }
-        } else {
-            self.selection_anchor = None;
-            self.buffer.insert_text(&mut self.cursor, &item.insert_text);
         }
+        self.apply_completion_item(item);
+    }
 
+    fn apply_completion_item(&mut self, item: CompletionItem) {
+        if let Some(reason) = &item.rejected {
+            self.fail(format!("Completion refused: {reason}"));
+            return;
+        }
+        if let Some((path, version)) = &item.origin {
+            let current_version = i32::try_from(self.buffer.revision()).unwrap_or(i32::MAX);
+            if self
+                .buffer
+                .path()
+                .is_none_or(|current| !self.same_path(current, path))
+                || *version != current_version
+            {
+                self.dismiss_completion();
+                self.fail("Completion discarded: document changed; no edits applied".to_owned());
+                return;
+            }
+        }
+        let path = self.buffer.path().cloned().unwrap_or_default();
+        let at = self.lsp_cursor_position();
+        let prefix = self.completion_prefix();
+        let prefix_len =
+            unicode_segmentation::UnicodeSegmentation::graphemes(prefix.as_str(), true).count();
+        let primary = item.edit_range.unwrap_or(crate::lsp::LspRange {
+            start: LspPosition {
+                line: self.cursor.row,
+                character: self.buffer.utf16_col_for_grapheme(
+                    self.cursor.row,
+                    self.cursor.col.saturating_sub(prefix_len),
+                ),
+            },
+            end: at,
+        });
+        let mut edits = vec![crate::lsp::LspTextEdit {
+            path: path.clone(),
+            range: primary,
+            new_text: item.insert_text,
+        }];
+        edits.extend(
+            item.additional_text_edits
+                .into_iter()
+                .map(|edit| crate::lsp::LspTextEdit {
+                    path: path.clone(),
+                    range: edit.range,
+                    new_text: edit.new_text,
+                }),
+        );
+        let mut replacements = match Self::lsp_replacements_for_buffer(&self.buffer, &edits) {
+            Ok(edits) => edits,
+            Err(error) => {
+                self.fail(format!("Completion refused; nothing changed: {error}"));
+                return;
+            }
+        };
+        let before = self.cursor;
+        let anchor = self.selection_anchor;
+        let primary_start = Cursor::new(
+            primary.start.line,
+            self.buffer
+                .grapheme_col_for_utf16(primary.start.line, primary.start.character),
+        );
+        let primary_end = Cursor::new(
+            primary.end.line,
+            self.buffer
+                .grapheme_col_for_utf16(primary.end.line, primary.end.character),
+        );
+        let primary_index = replacements
+            .iter()
+            .position(|(a, b, _)| *a == primary_start && *b == primary_end)
+            .unwrap_or(0);
+        let is_noop =
+            |(start, end, text): &(Cursor, Cursor, String)| start == end && text.is_empty();
+        let primary_is_noop = is_noop(&replacements[primary_index]);
+        let applied_primary_index = replacements[..primary_index]
+            .iter()
+            .filter(|edit| !is_noop(edit))
+            .count();
+        // Buffer omits empty insertions from its returned carets. Keep the
+        // primary's index aligned, after validating the complete edit set.
+        // An empty primary still moves with earlier supporting edits: map it
+        // from their actual endpoint, respecting Buffer's newline convention.
+        let primary_char_index = self.buffer.char_index(primary_start.row, primary_start.col);
+        let preceding_end = replacements[..primary_index]
+            .iter()
+            .rev()
+            .find(|edit| !is_noop(edit))
+            .map(|(_, end, _)| self.buffer.char_index(end.row, end.col));
+        replacements.retain(|edit| !is_noop(edit));
+        let cursors = self
+            .buffer
+            .replace_ranges_with_cursors(&replacements, self.cursor);
+        self.cursor = if primary_is_noop {
+            let final_index = preceding_end
+                .zip(applied_primary_index.checked_sub(1))
+                .and_then(|(end, index)| cursors.get(index).map(|cursor| (end, cursor)))
+                .map_or(primary_char_index, |(end, cursor)| {
+                    self.buffer.char_index(cursor.row, cursor.col) + primary_char_index - end
+                });
+            self.buffer.cursor_from_char_index(final_index)
+        } else {
+            cursors
+                .get(applied_primary_index)
+                .copied()
+                .unwrap_or(before)
+        };
+        self.clamp_cursor();
+        self.selection_anchor = None;
+        if !cursors.is_empty() {
+            self.buffer
+                .set_last_history_state(before, anchor, self.cursor, None);
+        }
         self.dismiss_completion();
-        self.notify(format!("Inserted {}", item.label));
-        self.sync_code_intelligence_after_edit();
+        self.notify(if cursors.is_empty() {
+            if item.command.is_some() {
+                "Completion required no changes; provider command was not run".to_owned()
+            } else {
+                "Completion required no changes".to_owned()
+            }
+        } else if item.command.is_some() {
+            format!("Inserted {}; provider command was not run", item.label)
+        } else {
+            format!("Inserted {}", item.label)
+        });
+        if !cursors.is_empty() {
+            self.sync_code_intelligence_after_edit();
+        }
     }
 
     fn handle_completion_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
+                self.completion_resolve_request = None;
                 self.dismiss_completion();
                 self.clear_status();
             }
@@ -4426,7 +5233,7 @@ impl App {
             }
             if let Some((previous_start, previous_end)) = previous
                 && (start < previous_end
-                    || (previous_start == previous_end && start == previous_start))
+                    || (previous_start == previous_end && start == end && start == previous_start))
             {
                 return Err("language server returned overlapping text edits".to_owned());
             }
@@ -4434,6 +5241,15 @@ impl App {
             let start_cursor =
                 Cursor::new(start.0, buffer.grapheme_col_for_utf16(start.0, start.1));
             let end_cursor = Cursor::new(end.0, buffer.grapheme_col_for_utf16(end.0, end.1));
+            // Cursor edits operate on whole graphemes. Refuse a provider range
+            // that cannot round-trip instead of changing neighboring text.
+            if buffer.utf16_col_for_grapheme(start_cursor.row, start_cursor.col) != start.1
+                || buffer.utf16_col_for_grapheme(end_cursor.row, end_cursor.col) != end.1
+            {
+                return Err(
+                    "language server edit is not on a supported grapheme boundary".to_owned(),
+                );
+            }
             replacements.push((start_cursor, end_cursor, edit.new_text.clone()));
             previous = Some((start, end));
         }
@@ -4696,6 +5512,7 @@ impl App {
         self.pending_lsp_edits.clear();
         self.mode = AppMode::Editing;
         self.sync_code_intelligence_after_edit();
+        self.sync_all_open_language_documents();
         self.sync_session_state();
         self.refresh_git_state(true);
 
@@ -4845,6 +5662,7 @@ impl App {
         self.rectangular_selection = None;
         self.clamp_cursor();
         self.sync_code_intelligence_after_edit();
+        self.sync_all_open_language_documents();
         self.sync_session_state();
         self.refresh_git_state(true);
         self.notify(if recovery_warnings.is_empty() {
@@ -5034,7 +5852,16 @@ impl App {
             KeyCode::Enter => {
                 let problems = self.problem_items();
                 if let Some(problem) = problems.get(self.problem_selected) {
+                    self.remember_navigation();
+                    if let Some(path) = problem.path.clone()
+                        && self.buffer.path() != Some(&path)
+                        && let Err(error) = self.open_path_in_tab(path)
+                    {
+                        self.fail(format!("Problem navigation failed: {error}"));
+                        return;
+                    }
                     self.cursor = problem.cursor;
+                    self.clamp_cursor();
                     self.selection_anchor = None;
                     self.should_scroll_to_cursor = true;
                     self.mode = AppMode::Editing;
@@ -5056,6 +5883,7 @@ impl App {
         if let Some(document) = self.syntax_document.as_ref() {
             for diagnostic in document.diagnostics() {
                 problems.push(ProblemItem {
+                    path: self.buffer.path().cloned(),
                     severity: match diagnostic.severity {
                         SyntaxSeverity::Error => ProblemSeverity::Error,
                     },
@@ -5071,27 +5899,28 @@ impl App {
             }
         }
 
-        for diagnostic in self.language_service.diagnostics() {
-            let row = diagnostic
-                .range
-                .start
-                .line
-                .min(self.buffer.line_count().saturating_sub(1));
-            let col = self
-                .buffer
-                .grapheme_col_for_utf16(row, diagnostic.range.start.character);
+        for (path, diagnostic) in self.language_service.workspace_diagnostics() {
+            let buffer = (0..self.tabs.len())
+                .filter_map(|i| self.tab_buffer(i))
+                .find(|b| b.path().is_some_and(|p| self.same_path(p, &path)));
+            let row = diagnostic.range.start.line;
+            let col = buffer.map_or(diagnostic.range.start.character, |b| {
+                b.grapheme_col_for_utf16(row, diagnostic.range.start.character)
+            });
             problems.push(ProblemItem {
+                path: Some(path.clone()),
                 severity: match diagnostic.severity {
                     DiagnosticSeverity::Error => ProblemSeverity::Error,
                     DiagnosticSeverity::Warning => ProblemSeverity::Warning,
                     DiagnosticSeverity::Information => ProblemSeverity::Information,
                     DiagnosticSeverity::Hint => ProblemSeverity::Hint,
                 },
-                source: diagnostic
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| "Language Server".to_owned()),
-                message: diagnostic.message.clone(),
+                source: format!(
+                    "{} · {}",
+                    self.short_path(&path),
+                    diagnostic.source.as_deref().unwrap_or("LSP")
+                ),
+                message: diagnostic.message,
                 cursor: Cursor::new(row, col),
             });
         }
@@ -5103,7 +5932,12 @@ impl App {
                 ProblemSeverity::Information => 2,
                 ProblemSeverity::Hint => 3,
             };
-            (severity, problem.cursor.row, problem.cursor.col)
+            (
+                problem.path.clone(),
+                severity,
+                problem.cursor.row,
+                problem.cursor.col,
+            )
         });
         problems
     }
@@ -5317,6 +6151,8 @@ impl App {
     fn handle_git_commit_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
+                self.cancel_ai_transports();
+                self.commit_message_receiver = None;
                 self.mode = AppMode::Editing;
                 self.git_commit_query.clear();
                 self.notify("Commit cancelled".to_owned());
@@ -5388,9 +6224,22 @@ impl App {
             self.fail("Nothing is staged to write a message for".to_owned());
             return;
         }
+        let workspace = repository.root().to_path_buf();
+        let Some((cancelled, cap, usage, _)) = self.begin_ai_transport() else {
+            return;
+        };
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = ai::commit_message(&config, &diff).map_err(|error| error.to_string());
+            let result =
+                ai::commit_message_cancellable(&config, &diff, &workspace, &cancelled, cap, None)
+                    .map(|response| {
+                        let _ = usage.send(response.usage);
+                        response.value
+                    })
+                    .map_err(|error| {
+                        let _ = usage.send(ai::error_usage(&error));
+                        error.to_string()
+                    });
             let _ = sender.send(result);
         });
         self.commit_message_receiver = Some(receiver);
@@ -5803,11 +6652,9 @@ impl App {
     /// the context, so the answer comes back as a reviewable replacement.
     fn fix_problem_with_ai(&mut self) {
         let row = self.cursor.row;
-        let Some(problem) = self
-            .problem_items()
-            .into_iter()
-            .find(|problem| problem.cursor.row == row)
-        else {
+        let Some(problem) = self.problem_items().into_iter().find(|problem| {
+            problem.cursor.row == row && problem.path == self.buffer.path().cloned()
+        }) else {
             self.notify("No problem on this line".to_owned());
             return;
         };
@@ -5825,11 +6672,12 @@ impl App {
         self.start_ai_request();
     }
 
-    /// Asks AI for one shell command. The answer is typed into the terminal
-    /// without Enter, so the user reads it before anything runs.
     /// Remembers an accepted AI edit, with the buffer revision it left behind.
     fn record_ai_edit(&mut self, summary: &str) {
         const LIMIT: usize = 20;
+        if let Some(path) = self.buffer.path().cloned() {
+            self.record_history(&path, &self.buffer.contents(), "ai-accept");
+        }
         self.ai_edit_history.push(AiEditRecord {
             summary: summary.to_owned(),
             path: self.buffer.display_path(),
@@ -5895,6 +6743,7 @@ impl App {
         }
         self.ai_query.clear();
         self.ai_proposal = None;
+        self.ai_context = None;
         self.ai_receiver = None;
         self.ai_shell_request = true;
         self.mode = AppMode::AiPrompt;
@@ -5907,9 +6756,21 @@ impl App {
             self.fail("AI is not set up yet".to_owned());
             return;
         };
+        let Some((cancelled, cap, usage, progress)) = self.begin_ai_transport() else {
+            return;
+        };
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = ai::shell_command(&config, &request).map_err(|error| error.to_string());
+            let result =
+                ai::shell_command_cancellable(&config, &request, &cancelled, cap, Some(&progress))
+                    .map(|response| {
+                        let _ = usage.send(response.usage);
+                        response.value
+                    })
+                    .map_err(|error| {
+                        let _ = usage.send(ai::error_usage(&error));
+                        error.to_string()
+                    });
             let _ = sender.send(result);
         });
         self.shell_receiver = Some(receiver);
@@ -5944,58 +6805,83 @@ impl App {
         self.mode = AppMode::Editing;
         match result {
             Ok(command) => {
-                let typed = if self.terminal_visible {
-                    self.active_terminal_mut()
-                        .map(|terminal| terminal.write_paste(&command))
-                } else {
-                    None
-                };
-                match typed {
-                    Some(Ok(())) => {
-                        self.terminal_focused = true;
-                        self.notify(format!(
-                            "Typed in the terminal, not run yet: {command} · Enter there to run"
-                        ));
-                    }
-                    _ => {
-                        self.notify(format!(
-                            "Suggested: {command} · open the terminal (Ctrl+T) to type it"
-                        ));
-                    }
-                }
+                // A terminal can contain a foreground program or a partially
+                // typed command. Without a verified idle shell prompt, even
+                // bracketed paste is not an execution authorization boundary.
+                self.ai_context = None;
+                self.ai_proposal = Some(AiProposal {
+                    summary: command,
+                    replacement: None,
+                });
+                self.ai_review_scroll = 0;
+                self.mode = AppMode::AiReview;
+                self.notify(
+                    "Review the command · C copies it · nothing is inserted or run".to_owned(),
+                );
             }
             Err(error) => self.notify(format!("AI: {error}")),
         }
     }
 
     fn begin_go_to_symbol(&mut self) {
+        self.workspace_symbol_search = false;
+        self.lsp_symbols.clear();
+        self.symbol_query.clear();
+        self.symbol_selected = 0;
+        self.ensure_language_service();
+        let requested = self
+            .language_service
+            .request_document_symbols()
+            .unwrap_or(false);
         let has_symbols = self
             .syntax_document
             .as_ref()
-            .is_some_and(|document| !document.symbols().is_empty());
-        if !has_symbols {
-            self.notify("This file has no symbols to jump to".to_owned());
+            .is_some_and(|d| !d.symbols().is_empty());
+        if !requested && !has_symbols {
+            self.notify("No symbols; install/trust a supporting language server or use JSON/YAML/HCL outline".to_owned());
             return;
         }
-        self.symbol_query.clear();
-        self.symbol_selected = 0;
         self.mode = AppMode::Symbols;
-        self.clear_status();
+        if requested {
+            self.notify("Document symbols requested… local outline remains available".to_owned());
+        } else {
+            self.clear_status();
+        }
     }
 
-    /// Definitions whose names contain the query, in document order.
     pub fn filtered_symbols(&self) -> Vec<crate::syntax_tree::SyntaxSymbol> {
         let query = self.symbol_query.as_str().trim().to_lowercase();
+        if !self.lsp_symbols.is_empty() {
+            return self
+                .lsp_symbols
+                .iter()
+                .filter(|s| query.is_empty() || s.name.to_lowercase().contains(&query))
+                .map(|s| crate::syntax_tree::SyntaxSymbol {
+                    kind: "symbol",
+                    name: if self.workspace_symbol_search {
+                        format!("{} · {}", s.name, self.short_path(&s.path))
+                    } else {
+                        s.name.clone()
+                    },
+                    start_row: s.range.start.line,
+                    end_row: s.range.end.line,
+                })
+                .collect();
+        }
+        if self.workspace_symbol_search {
+            return Vec::new();
+        }
         self.syntax_document
             .as_ref()
-            .map(|document| document.symbols())
+            .map(|d| d.symbols())
             .unwrap_or_default()
             .into_iter()
-            .filter(|symbol| query.is_empty() || symbol.name.to_lowercase().contains(&query))
+            .filter(|s| query.is_empty() || s.name.to_lowercase().contains(&query))
             .collect()
     }
 
     fn handle_symbols_key(&mut self, key: KeyEvent) {
+        let mut query_changed = false;
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
@@ -6013,6 +6899,21 @@ impl App {
                 if let Some(symbol) =
                     symbols.get(self.symbol_selected.min(symbols.len().saturating_sub(1)))
                 {
+                    self.remember_navigation();
+                    let query = self.symbol_query.as_str().trim().to_lowercase();
+                    let target = self
+                        .lsp_symbols
+                        .iter()
+                        .filter(|s| query.is_empty() || s.name.to_lowercase().contains(&query))
+                        .nth(self.symbol_selected)
+                        .cloned();
+                    if let Some(target) = target {
+                        self.apply_definition_location(DefinitionLocation {
+                            path: target.path,
+                            range: target.range,
+                        });
+                        return;
+                    }
                     self.cursor = Cursor::new(symbol.start_row, 0);
                     self.selection_anchor = None;
                     self.should_scroll_to_cursor = true;
@@ -6021,7 +6922,7 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                self.symbol_query.backspace();
+                query_changed = self.symbol_query.backspace();
                 self.symbol_selected = 0;
             }
             KeyCode::Char(ch)
@@ -6031,8 +6932,14 @@ impl App {
             {
                 self.symbol_query.insert_char(ch);
                 self.symbol_selected = 0;
+                query_changed = true;
             }
             _ => {}
+        }
+        if query_changed && self.workspace_symbol_search {
+            self.lsp_symbols.clear();
+            let query = self.symbol_query.as_str().to_owned();
+            let _ = self.language_service.request_workspace_symbols(&query);
         }
     }
 
@@ -7005,16 +7912,53 @@ impl App {
     fn begin_quick_open(&mut self) {
         self.quick_open_query.clear();
         self.quick_open_selected = 0;
-        match workspace::discover_files(&self.workspace_root) {
-            Ok(files) => {
-                self.quick_open_candidates = files;
-                self.mode = AppMode::QuickOpen;
-                self.clear_status();
+        self.mode = AppMode::QuickOpen;
+        self.quick_open_candidates.clear();
+        self.refresh_quick_open_candidates();
+    }
+
+    fn poll_quick_open(&mut self) {
+        if self.mode != AppMode::QuickOpen {
+            self.quick_open_worker.cancel();
+            return;
+        }
+        for update in self.quick_open_worker.poll() {
+            if update.generation != self.quick_open_generation
+                || update.query != self.quick_open_query.as_str()
+            {
+                continue;
             }
-            Err(error) => {
-                self.fail(format!("Quick Open failed: {error}"));
+            self.quick_open_ready = true;
+            match update.result {
+                Ok(mut paths) => {
+                    for index in 0..self.tabs.len() {
+                        if let Some(path) = self.tab_path(index) {
+                            let relative = self.workspace_relative(path);
+                            if relative.is_relative()
+                                && !paths.contains(&relative)
+                                && !is_explicit_path_query(&update.query)
+                            {
+                                paths.push(relative);
+                            }
+                        }
+                    }
+                    self.quick_open_candidates = paths;
+                    self.quick_open_selected = self
+                        .quick_open_selected
+                        .min(self.quick_open_candidates.len().saturating_sub(1));
+                    if update.truncated {
+                        self.notify("Quick Open file list truncated at 5000 entries".to_owned());
+                    } else {
+                        self.clear_status();
+                    }
+                }
+                Err(error) => self.fail(format!("Quick Open: {error}")),
             }
         }
+    }
+
+    pub(crate) fn quick_open_is_ready(&self) -> bool {
+        self.quick_open_ready
     }
 
     pub fn filtered_quick_open_entries(&self) -> Vec<usize> {
@@ -7130,6 +8074,10 @@ impl App {
                 }
             }
             KeyCode::Enter => {
+                if !self.quick_open_ready {
+                    self.notify("Quick Open is searching; wait for the current results".to_owned());
+                    return;
+                }
                 let matches = self.filtered_quick_open_entries();
                 let selected = matches
                     .get(self.quick_open_selected)
@@ -7201,20 +8149,12 @@ impl App {
     }
 
     fn refresh_quick_open_candidates(&mut self) {
-        let query = self.quick_open_query.as_str();
-        let candidates = if is_explicit_path_query(query) {
-            workspace::path_completions(&self.workspace_root, query, 64)
-                .map(|paths| paths.into_iter().map(PathBuf::from).collect())
-        } else {
-            workspace::discover_files(&self.workspace_root)
-        };
-        match candidates {
-            Ok(paths) => self.quick_open_candidates = paths,
-            Err(error) => {
-                self.quick_open_candidates.clear();
-                self.notify(format!("Quick Open: {error}"));
-            }
-        }
+        self.quick_open_candidates.clear();
+        self.quick_open_ready = false;
+        self.quick_open_generation = self.quick_open_worker.submit(
+            self.workspace_root.clone(),
+            self.quick_open_query.as_str().to_owned(),
+        );
     }
 
     fn reload_explorer(&mut self) {
@@ -7695,7 +8635,8 @@ impl App {
                     self.notify("Rename blocked: close the source file first".to_owned());
                     return;
                 }
-                match std::fs::rename(&source, &destination) {
+                self.checkpoint_file_operation(&source);
+                match crate::file_ops::rename_exclusive(&source, &destination) {
                     Ok(()) => {
                         let moved_expanded: Vec<PathBuf> = self
                             .explorer_expanded
@@ -7768,11 +8709,9 @@ impl App {
                     return;
                 }
 
-                let result = if is_directory {
-                    std::fs::remove_dir(&absolute)
-                } else {
-                    std::fs::remove_file(&absolute)
-                };
+                self.checkpoint_file_operation(&absolute);
+                let result =
+                    crate::file_ops::move_to_trash(&crate::file_ops::default_root(), &absolute);
                 match result {
                     Ok(()) => {
                         self.explorer_action_target = None;
@@ -7782,7 +8721,7 @@ impl App {
                         self.mode = AppMode::Editing;
                         self.explorer_focused = true;
                         self.notify(format!(
-                            "Deleted {} {}",
+                            "Moved {} {} to private trash; Restore deleted file recovers it",
                             if is_directory { "directory" } else { "file" },
                             relative.display()
                         ));
@@ -8379,6 +9318,7 @@ impl App {
             KeyCode::End => self.confirmation_selected = 2,
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
+                self.close_queue.clear();
                 self.notify("Close tab cancelled".to_owned());
             }
             KeyCode::Char('s' | 'S') => self.request_save(PostSaveAction::CloseTab),
@@ -8388,6 +9328,7 @@ impl App {
                 1 => self.close_active_tab_now(true),
                 _ => {
                     self.mode = AppMode::Editing;
+                    self.close_queue.clear();
                     self.notify("Close tab cancelled".to_owned());
                 }
             },
@@ -8426,6 +9367,7 @@ impl App {
             self.mode = AppMode::Editing;
             self.notify("Closed file".to_owned());
             self.reset_active_code_intelligence();
+            self.continue_close_batch();
             return;
         }
 
@@ -8446,12 +9388,881 @@ impl App {
         };
         self.notify(format!("Closed · now showing {}", self.active_short_path()));
         self.reset_active_code_intelligence();
+        self.continue_close_batch();
     }
 
+    fn show_utility(
+        &mut self,
+        title: &str,
+        lines: Vec<String>,
+        actions: Vec<Option<UtilityAction>>,
+    ) {
+        self.utility_title = title.to_owned();
+        self.utility_lines = lines;
+        self.utility_actions = actions;
+        self.utility_selected = 0;
+        self.mode = AppMode::Utility;
+        self.clear_status();
+    }
+
+    fn handle_utility_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(task) = self.pending_task.take() {
+                    task.cancelled
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                self.mode = AppMode::Editing;
+                self.utility_actions.clear();
+                self.notify("Closed; no save or execution was requested".to_owned());
+            }
+            KeyCode::Up => self.utility_selected = self.utility_selected.saturating_sub(1),
+            KeyCode::Down => {
+                self.utility_selected =
+                    (self.utility_selected + 1).min(self.utility_lines.len().saturating_sub(1))
+            }
+            KeyCode::PageDown => {
+                self.utility_selected =
+                    (self.utility_selected + 10).min(self.utility_lines.len().saturating_sub(1))
+            }
+            KeyCode::PageUp => self.utility_selected = self.utility_selected.saturating_sub(10),
+            KeyCode::Char('c') if self.utility_title == "Terminal Doctor" => {
+                self.store_clipboard(
+                    self.utility_lines.join("\n"),
+                    "Copied redacted diagnostic report",
+                );
+            }
+            KeyCode::Enter => {
+                let action = self
+                    .utility_actions
+                    .get(self.utility_selected)
+                    .cloned()
+                    .flatten();
+                match action {
+                    Some(UtilityAction::Trust) => {
+                        self.workspace_trusted = true;
+                        self.mode = AppMode::Editing;
+                        if self.language_service_active {
+                            self.restart_language_server(false);
+                        }
+                        self.notify("Workspace trusted for this session; revoke through Restrict workspace execution".to_owned());
+                    }
+                    Some(UtilityAction::SaveAll) => {
+                        self.mode = AppMode::Editing;
+                        self.batch_return = Some(self.buffer.identity());
+                        self.save_all_queue = (0..self.tabs.len())
+                            .filter_map(|i| self.tab_buffer(i))
+                            .filter(|b| b.is_dirty())
+                            .map(|b| b.identity())
+                            .collect();
+                        self.continue_save_all();
+                    }
+                    Some(UtilityAction::Restore(entry)) => {
+                        self.mode = AppMode::Editing;
+                        if let Some(path) = self.buffer.path().cloned() {
+                            self.record_history(&path, &self.buffer.contents(), "before-restore");
+                        }
+                        let before = self.cursor;
+                        let row = self.buffer.line_count().saturating_sub(1);
+                        let end = Cursor::new(row, self.buffer.grapheme_count(row));
+                        self.buffer.replace_range(
+                            Cursor::new(0, 0),
+                            end,
+                            &entry.content,
+                            &mut self.cursor,
+                        );
+                        self.buffer.set_last_history_state(
+                            before,
+                            self.selection_anchor,
+                            self.cursor,
+                            None,
+                        );
+                        self.selection_anchor = None;
+                        self.sync_code_intelligence_after_edit();
+                        self.notify(
+                            "Checkpoint restored as an unsaved undoable edit; review before Save"
+                                .to_owned(),
+                        );
+                    }
+                    Some(UtilityAction::ForgetHistory(path)) => {
+                        match crate::history::HistoryStore::default_location()
+                            .and_then(|store| store.forget(&path))
+                        {
+                            Ok(count) => {
+                                self.mode = AppMode::Editing;
+                                self.notify(format!("Forgot {count} local checkpoints; original file and recovery journal retained"));
+                            }
+                            Err(error) => {
+                                self.fail(format!("Cannot forget local history: {error}"))
+                            }
+                        }
+                    }
+                    Some(UtilityAction::Task(command)) => self.start_task(command),
+                    Some(UtilityAction::ValidateConfig(command, identity, revision)) => {
+                        if self.buffer.identity() != identity || self.buffer.revision() != revision
+                        {
+                            self.fail(
+                                "Configuration changed; review it again before validation"
+                                    .to_owned(),
+                            );
+                        } else {
+                            self.start_process_task(
+                                command,
+                                self.buffer.contents(),
+                                self.buffer.path().cloned().unwrap(),
+                                Some((identity, revision)),
+                            );
+                        }
+                    }
+                    Some(UtilityAction::SaveConfig(identity, revision)) => {
+                        if self.buffer.identity() != identity || self.buffer.revision() != revision
+                        {
+                            self.fail(
+                                "Validated configuration changed; review and validate again"
+                                    .to_owned(),
+                            );
+                        } else {
+                            self.mode = AppMode::Editing;
+                            self.request_save(PostSaveAction::None);
+                        }
+                    }
+                    Some(UtilityAction::Snippet(index)) => self.insert_snippet(index),
+                    Some(UtilityAction::RestoreTrash(entry)) => {
+                        match crate::file_ops::restore(&entry) {
+                            Ok(()) => {
+                                self.reload_explorer();
+                                self.mode = AppMode::Editing;
+                                self.notify(
+                                    "Restored deleted item; newer files were never replaced"
+                                        .to_owned(),
+                                );
+                            }
+                            Err(error) => self.fail(format!("Restore failed: {error}")),
+                        }
+                    }
+                    Some(UtilityAction::Navigate(path, cursor)) => {
+                        self.remember_navigation();
+                        match self.open_path_in_tab(path) {
+                            Ok(()) => {
+                                self.cursor = cursor;
+                                self.clamp_cursor();
+                                self.should_scroll_to_cursor = true;
+                            }
+                            Err(error) => self.fail(format!("Task location unavailable: {error}")),
+                        }
+                    }
+                    None => {}
+                }
+            }
+            _ if self.utility_title == "Terminal Doctor" => {
+                let binding = self
+                    .keymap_config
+                    .resolve(key)
+                    .map(|c| format!("{c:?}"))
+                    .unwrap_or_else(|| "unbound".to_owned());
+                self.utility_lines.push(format!(
+                    "Delivered event: {:?} + {:?}; action: {binding}",
+                    key.code, key.modifiers
+                ));
+                if self.utility_lines.len() > 40 {
+                    self.utility_lines.remove(10);
+                }
+                self.utility_selected = self.utility_lines.len().saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn reveal_active_explorer(&mut self) {
+        if !self.explorer_visible {
+            self.explorer_visible = true;
+            self.reload_explorer();
+        }
+        if let Some(path) = self.buffer.path().cloned()
+            && let Ok(relative) = path.strip_prefix(&self.workspace_root)
+        {
+            self.expand_explorer_ancestors(relative);
+            self.reload_explorer();
+            if let Some(i) = self.explorer_files.iter().position(|e| e.path == relative) {
+                self.explorer_selected = i;
+            }
+        }
+    }
+
+    fn review_save_all(&mut self) {
+        let files: Vec<_> = (0..self.tabs.len())
+            .filter_map(|i| self.tab_buffer(i))
+            .filter(|b| b.is_dirty())
+            .map(|b| format!("Save {}", b.display_path()))
+            .collect();
+        if files.is_empty() {
+            self.notify("All files are saved".to_owned());
+            return;
+        }
+        let mut lines = vec![format!(
+            "{} dirty files. Enter saves in order; each conflict or missing name is reviewed.",
+            files.len()
+        )];
+        lines.extend(files);
+        let actions = vec![Some(UtilityAction::SaveAll); lines.len()];
+        self.show_utility("Save All — review dirty files", lines, actions);
+    }
+
+    fn continue_save_all(&mut self) {
+        while !self.save_all_queue.is_empty() {
+            let id = self.save_all_queue.remove(0);
+            if let Some(index) = (0..self.tabs.len())
+                .find(|&i| self.tab_buffer(i).is_some_and(|b| b.identity() == id))
+            {
+                self.switch_tab(index);
+                if self.buffer.is_dirty() {
+                    self.request_save(PostSaveAction::SaveAll);
+                    return;
+                }
+            }
+        }
+        if let Some(id) = self.batch_return.take()
+            && let Some(index) = (0..self.tabs.len())
+                .find(|&i| self.tab_buffer(i).is_some_and(|b| b.identity() == id))
+        {
+            self.switch_tab(index);
+        }
+        self.notify(format!(
+            "Save All finished; {} files still unsaved",
+            self.unsaved_count()
+        ));
+    }
+
+    fn begin_close_batch(&mut self, others: bool) {
+        let keep = self.buffer.identity();
+        self.close_queue = (0..self.tabs.len())
+            .filter_map(|i| self.tab_buffer(i))
+            .filter(|b| !others || b.identity() != keep)
+            .map(|b| b.identity())
+            .collect();
+        self.continue_close_batch();
+    }
+
+    fn continue_close_batch(&mut self) {
+        while !self.close_queue.is_empty() {
+            let id = self.close_queue.remove(0);
+            if let Some(index) = (0..self.tabs.len())
+                .find(|&i| self.tab_buffer(i).is_some_and(|b| b.identity() == id))
+            {
+                self.switch_tab(index);
+                self.request_close_active_tab();
+                return;
+            }
+        }
+    }
+
+    fn navigation_point(&self) -> NavigationPoint {
+        NavigationPoint {
+            identity: self.buffer.identity(),
+            path: self.buffer.path().cloned(),
+            cursor: self.cursor,
+        }
+    }
+    fn remember_navigation(&mut self) {
+        let point = self.navigation_point();
+        if self
+            .navigation_back
+            .last()
+            .is_none_or(|p| p.identity != point.identity || p.cursor != point.cursor)
+        {
+            self.navigation_back.push(point);
+            if self.navigation_back.len() > 128 {
+                self.navigation_back.remove(0);
+            }
+        }
+        self.navigation_forward.clear();
+    }
+    fn navigate_history(&mut self, forward: bool) {
+        let target = if forward {
+            self.navigation_forward.pop()
+        } else {
+            self.navigation_back.pop()
+        };
+        let Some(target) = target else {
+            self.notify("No more navigation history".to_owned());
+            return;
+        };
+        let current = self.navigation_point();
+        if let Some(index) = (0..self.tabs.len()).find(|&i| {
+            self.tab_buffer(i)
+                .is_some_and(|b| b.identity() == target.identity)
+        }) {
+            self.switch_tab(index);
+        } else if let Some(path) = target.path {
+            if let Err(error) = self.open_path_in_tab(path) {
+                self.fail(format!("Navigation failed: {error}"));
+                return;
+            }
+        } else {
+            self.notify("The previous untitled document is closed".to_owned());
+            return;
+        }
+        if forward {
+            self.navigation_back.push(current);
+        } else {
+            self.navigation_forward.push(current);
+        }
+        self.cursor = target.cursor;
+        self.clamp_cursor();
+        self.selection_anchor = None;
+        self.should_scroll_to_cursor = true;
+    }
+
+    fn select_occurrences(&mut self, all: bool) {
+        let selection = self
+            .selection_range()
+            .or_else(|| self.buffer.word_range(self.cursor.row, self.cursor.col));
+        let Some((start, end)) = selection else {
+            self.fail("Select a word or text first".to_owned());
+            return;
+        };
+        let text = self.buffer.get_text_range(start, end);
+        if text.is_empty() {
+            return;
+        }
+        let matches = search::search_text(
+            &self.buffer.contents(),
+            &text,
+            search::SearchOptions {
+                case_sensitive: true,
+                regex: false,
+                whole_word: false,
+            },
+            501,
+        )
+        .unwrap_or_default();
+        let ranges: Vec<_> = matches
+            .iter()
+            .take(500)
+            .map(|m| (Cursor::new(m.row, m.col), Cursor::new(m.end_row, m.end_col)))
+            .collect();
+        if all {
+            self.occurrence_ranges = ranges;
+        } else {
+            if self.occurrence_ranges.is_empty() {
+                self.occurrence_ranges.push((start, end));
+            }
+            let last = self
+                .occurrence_ranges
+                .last()
+                .copied()
+                .unwrap_or((start, end));
+            if let Some(next) = ranges
+                .iter()
+                .chain(ranges.iter())
+                .find(|r| r.0 > last.0 && !self.occurrence_ranges.contains(r))
+            {
+                self.occurrence_ranges.push(*next);
+            } else if let Some(next) = ranges.iter().find(|r| !self.occurrence_ranges.contains(r)) {
+                self.occurrence_ranges.push(*next);
+            }
+        }
+        self.selection_anchor = Some(start);
+        self.cursor = end;
+        self.secondary_cursors = self
+            .occurrence_ranges
+            .iter()
+            .filter(|r| **r != (start, end))
+            .map(|r| r.1)
+            .collect();
+        self.notify(format!(
+            "{} occurrences selected{}",
+            self.occurrence_ranges.len(),
+            if matches.len() > 500 {
+                " (500 limit)"
+            } else {
+                ""
+            }
+        ));
+    }
+    fn replace_occurrences(&mut self, text: &str) {
+        let before = self.cursor;
+        let anchor = self.selection_anchor;
+        let edits: Vec<_> = std::mem::take(&mut self.occurrence_ranges)
+            .into_iter()
+            .map(|(a, b)| (a, b, text.to_owned()))
+            .collect();
+        let cursors = self.buffer.replace_ranges_with_cursors(&edits, before);
+        if let Some(first) = cursors.first() {
+            self.cursor = *first;
+        }
+        self.secondary_cursors = cursors.into_iter().skip(1).collect();
+        self.selection_anchor = None;
+        self.buffer
+            .set_last_history_state(before, anchor, self.cursor, None);
+    }
+
+    fn checkpoint_file_operation(&mut self, path: &std::path::Path) {
+        use std::io::Read;
+        if !self.history_enabled {
+            return;
+        }
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() <= 2 * 1024 * 1024)
+        {
+            let text = (|| -> Result<String> {
+                let mut text = String::new();
+                std::fs::File::open(path)?
+                    .take(2 * 1024 * 1024 + 1)
+                    .read_to_string(&mut text)?;
+                anyhow::ensure!(
+                    text.len() <= 2 * 1024 * 1024,
+                    "checkpoint exceeds history limit"
+                );
+                Ok(text)
+            })();
+            if let Ok(text) = text {
+                self.record_history(path, &text, "file-operation");
+            }
+        }
+    }
+    fn record_history(&mut self, path: &std::path::Path, content: &str, event: &str) {
+        if !self.history_enabled {
+            return;
+        }
+        let result = crate::history::HistoryStore::default_location()
+            .and_then(|store| store.record(path, content, event));
+        if let Err(error) = result {
+            self.notify(format!(
+                "Local history unavailable: {error}; core editing retained"
+            ));
+        }
+    }
+    fn show_local_history(&mut self) {
+        let Some(path) = self.buffer.path() else {
+            self.fail("Save this file under a name before using local history".to_owned());
+            return;
+        };
+        match crate::history::HistoryStore::default_location()
+            .and_then(|store| store.versions(path))
+        {
+            Ok(entries) if !entries.is_empty() => {
+                let mut lines: Vec<String> = entries
+                    .iter()
+                    .rev()
+                    .map(|e| {
+                        format!(
+                            "{} · {} · {} bytes — Enter restores without saving",
+                            e.created_ms,
+                            e.event,
+                            e.content.len()
+                        )
+                    })
+                    .collect();
+                let mut actions: Vec<Option<UtilityAction>> = entries
+                    .into_iter()
+                    .rev()
+                    .map(|e| Some(UtilityAction::Restore(e)))
+                    .collect();
+                lines.push("Forget all checkpoints for this file: Enter permanently removes only its local history (not the file or recovery journal). Disable future checkpoints with history_enabled = false in settings.conf.".to_owned());
+                actions.push(Some(UtilityAction::ForgetHistory(path.clone())));
+                self.show_utility("Private local history", lines, actions);
+            }
+            Ok(_) => self.notify(
+                "No checkpoints; secret-like files/content and oversized files are excluded"
+                    .to_owned(),
+            ),
+            Err(error) => self.fail(format!("Local history unavailable: {error}")),
+        }
+    }
+    fn compare_disk(&mut self) {
+        let Some(path) = self.buffer.path() else {
+            self.fail("This file has no saved disk version".to_owned());
+            return;
+        };
+        match std::fs::read_to_string(path) {
+            Ok(disk) => {
+                let current = self.buffer.contents();
+                let mut lines = vec!["Saved disk (-) and unsaved buffer (+). Escape returns; neither version is changed.".to_owned()];
+                let left: Vec<_> = disk.lines().collect();
+                let right: Vec<_> = current.lines().collect();
+                for i in 0..left.len().max(right.len()).min(1000) {
+                    if left.get(i) != right.get(i) {
+                        if let Some(text) = left.get(i) {
+                            lines.push(format!("- {}: {}", i + 1, text));
+                        }
+                        if let Some(text) = right.get(i) {
+                            lines.push(format!("+ {}: {}", i + 1, text));
+                        }
+                    }
+                }
+                if left.len().max(right.len()) > 1000 {
+                    lines.push("Comparison truncated at 1000 lines".to_owned());
+                }
+                if lines.len() == 1 {
+                    lines.push(
+                        if disk == current {
+                            "Disk and buffer agree"
+                        } else {
+                            "Line text matches; line endings or final newline differ"
+                        }
+                        .to_owned(),
+                    );
+                }
+                self.show_utility("Compare saved disk and buffer", lines, Vec::new());
+            }
+            Err(error) => self.fail(format!("Cannot read saved version: {error}")),
+        }
+    }
+
+    fn show_trash(&mut self) {
+        match crate::file_ops::entries(&crate::file_ops::default_root()) {
+            Ok(entries) if !entries.is_empty() => {
+                let lines = entries
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            "Restore {} — existing paths are never replaced",
+                            e.original.display()
+                        )
+                    })
+                    .collect();
+                self.show_utility(
+                    "Restore private trash",
+                    lines,
+                    entries
+                        .into_iter()
+                        .map(|e| Some(UtilityAction::RestoreTrash(e)))
+                        .collect(),
+                );
+            }
+            Ok(_) => self.notify("Private trash is empty".to_owned()),
+            Err(error) => self.fail(format!("Trash unavailable: {error}")),
+        }
+    }
+
+    fn show_tasks(&mut self) {
+        if !self.workspace_trusted {
+            self.fail("Named tasks require explicit workspace trust".to_owned());
+            return;
+        }
+        let path = self.workspace_root.join(".mellow/tasks.json");
+        let tasks = read_optional_command_config(&path)
+            .and_then(|value| value.ok_or_else(|| anyhow::anyhow!("missing tasks.json")));
+        match tasks {
+            Ok(value) => {
+                let Some(object) = value.as_object() else {
+                    self.fail("tasks.json must map names to command argument arrays".to_owned());
+                    return;
+                };
+                let mut lines = vec!["Each task may execute code or contact services. Enter on its command approves this run.".to_owned()];
+                let mut actions = vec![None];
+                for (name, args) in object.iter().take(50) {
+                    let Some(array) = args.as_array() else {
+                        continue;
+                    };
+                    let Some(command) = array
+                        .iter()
+                        .map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                    else {
+                        continue;
+                    };
+                    if name.chars().any(char::is_control)
+                        || command.is_empty()
+                        || command.iter().any(|s| s.chars().any(char::is_control))
+                    {
+                        continue;
+                    }
+                    lines.push(format!("{name}: {command:?}"));
+                    actions.push(Some(UtilityAction::Task(command)));
+                }
+                self.show_utility("Review named task command", lines, actions);
+            }
+            Err(error) => self.fail(format!(
+                "Configure .mellow/tasks.json with {{\"validate\":[\"tool\",\"arg\"]}}: {error}"
+            )),
+        }
+    }
+    fn start_task(&mut self, command: Vec<String>) {
+        self.start_process_task(
+            command,
+            String::new(),
+            self.workspace_root.join(".mellow-task"),
+            None,
+        );
+    }
+    fn start_process_task(
+        &mut self,
+        command: Vec<String>,
+        input: String,
+        path: PathBuf,
+        config_snapshot: Option<(u64, u64)>,
+    ) {
+        if !self.workspace_trusted
+            || !self.workspace_execution_allows(&path)
+            || self.pending_task.is_some()
+        {
+            self.fail("Task unavailable: restricted workspace or another task running".to_owned());
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = cancelled.clone();
+        std::thread::spawn(move || {
+            let result = crate::format::run_process(
+                &command,
+                &input,
+                &path,
+                &token,
+                Duration::from_secs(10),
+                1024 * 1024,
+            )
+            .map_err(|e| e.to_string());
+            let _ = sender.send(result);
+        });
+        self.pending_task = Some(PendingTask {
+            config_snapshot,
+            cancelled,
+            receiver,
+        });
+        self.show_utility(
+            "Task running — Escape cancels",
+            vec![
+                "Validating a snapshot never saves or deploys. Escape cancels the process group."
+                    .to_owned(),
+            ],
+            Vec::new(),
+        );
+    }
+    fn poll_task(&mut self) {
+        let result = match self.pending_task.as_ref().map(|j| j.receiver.try_recv()) {
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                Err("task worker stopped".to_owned())
+            }
+            _ => return,
+        };
+        let snapshot = self
+            .pending_task
+            .take()
+            .and_then(|task| task.config_snapshot);
+        let successful = result.as_ref().is_ok_and(|output| output.success);
+        let mut actions = vec![None];
+        let mut lines = match result {
+            Ok(output) => {
+                let mut lines = vec![format!(
+                    "Task {}; Mellow did not save or deploy. Enter on a file:line result opens it.",
+                    if output.success {
+                        "succeeded"
+                    } else {
+                        "failed"
+                    }
+                )];
+                for line in output
+                    .stdout
+                    .lines()
+                    .chain(output.stderr.lines())
+                    .take(1000)
+                {
+                    let clean: String = line
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\t')
+                        .collect();
+                    actions.push(
+                        task_location(&clean, &self.workspace_root)
+                            .map(|(p, c)| UtilityAction::Navigate(p, c)),
+                    );
+                    lines.push(clean);
+                }
+                lines
+            }
+            Err(error) => vec![
+                format!("Task failed: {error}"),
+                "Nothing was automatically saved or deployed".to_owned(),
+            ],
+        };
+        if let Some((identity, revision)) = snapshot {
+            if successful
+                && self.buffer.identity() == identity
+                && self.buffer.revision() == revision
+            {
+                lines.push("Validator passed for this revision. Enter here explicitly saves the reviewed configuration.".to_owned());
+                actions.push(Some(UtilityAction::SaveConfig(identity, revision)));
+            } else {
+                lines.push(
+                    "Validation failed or candidate changed; save is not offered. Review again."
+                        .to_owned(),
+                );
+                actions.push(None);
+            }
+        }
+        if lines.is_empty() {
+            lines.push("Task returned no output".to_owned());
+        }
+        if self.mode == AppMode::Utility {
+            self.show_utility("Task result", lines, actions);
+        } else {
+            self.notify("Task finished; output is retained in the task result view".to_owned());
+            self.utility_lines = lines;
+            self.utility_actions = actions;
+        }
+    }
+
+    fn show_terminal_doctor(&mut self) {
+        let lines = vec![
+            format!(
+                "Keyboard: {}",
+                if crate::terminal::keyboard_enhanced() {
+                    "enhanced protocol"
+                } else {
+                    "legacy; Ctrl+Shift may collapse to Ctrl"
+                }
+            ),
+            format!("Color tier: {:?}", crate::theme::cached_color_tier()),
+            "Bracketed paste: enabled by Mellow; delivered events will appear below.".to_owned(),
+            "Mouse: application capture; --no-mouse permits terminal selection.".to_owned(),
+            "Clipboard: native adapter if available, otherwise OSC52 + internal buffer.".to_owned(),
+            "Remote/tmux may filter clipboard, mouse or keys; no network test is inferred."
+                .to_owned(),
+            "Press a troublesome key to see its decoded event and configured action.".to_owned(),
+            "C copies this redacted report with your consent; Escape returns.".to_owned(),
+            "Raw bytes are parsed by Crossterm; this view records delivered key events.".to_owned(),
+            "No file paths or pasted contents are recorded.".to_owned(),
+        ];
+        self.show_utility("Terminal Doctor", lines, Vec::new());
+    }
+    fn show_config_review(&mut self) {
+        let Some(path) = self.buffer.path() else {
+            self.fail("Name this JSON/YAML file first".to_owned());
+            return;
+        };
+        let before = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                self.fail(format!(
+                    "Cannot read pre-edit configuration: {error}; nothing saved"
+                ));
+                return;
+            }
+        };
+        match crate::config_change::review(self.buffer.language(), &before, &self.buffer.contents())
+        {
+            Ok(changes) => {
+                let mut lines=vec!["Local structural validation passed; no external command ran and no save occurred.".to_owned(),"Review changed key paths; secret-like values are redacted. Escape returns to editing.".to_owned()];
+                lines.extend(
+                    changes
+                        .into_iter()
+                        .take(500)
+                        .map(|c| format!("{}: {} -> {}", c.path, c.before, c.after)),
+                );
+                lines.push("Run an approved named validator separately, then choose Save. Pre-save checkpoint is retained when eligible.".to_owned());
+                let mut actions = vec![None; lines.len()];
+                let identity = self.buffer.identity();
+                let revision = self.buffer.revision();
+                let config = self.workspace_root.join(".mellow/validators.json");
+                match read_optional_command_config(&config) {
+                    Ok(Some(value)) => {
+                        match value
+                            .get(self.buffer.language())
+                            .cloned()
+                            .and_then(|v| v.as_array().cloned())
+                            .and_then(|a| {
+                                a.iter()
+                                    .map(|v| v.as_str().map(str::to_owned))
+                                    .collect::<Option<Vec<_>>>()
+                            }) {
+                            Some(command)
+                                if !command.is_empty()
+                                    && !command.iter().any(|s| s.chars().any(char::is_control))
+                                    && self.workspace_trusted =>
+                            {
+                                lines.push(format!("Run validator with current text on stdin (may execute code/contact services): {command:?}. Enter explicitly approves."));
+                                actions.push(Some(UtilityAction::ValidateConfig(
+                                    command, identity, revision,
+                                )));
+                            }
+                            _ => {
+                                lines.push("Validator unavailable: require trusted workspace and language argv array in .mellow/validators.json".to_owned());
+                                actions.push(None);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        lines.push("No external validator configured. Built-in structural check passed; Enter here explicitly saves this reviewed revision.".to_owned());
+                        actions.push(Some(UtilityAction::SaveConfig(identity, revision)));
+                    }
+                    Err(error) => {
+                        lines.push(format!(
+                            "Validator configuration unavailable: {error}; save is not offered"
+                        ));
+                        actions.push(None);
+                    }
+                }
+                self.show_utility("Safe configuration change", lines, actions);
+            }
+            Err(error) => self.fail(format!(
+                "Configuration validation failed; nothing saved: {error}"
+            )),
+        }
+    }
+
+    fn show_snippets(&mut self) {
+        let templates = crate::snippets::templates();
+        let lines = templates
+            .iter()
+            .map(|(name, _)| {
+                format!("{name} — Enter inserts; Tab moves between linked placeholders")
+            })
+            .collect();
+        let actions = (0..templates.len())
+            .map(|i| Some(UtilityAction::Snippet(i)))
+            .collect();
+        self.show_utility("Insert snippet", lines, actions);
+    }
+    fn insert_snippet(&mut self, index: usize) {
+        if !self.secondary_cursors.is_empty()
+            || self.rectangular_selection.is_some()
+            || !self.occurrence_ranges.is_empty()
+        {
+            self.fail(
+                "Snippet insertion needs one cursor; clear additional cursors or rectangle first"
+                    .to_owned(),
+            );
+            return;
+        }
+        let templates = crate::snippets::templates();
+        let Some((_, body)) = templates.get(index) else {
+            return;
+        };
+        match crate::snippets::parse(&body.replace("\n", self.buffer.line_ending().as_str())) {
+            Ok(snippet) => {
+                self.mode = AppMode::Editing;
+                self.snippet_session = None;
+                let start = self.selection_range().map_or(self.cursor, |(a, _)| a);
+                let start = self.buffer.char_index(start.row, start.col);
+                self.paste_editor_text(&snippet.text);
+                self.snippet_session = Some(crate::snippets::Session::new(
+                    &snippet,
+                    start,
+                    self.buffer.revision(),
+                ));
+                self.select_snippet_stop();
+                self.sync_code_intelligence_after_edit();
+            }
+            Err(error) => self.fail(format!("Snippet refused: {error}")),
+        }
+    }
+    fn select_snippet_stop(&mut self) {
+        if let Some(session) = &self.snippet_session {
+            let ranges = session.ranges(&self.buffer);
+            if let Some((a, b)) = ranges.first() {
+                self.selection_anchor = Some(*a);
+                self.cursor = *b;
+                self.secondary_cursors = ranges.iter().skip(1).map(|r| r.1).collect();
+            }
+        }
+    }
     fn finish_post_save(&mut self, action: PostSaveAction) {
         match action {
             PostSaveAction::None => {}
             PostSaveAction::CloseTab => self.close_active_tab_now(true),
+            PostSaveAction::SaveAll => self.continue_save_all(),
             PostSaveAction::Quit => self.continue_quit(),
         }
     }
@@ -8802,6 +10613,7 @@ impl App {
                         self.close_active_tab_now(true);
                     } else if mouse.column >= inner_x + 37 && mouse.column < inner_x + 51 {
                         self.mode = AppMode::Editing;
+                        self.close_queue.clear();
                         self.notify("Close tab cancelled".to_owned());
                     }
                 }
@@ -9060,7 +10872,12 @@ impl App {
                         editor_bottom,
                     );
                     let editor_rows = pane_height.max(1) as usize;
-                    let layout = VisualLayout::new(&self.buffer, text_width, TAB_WIDTH, true);
+                    let layout = VisualLayout::new(
+                        &self.buffer,
+                        text_width,
+                        self.buffer.indent_width(),
+                        true,
+                    );
                     self.visual_scroll_row = layout.clamp_scroll(
                         self.visual_scroll_row.saturating_add(MOUSE_SCROLL_LINES),
                         editor_rows,
@@ -9207,7 +11024,12 @@ impl App {
                 let screen_col = local_column.saturating_sub(gutter) as usize;
                 let (row, col) = if self.word_wrap {
                     let text_width = pane_width.saturating_sub(gutter).max(1) as usize;
-                    let layout = VisualLayout::new(&self.buffer, text_width, TAB_WIDTH, true);
+                    let layout = VisualLayout::new(
+                        &self.buffer,
+                        text_width,
+                        self.buffer.indent_width(),
+                        true,
+                    );
                     let visual_row = self.visual_scroll_row + usize::from(local_row);
                     let cursor =
                         layout.cursor_for_visual_position(&self.buffer, visual_row, screen_col);
@@ -9224,8 +11046,11 @@ impl App {
                     };
                     (
                         row,
-                        self.buffer
-                            .grapheme_col_at_display_column(row, display_col, TAB_WIDTH),
+                        self.buffer.grapheme_col_at_display_column(
+                            row,
+                            display_col,
+                            self.buffer.indent_width(),
+                        ),
                     )
                 };
                 self.cursor = Cursor::new(row, col);
@@ -9335,15 +11160,23 @@ impl App {
                     }
                     self.cursor = Cursor::new(
                         row,
-                        self.buffer
-                            .grapheme_col_at_display_column(row, display_col, TAB_WIDTH),
+                        self.buffer.grapheme_col_at_display_column(
+                            row,
+                            display_col,
+                            self.buffer.indent_width(),
+                        ),
                     );
                     return;
                 }
 
                 if self.word_wrap {
                     let text_width = pane_width.saturating_sub(gutter).max(1) as usize;
-                    let layout = VisualLayout::new(&self.buffer, text_width, TAB_WIDTH, true);
+                    let layout = VisualLayout::new(
+                        &self.buffer,
+                        text_width,
+                        self.buffer.indent_width(),
+                        true,
+                    );
                     let visual_row = if mouse.row < pane_top {
                         self.visual_scroll_row = self.visual_scroll_row.saturating_sub(1);
                         self.visual_scroll_row
@@ -9375,9 +11208,11 @@ impl App {
                         self.scroll_col + screen_col
                     };
                     self.cursor.row = row;
-                    self.cursor.col =
-                        self.buffer
-                            .grapheme_col_at_display_column(row, display_col, TAB_WIDTH);
+                    self.cursor.col = self.buffer.grapheme_col_at_display_column(
+                        row,
+                        display_col,
+                        self.buffer.indent_width(),
+                    );
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
@@ -9584,12 +11419,16 @@ impl App {
         if start_display == end_display {
             return None;
         }
-        let mut start = self
-            .buffer
-            .grapheme_col_at_display_column(row, start_display, TAB_WIDTH);
-        let mut end = self
-            .buffer
-            .grapheme_col_at_display_column(row, end_display, TAB_WIDTH);
+        let mut start = self.buffer.grapheme_col_at_display_column(
+            row,
+            start_display,
+            self.buffer.indent_width(),
+        );
+        let mut end = self.buffer.grapheme_col_at_display_column(
+            row,
+            end_display,
+            self.buffer.indent_width(),
+        );
         let count = self.buffer.grapheme_count(row);
         start = start.min(count);
         end = end.min(count);
@@ -9631,10 +11470,140 @@ impl App {
     }
 
     fn store_clipboard(&mut self, text: String, verb: &str) {
-        let count = text.chars().count();
-        let delivery = copy_to_system_clipboard(&text);
         self.clipboard = text;
-        self.notify(delivery.message(verb, count));
+        if cfg!(test) {
+            self.notify(
+                ClipboardDelivery::InternalOnly.message(verb, self.clipboard.chars().count()),
+            );
+            return;
+        }
+        if self.pending_clipboard_copy.is_none() {
+            self.start_clipboard_copy(verb);
+        } else {
+            self.notify(format!(
+                "{verb}; latest text retained while system clipboard completes"
+            ));
+        }
+    }
+    fn start_clipboard_copy(&mut self, verb: &str) {
+        let text = self.clipboard.clone();
+        let job_text = text.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(write_native_system_clipboard(&job_text));
+        });
+        self.pending_clipboard_copy = Some(PendingClipboardCopy {
+            text,
+            verb: verb.to_owned(),
+            receiver,
+        });
+        self.notify(format!("{verb}; updating system clipboard in background"));
+    }
+    fn begin_clipboard_paste(&mut self) {
+        #[cfg(test)]
+        {
+            self.apply_clipboard_paste(self.system_clipboard_text());
+        }
+        #[cfg(not(test))]
+        self.start_clipboard_paste();
+    }
+    #[cfg(not(test))]
+    fn start_clipboard_paste(&mut self) {
+        if self.pending_clipboard_paste.is_some() {
+            self.notify("Clipboard request is still running; editing stays available".to_owned());
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(read_system_clipboard());
+        });
+        self.pending_clipboard_paste = Some(PendingClipboardPaste {
+            identity: self.buffer.identity(),
+            revision: self.buffer.revision(),
+            cursor: self.cursor,
+            anchor: self.selection_anchor,
+            secondary: self.secondary_cursors.clone(),
+            rectangle: self.rectangular_selection,
+            occurrences: self.occurrence_ranges.clone(),
+            receiver,
+        });
+        self.notify(
+            "Reading system clipboard in background; a changed selection discards the result"
+                .to_owned(),
+        );
+    }
+    fn apply_clipboard_paste(&mut self, system: Option<String>) {
+        let (text, from_system) = paste_clipboard_text(system, &self.clipboard);
+        self.clipboard = text;
+        if self.clipboard.is_empty() {
+            self.fail(
+                if from_system {
+                    "System clipboard is empty"
+                } else {
+                    "Mellow clipboard is empty; system clipboard unavailable"
+                }
+                .to_owned(),
+            );
+            return;
+        }
+        let text = self.clipboard.clone();
+        let before = self.buffer.revision();
+        self.paste_editor_text(&text);
+        if self.buffer.revision() != before {
+            self.sync_code_intelligence_after_edit();
+        }
+        self.notify(
+            if from_system {
+                "Pasted from system clipboard"
+            } else {
+                "Pasted from Mellow clipboard"
+            }
+            .to_owned(),
+        );
+    }
+    fn poll_clipboard(&mut self) {
+        if let Some(result) = self
+            .pending_clipboard_copy
+            .as_ref()
+            .and_then(|job| job.receiver.try_recv().ok())
+        {
+            let job = self.pending_clipboard_copy.take().unwrap();
+            if job.text != self.clipboard {
+                self.start_clipboard_copy(&job.verb);
+            } else {
+                let delivery = if result {
+                    ClipboardDelivery::Native
+                } else {
+                    copy_to_terminal_clipboard(&job.text)
+                };
+                self.notify(delivery.message(&job.verb, job.text.chars().count()));
+            }
+        }
+        if let Some(result) = self
+            .pending_clipboard_paste
+            .as_ref()
+            .and_then(|job| job.receiver.try_recv().ok())
+        {
+            let job = self.pending_clipboard_paste.take().unwrap();
+            if self.mode == AppMode::Editing
+                && !self.terminal_focused
+                && !self.explorer_focused
+                && job.identity == self.buffer.identity()
+                && job.revision == self.buffer.revision()
+                && job.cursor == self.cursor
+                && job.anchor == self.selection_anchor
+                && job.secondary == self.secondary_cursors
+                && job.rectangle == self.rectangular_selection
+                && job.occurrences == self.occurrence_ranges
+            {
+                self.apply_clipboard_paste(result);
+            } else {
+                self.notify(
+                    "Clipboard result discarded: document or selection changed; paste again"
+                        .to_owned(),
+                );
+            }
+        }
     }
 
     fn copy_active_selection_to_clipboard(&mut self) -> bool {
@@ -9659,9 +11628,18 @@ impl App {
         if ranges.is_empty() {
             return false;
         }
+        let lines: Vec<_> = replacement.split('\n').collect();
+        let distribute = lines.len() == ranges.len() && lines.len() > 1;
         let replacements: Vec<_> = ranges
             .iter()
-            .map(|(start, end)| (*start, *end, replacement.to_owned()))
+            .enumerate()
+            .map(|(i, (start, end))| {
+                (
+                    *start,
+                    *end,
+                    if distribute { lines[i] } else { replacement }.to_owned(),
+                )
+            })
             .collect();
         let pre_cursor = self.cursor;
         let results = self
@@ -9693,6 +11671,58 @@ impl App {
     }
 
     fn execute(&mut self, command: Command) {
+        if self.snippet_session.is_some() {
+            match command {
+                Command::Tab => {
+                    let active = self
+                        .snippet_session
+                        .as_mut()
+                        .is_some_and(|session| session.next(&self.buffer));
+                    if active {
+                        self.select_snippet_stop();
+                    } else {
+                        self.snippet_session = None;
+                        self.selection_anchor = None;
+                        self.secondary_cursors.clear();
+                    }
+                    return;
+                }
+                Command::Insert(ch) => {
+                    let mut session = self.snippet_session.take().unwrap();
+                    if session.replace(&mut self.buffer, &mut self.cursor, &ch.to_string()) {
+                        self.snippet_session = Some(session);
+                        self.selection_anchor = None;
+                        self.secondary_cursors = self
+                            .snippet_session
+                            .as_ref()
+                            .unwrap()
+                            .ranges(&self.buffer)
+                            .iter()
+                            .skip(1)
+                            .map(|r| r.1)
+                            .collect();
+                        self.sync_code_intelligence_after_edit();
+                        return;
+                    }
+                }
+                Command::Paste | Command::ShowPalette => {}
+                _ => {
+                    self.snippet_session = None;
+                }
+            }
+        }
+        if !matches!(
+            command,
+            Command::SelectNextOccurrence
+                | Command::SelectAllOccurrences
+                | Command::Insert(_)
+                | Command::Paste
+                | Command::Newline
+                | Command::Backspace
+                | Command::Delete
+        ) {
+            self.occurrence_ranges.clear();
+        }
         let revision_before = self.buffer.revision();
         let completion_edit = match command {
             Command::Insert(ch) => Some(Some(ch)),
@@ -9722,6 +11752,49 @@ impl App {
         }
 
         match command {
+            Command::SaveAll => self.review_save_all(),
+            Command::RestoreTrash => self.show_trash(),
+            Command::AiUsage => self.show_ai_usage(),
+            Command::KeyboardBindings => self.show_bindings(),
+            Command::CloseAll | Command::CloseOthers => self.begin_close_batch(command == Command::CloseOthers),
+            Command::ExplorerNewFile => self.begin_explorer_create(),
+            Command::ExplorerNewDirectory => self.begin_explorer_create_directory(),
+            Command::ExplorerRename => { self.reveal_active_explorer(); self.begin_explorer_rename(); },
+            Command::ExplorerDelete => { self.reveal_active_explorer(); self.begin_explorer_delete(); },
+            Command::SelectNextOccurrence => self.select_occurrences(false),
+            Command::SelectAllOccurrences => self.select_occurrences(true),
+            Command::NavigateBack => self.navigate_history(false),
+            Command::NavigateForward => self.navigate_history(true),
+            Command::CycleIndentWidth => {
+                let width = match self.buffer.indent_width() { 2 => 4, 4 => 8, _ => 2 };
+                self.buffer.set_indent_width(width);
+                self.notify(format!("Effective indentation: {width}; this buffer override lasts until close"));
+            }
+            Command::WorkspaceSymbols => {
+                self.workspace_symbol_search = true;
+                self.symbol_query.clear(); self.lsp_symbols.clear();
+                self.ensure_language_service();
+                match self.language_service.request_workspace_symbols("") {
+                    Ok(true) => { self.mode = AppMode::Symbols; self.notify("Workspace symbols: type to filter; language server prerequisite".to_owned()); }
+                    _ => self.fail("Workspace symbols require a trusted supporting language server".to_owned()),
+                }
+            }
+            Command::TrustWorkspace => self.show_utility("Trust workspace execution", vec![
+                "Language servers, formatters and tasks may execute code and contact services.".to_owned(),
+                "Trust applies to this session and workspace only; core editing works without it.".to_owned(),
+                "Press Enter to explicitly trust this workspace, or Escape to cancel.".to_owned()],
+                vec![Some(UtilityAction::Trust); 3]),
+            Command::RevokeWorkspaceTrust => {
+                self.workspace_trusted = false; self.language_service.stop(); self.cancel_format_save();
+                if let Some(task) = self.pending_task.take() { task.cancelled.store(true, std::sync::atomic::Ordering::Release); }
+                self.notify("Workspace restricted; optional executable integrations stopped".to_owned());
+            }
+            Command::LocalHistory => self.show_local_history(),
+            Command::CompareDisk => self.compare_disk(),
+            Command::InsertSnippet => self.show_snippets(),
+            Command::RunTask => self.show_tasks(),
+            Command::TerminalDoctor => self.show_terminal_doctor(),
+            Command::SafeConfigChange => self.show_config_review(),
             Command::Save => self.request_save(PostSaveAction::None),
             Command::SaveAs => self.begin_save_as(PostSaveAction::None),
             Command::NewFile => self.new_untitled_tab(),
@@ -9887,51 +11960,7 @@ impl App {
                     self.clamp_cursor();
                 }
             }
-            Command::Paste => {
-                let (text, from_system) =
-                    paste_clipboard_text(self.system_clipboard_text(), &self.clipboard);
-                self.clipboard = text;
-                if !self.clipboard.is_empty() {
-                    let text = self.clipboard.clone();
-                    if self.rectangular_selection.is_some() {
-                        let _ = self.replace_rectangular_selection(&text);
-                    } else if !self.secondary_cursors.is_empty() && self.selection_anchor.is_none()
-                    {
-                        let _ = self.apply_text_to_all_cursors(&text, false);
-                    } else if let Some((start, end)) = self.selection_range() {
-                        let pre_cursor = self.cursor;
-                        let pre_selection_anchor = self.selection_anchor;
-                        self.buffer
-                            .replace_range(start, end, &text, &mut self.cursor);
-                        self.selection_anchor = None;
-                        self.buffer.set_last_history_state(
-                            pre_cursor,
-                            pre_selection_anchor,
-                            self.cursor,
-                            self.selection_anchor,
-                        );
-                    } else {
-                        self.buffer.insert_text(&mut self.cursor, &text);
-                    }
-                    self.notify(
-                        if from_system {
-                            "Pasted from system clipboard"
-                        } else {
-                            "Pasted from Mellow clipboard"
-                        }
-                        .to_owned(),
-                    );
-                } else {
-                    self.fail(
-                        if from_system {
-                            "System clipboard is empty"
-                        } else {
-                            "Mellow clipboard is empty; system clipboard unavailable"
-                        }
-                        .to_owned(),
-                    );
-                }
-            }
+            Command::Paste => self.begin_clipboard_paste(),
             Command::ToggleComment => {
                 let (start_row, end_row) = self.selected_line_rows();
                 let pre_cursor = self.cursor;
@@ -10110,6 +12139,7 @@ impl App {
                 }
             }
             Command::RestartLanguageServer => {
+                self.language_service.stop_current();
                 self.language_service_active = true;
                 self.restart_language_server(true);
             }
@@ -10334,6 +12364,11 @@ impl App {
                 self.move_down(self.page_rows);
             }
             Command::Insert(ch) => {
+                if !self.occurrence_ranges.is_empty() {
+                    self.replace_occurrences(&ch.to_string());
+                    self.sync_code_intelligence_after_edit();
+                    return;
+                }
                 if self.rectangular_selection.is_some() {
                     if let Some(close) = matching_close(ch) {
                         if self.replace_rectangular_selection(&format!("{ch}{close}")) {
@@ -10385,6 +12420,7 @@ impl App {
                 }
             }
             Command::Newline => {
+                if !self.occurrence_ranges.is_empty() { self.replace_occurrences("\n"); self.sync_code_intelligence_after_edit(); return; }
                 if self.rectangular_selection.is_some() {
                     let _ = self.replace_rectangular_selection("\n");
                 } else if !self.secondary_cursors.is_empty() && self.selection_anchor.is_none() {
@@ -10406,6 +12442,7 @@ impl App {
                 }
             }
             Command::Backspace => {
+                if !self.occurrence_ranges.is_empty() { self.replace_occurrences(""); self.sync_code_intelligence_after_edit(); return; }
                 if self.rectangular_selection.is_some() {
                     let _ = self.replace_rectangular_selection("");
                 } else if !self.secondary_cursors.is_empty() && self.selection_anchor.is_none() {
@@ -10426,6 +12463,7 @@ impl App {
                 }
             }
             Command::Delete => {
+                if !self.occurrence_ranges.is_empty() { self.replace_occurrences(""); self.sync_code_intelligence_after_edit(); return; }
                 if self.rectangular_selection.is_some() {
                     let _ = self.replace_rectangular_selection("");
                 } else if !self.secondary_cursors.is_empty() && self.selection_anchor.is_none() {
@@ -10477,9 +12515,9 @@ impl App {
                     let display_col = self.buffer.display_width_before(
                         self.cursor.row,
                         self.cursor.col,
-                        TAB_WIDTH,
+                        self.buffer.indent_width(),
                     );
-                    let spaces = TAB_WIDTH - (display_col % TAB_WIDTH);
+                    let spaces = self.buffer.indent_width() - (display_col % self.buffer.indent_width());
                     self.buffer
                         .insert_text(&mut self.cursor, &" ".repeat(spaces));
                 }
@@ -10631,7 +12669,12 @@ impl App {
 
     fn move_up(&mut self, rows: usize) {
         if self.word_wrap {
-            let layout = VisualLayout::new(&self.buffer, self.last_editor_width, TAB_WIDTH, true);
+            let layout = VisualLayout::new(
+                &self.buffer,
+                self.last_editor_width,
+                self.buffer.indent_width(),
+                true,
+            );
             let position = layout.visual_position_for_cursor(&self.buffer, self.cursor);
             let pref = *self.preferred_visual_col.get_or_insert(position.column);
             let target_row = position.row.saturating_sub(rows);
@@ -10646,7 +12689,12 @@ impl App {
 
     fn move_down(&mut self, rows: usize) {
         if self.word_wrap {
-            let layout = VisualLayout::new(&self.buffer, self.last_editor_width, TAB_WIDTH, true);
+            let layout = VisualLayout::new(
+                &self.buffer,
+                self.last_editor_width,
+                self.buffer.indent_width(),
+                true,
+            );
             let position = layout.visual_position_for_cursor(&self.buffer, self.cursor);
             let pref = *self.preferred_visual_col.get_or_insert(position.column);
             let target_row = position
@@ -10663,6 +12711,7 @@ impl App {
         self.cursor.col = pref.min(self.buffer.grapheme_count(self.cursor.row));
     }
 
+    #[cfg(test)]
     fn system_clipboard_text(&self) -> Option<String> {
         #[cfg(test)]
         if let Some(reader) = self.clipboard_reader {
@@ -10689,7 +12738,8 @@ impl App {
 
         if self.word_wrap {
             self.scroll_col = 0;
-            let layout = VisualLayout::new(&self.buffer, editor_width, TAB_WIDTH, true);
+            let layout =
+                VisualLayout::new(&self.buffer, editor_width, self.buffer.indent_width(), true);
             self.visual_scroll_row = layout.clamp_scroll(self.visual_scroll_row, editor_height);
 
             if !self.should_scroll_to_cursor {
@@ -10720,9 +12770,11 @@ impl App {
             self.scroll_row = self.cursor.row + 1 - editor_height;
         }
 
-        let cursor_display_col =
-            self.buffer
-                .display_width_before(self.cursor.row, self.cursor.col, TAB_WIDTH);
+        let cursor_display_col = self.buffer.display_width_before(
+            self.cursor.row,
+            self.cursor.col,
+            self.buffer.indent_width(),
+        );
         if cursor_display_col < self.scroll_col {
             self.scroll_col = cursor_display_col;
         } else if cursor_display_col >= self.scroll_col + editor_width {
@@ -10809,14 +12861,70 @@ const MAX_TERMINAL_CLIPBOARD_BYTES: usize = 256 * 1024;
 const _: () = assert!(MAX_TERMINAL_CLIPBOARD_BYTES < MAX_SYSTEM_CLIPBOARD_BYTES);
 
 fn read_clipboard_command(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.len() > MAX_SYSTEM_CLIPBOARD_BYTES {
-        return None;
+    let command: Vec<_> = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    let result = crate::format::run_process(
+        &command,
+        "",
+        std::path::Path::new("./.mellow-clipboard"),
+        &std::sync::atomic::AtomicBool::new(false),
+        Duration::from_secs(2),
+        MAX_SYSTEM_CLIPBOARD_BYTES,
+    );
+    let output = result.ok()?;
+    output.success.then_some(output.stdout)
+}
+
+fn read_optional_command_config(path: &std::path::Path) -> Result<Option<serde_json::Value>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
     }
-    String::from_utf8(output.stdout).ok()
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() <= 64 * 1024,
+        "command configuration must be a regular file of at most 64 KiB"
+    );
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 64 * 1024,
+        "command configuration exceeds 64 KiB"
+    );
+    Ok(Some(serde_json::from_slice(&bytes)?))
+}
+
+fn task_location(line: &str, root: &std::path::Path) -> Option<(PathBuf, Cursor)> {
+    line.split_whitespace().find_map(|token| {
+        let token = token.trim_end_matches(':');
+        let mut pieces = token.rsplitn(3, ':');
+        let last = pieces.next()?.parse::<usize>().ok()?;
+        let head = pieces.next()?;
+        let (path, row, col) = if let Ok(row) = head.parse::<usize>() {
+            (pieces.next()?, row, last)
+        } else {
+            (token.rsplit_once(':')?.0, last, 1)
+        };
+        if row == 0 || col == 0 || path.chars().any(char::is_control) {
+            return None;
+        }
+        let absolute = root.join(path);
+        if !absolute.is_file() {
+            return None;
+        }
+        Some((absolute, Cursor::new(row - 1, col - 1)))
+    })
 }
 
 fn paste_clipboard_text(system: Option<String>, fallback: &str) -> (String, bool) {
@@ -10865,45 +12973,22 @@ fn read_system_clipboard() -> Option<String> {
 }
 
 fn write_clipboard_command(program: &str, args: &[&str], text: &str) -> bool {
-    use std::io::Write;
-
     if text.len() > MAX_SYSTEM_CLIPBOARD_BYTES {
         return false;
     }
-
-    let mut child = match std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
-    };
-
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        return false;
-    };
-    if stdin.write_all(text.as_bytes()).is_err() {
-        let _ = child.kill();
-        return false;
-    }
-    drop(stdin);
-
-    let deadline = Instant::now() + Duration::from_millis(250);
-    while Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(_) => return false,
-        }
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-    false
+    let command: Vec<_> = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    let result = crate::format::run_process(
+        &command,
+        text,
+        std::path::Path::new("./.mellow-clipboard"),
+        &std::sync::atomic::AtomicBool::new(false),
+        Duration::from_secs(2),
+        MAX_SYSTEM_CLIPBOARD_BYTES,
+    );
+    result.is_ok_and(|output| output.success)
 }
 
 fn write_native_system_clipboard(text: &str) -> bool {
@@ -10968,14 +13053,11 @@ impl ClipboardDelivery {
     }
 }
 
-fn copy_to_system_clipboard(text: &str) -> ClipboardDelivery {
+fn copy_to_terminal_clipboard(text: &str) -> ClipboardDelivery {
     use std::io::Write;
 
     if cfg!(test) || text.len() > MAX_SYSTEM_CLIPBOARD_BYTES {
         return ClipboardDelivery::InternalOnly;
-    }
-    if write_native_system_clipboard(text) {
-        return ClipboardDelivery::Native;
     }
     if text.len() > MAX_TERMINAL_CLIPBOARD_BYTES {
         return ClipboardDelivery::TooLargeForTerminal;
@@ -11501,6 +13583,7 @@ mod tests {
 
     fn accept_test_ai_edit(app: &mut App) {
         app.ai_context = Some(super::AiContextSnapshot {
+            buffer_identity: app.buffer.identity(),
             revision: app.buffer.revision(),
             range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
             before: "let".to_owned(),
@@ -11617,7 +13700,9 @@ mod tests {
         assert_eq!(app.mode, AppMode::Editing);
         assert_eq!(
             app.status.as_deref(),
-            Some("This file has no symbols to jump to")
+            Some(
+                "No symbols; install/trust a supporting language server or use JSON/YAML/HCL outline"
+            )
         );
     }
 
@@ -12165,6 +14250,26 @@ mod tests {
     fn goal15_clipboard_reader_accepts_bounded_utf8_process_output() {
         let text = read_clipboard_command("/bin/sh", &["-c", "printf clipboard-value"]).unwrap();
         assert_eq!(text, "clipboard-value");
+    }
+
+    #[test]
+    fn terminal_and_clipboard_paste_share_multicursor_unicode_undo() {
+        for terminal in [true, false] {
+            let mut app = App::new(Buffer::empty(None));
+            app.buffer.insert_text(&mut app.cursor, "aa\nbb");
+            app.clipboard_reader = Some(|| None);
+            app.cursor = Cursor::new(0, 0);
+            app.execute(Command::AddCursorBelow);
+            if terminal {
+                app.handle_paste("🙂\nX");
+            } else {
+                app.clipboard = "🙂\nX".to_owned();
+                app.execute(Command::Paste);
+            }
+            assert_eq!(app.buffer.contents(), "🙂\nXaa\n🙂\nXbb");
+            app.execute(Command::Undo);
+            assert_eq!(app.buffer.contents(), "aa\nbb");
+        }
     }
 
     #[test]
@@ -12797,6 +14902,7 @@ mod tests {
         app.execute(Command::ProjectSearch);
 
         assert_eq!(app.mode, AppMode::ProjectSearch);
+        wait_project_search(&mut app);
         assert_eq!(app.project_search_report.results.len(), 1);
         let result = &app.project_search_report.results[0];
         assert_eq!(result.path, PathBuf::from("src/main.rs"));
@@ -12822,18 +14928,21 @@ mod tests {
         app.workspace_root = dir.path().to_path_buf();
         app.project_search_query.set("cat");
         app.execute(Command::ProjectSearch);
+        wait_project_search(&mut app);
         assert_eq!(app.project_search_report.results.len(), 4);
 
         app.handle_project_search_key(KeyEvent::new(
             KeyCode::Char('c'),
             crossterm::event::KeyModifiers::ALT,
         ));
+        wait_project_search(&mut app);
         assert_eq!(app.project_search_report.results.len(), 3);
 
         app.handle_project_search_key(KeyEvent::new(
             KeyCode::Char('w'),
             crossterm::event::KeyModifiers::ALT,
         ));
+        wait_project_search(&mut app);
         assert_eq!(app.project_search_report.results.len(), 1);
     }
 
@@ -12875,6 +14984,7 @@ mod tests {
                 sort_text: Some("002".to_owned()),
                 insert_text: "private".to_owned(),
                 edit_range: None,
+                ..CompletionItem::default()
             },
             CompletionItem {
                 label: "println!".to_owned(),
@@ -12883,6 +14993,7 @@ mod tests {
                 sort_text: Some("001".to_owned()),
                 insert_text: "println!".to_owned(),
                 edit_range: None,
+                ..CompletionItem::default()
             },
             CompletionItem {
                 label: "Vec".to_owned(),
@@ -12891,6 +15002,7 @@ mod tests {
                 sort_text: Some("000".to_owned()),
                 insert_text: "Vec".to_owned(),
                 edit_range: None,
+                ..CompletionItem::default()
             },
         ];
         app.refresh_completion_filter();
@@ -12948,6 +15060,7 @@ mod tests {
                     character: 7,
                 },
             }),
+            ..CompletionItem::default()
         }];
         app.completion_selected = 0;
         app.mode = AppMode::Completion;
@@ -12962,6 +15075,413 @@ mod tests {
 
         app.execute(Command::Undo);
         assert_eq!(app.buffer.contents(), "let pri🙂 = 1;");
+    }
+
+    fn supporting_import_completion(path: PathBuf, revision: u64) -> CompletionItem {
+        let range = |line, start, end| crate::lsp::LspRange {
+            start: LspPosition {
+                line,
+                character: start,
+            },
+            end: LspPosition {
+                line,
+                character: end,
+            },
+        };
+        CompletionItem {
+            label: "Path".to_owned(),
+            insert_text: "Path".to_owned(),
+            edit_range: Some(range(1, 0, 3)),
+            additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                range: range(0, 0, 0),
+                new_text: "from pathlib import Path\n".to_owned(),
+            }],
+            origin: Some((path, i32::try_from(revision).unwrap())),
+            command: Some(serde_json::json!({"command": "fixture.neverExecute"})),
+            ..CompletionItem::default()
+        }
+    }
+
+    #[test]
+    fn f09_completion_import_is_atomic_undoable_and_discloses_unexecuted_command() {
+        let path = PathBuf::from("/tmp/mellow-f09-completion.py");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.handle_paste("# demo\nPat");
+        let before = app.buffer.contents();
+        let item = supporting_import_completion(path, app.buffer.revision());
+        app.apply_completion_item(item);
+        assert_eq!(
+            app.buffer.contents(),
+            "from pathlib import Path\n# demo\nPath"
+        );
+        assert_eq!(app.cursor, Cursor::new(2, 4));
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("provider command was not run")
+        );
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), before);
+        app.execute(Command::Redo);
+        assert_eq!(
+            app.buffer.contents(),
+            "from pathlib import Path\n# demo\nPath"
+        );
+    }
+
+    #[test]
+    fn f09_stale_completion_import_applies_neither_edit() {
+        let path = PathBuf::from("/tmp/mellow-f09-stale.py");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.handle_paste("# demo\nPat");
+        let item = supporting_import_completion(path, app.buffer.revision());
+        app.handle_paste("x");
+        let before = app.buffer.contents();
+        app.apply_completion_item(item);
+        assert_eq!(app.buffer.contents(), before);
+        assert!(app.status.as_deref().unwrap().contains("document changed"));
+    }
+
+    #[test]
+    fn f09_overlapping_completion_import_applies_neither_edit() {
+        let path = PathBuf::from("/tmp/mellow-f09-overlap.py");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.handle_paste("# demo\nPat");
+        let mut item = supporting_import_completion(path, app.buffer.revision());
+        item.additional_text_edits[0].range = item.edit_range.unwrap();
+        let before = app.buffer.contents();
+        app.apply_completion_item(item);
+        assert_eq!(app.buffer.contents(), before);
+        assert!(app.status.as_deref().unwrap().contains("overlapping"));
+    }
+
+    #[test]
+    fn f09_completion_refuses_utf16_positions_inside_a_grapheme() {
+        for source in ["🦀audit_sy", "e\u{301}audit_sy"] {
+            for invalid_primary in [Some((1, 2)), Some((0, 1)), None] {
+                let mut app = App::new(Buffer::empty(None));
+                app.handle_paste(source);
+                let before = app.cursor;
+                let revision = app.buffer.revision();
+                let range = |start, end| crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: start,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: end,
+                    },
+                };
+                app.apply_completion_item(CompletionItem {
+                    label: "audit_symbol".to_owned(),
+                    insert_text: "audit_symbol".to_owned(),
+                    edit_range: Some(if let Some((start, end)) = invalid_primary {
+                        range(start, end)
+                    } else {
+                        range(2, 10)
+                    }),
+                    additional_text_edits: if invalid_primary.is_some() {
+                        Vec::new()
+                    } else {
+                        vec![crate::lsp::CompletionTextEdit {
+                            range: range(1, 1),
+                            new_text: String::new(),
+                        }]
+                    },
+                    ..CompletionItem::default()
+                });
+                assert_eq!(
+                    app.buffer.contents(),
+                    source,
+                    "unsupported boundary must not round and change text"
+                );
+                assert_eq!(app.buffer.revision(), revision);
+                assert_eq!(app.cursor, before);
+                assert!(app.status.as_deref().unwrap().contains("grapheme boundary"));
+            }
+        }
+    }
+
+    #[test]
+    fn f09_completion_noop_supporting_edits_preserve_primary_caret_and_history() {
+        let range = |start, end| crate::lsp::LspRange {
+            start: LspPosition {
+                line: 0,
+                character: start,
+            },
+            end: LspPosition {
+                line: 0,
+                character: end,
+            },
+        };
+        for supporting_col in [0, 10] {
+            let mut app = App::new(Buffer::empty(None));
+            app.handle_paste("🦀audit_sy");
+            let original_cursor = app.cursor;
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(range(2, 10)),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: range(supporting_col, supporting_col),
+                    new_text: String::new(),
+                }],
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+            assert_eq!(app.cursor, Cursor::new(0, 13));
+            app.execute(Command::Undo);
+            assert_eq!(app.buffer.contents(), "🦀audit_sy");
+            assert_eq!(app.cursor, original_cursor);
+            app.execute(Command::Redo);
+            assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+            assert_eq!(app.cursor, Cursor::new(0, 13));
+        }
+    }
+
+    #[test]
+    fn f09_completion_noop_primary_follows_supporting_import_and_history() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("🦀audit_symbol");
+        let original_cursor = app.cursor;
+        app.apply_completion_item(CompletionItem {
+            label: "audit_symbol".to_owned(),
+            insert_text: String::new(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 14,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 14,
+                },
+            }),
+            additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                range: crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                new_text: "from helper import audit_symbol\r\n".to_owned(),
+            }],
+            ..CompletionItem::default()
+        });
+        assert_eq!(
+            app.buffer.contents(),
+            "from helper import audit_symbol\n🦀audit_symbol"
+        );
+        assert_eq!(app.cursor, Cursor::new(1, 13));
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "🦀audit_symbol");
+        assert_eq!(app.cursor, original_cursor);
+        app.execute(Command::Redo);
+        assert_eq!(
+            app.buffer.contents(),
+            "from helper import audit_symbol\n🦀audit_symbol"
+        );
+        assert_eq!(app.cursor, Cursor::new(1, 13));
+    }
+
+    #[test]
+    fn f09_completion_noop_only_preserves_revision_and_existing_history_caret() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("audit_symbol");
+        let original_cursor = app.cursor;
+        app.cursor = Cursor::new(0, 4);
+        let revision = app.buffer.revision();
+        app.apply_completion_item(CompletionItem {
+            label: "no change".to_owned(),
+            insert_text: String::new(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 4,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 4,
+                },
+            }),
+            command: Some(serde_json::json!({"command": "fixture.neverExecute"})),
+            ..CompletionItem::default()
+        });
+        assert_eq!(app.buffer.contents(), "audit_symbol");
+        assert_eq!(app.buffer.revision(), revision);
+        assert_eq!(app.cursor, Cursor::new(0, 4));
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("provider command was not run")
+        );
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "");
+        assert_eq!(app.cursor, Cursor::new(0, 0));
+        app.execute(Command::Redo);
+        assert_eq!(app.buffer.contents(), "audit_symbol");
+        assert_eq!(app.cursor, original_cursor);
+    }
+
+    #[test]
+    fn f09_completion_noop_overlap_is_rejected_before_filtering() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("audit_sy");
+        let before = app.cursor;
+        let revision = app.buffer.revision();
+        app.apply_completion_item(CompletionItem {
+            label: "audit_symbol".to_owned(),
+            insert_text: "audit_symbol".to_owned(),
+            edit_range: Some(crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 8,
+                },
+            }),
+            additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                range: crate::lsp::LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 4,
+                    },
+                },
+                new_text: String::new(),
+            }],
+            ..CompletionItem::default()
+        });
+        assert_eq!(app.buffer.contents(), "audit_sy");
+        assert_eq!(app.buffer.revision(), revision);
+        assert_eq!(app.cursor, before);
+        assert!(app.status.as_deref().unwrap().contains("overlapping"));
+    }
+
+    #[test]
+    fn f09_first_line_auto_import_boundary_edits_are_atomic_and_undoable() {
+        for (source, primary_start, primary_end, supporting_col, supporting_text, expected) in [
+            (
+                "audit_sy",
+                0,
+                8,
+                0,
+                "from helper import audit_symbol\n",
+                "from helper import audit_symbol\naudit_symbol",
+            ),
+            ("🦀audit_sy", 2, 10, 2, "界", "🦀界audit_symbol"),
+            (
+                "audit_sy",
+                0,
+                8,
+                8,
+                " # boundary",
+                "audit_symbol # boundary",
+            ),
+        ] {
+            let path = PathBuf::from("/tmp/mellow-f09-boundary.py");
+            let mut app = App::new(Buffer::empty(Some(path.clone())));
+            app.handle_paste(source);
+            let original_cursor = app.cursor;
+            let range = |start, end| crate::lsp::LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: start,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: end,
+                },
+            };
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(range(primary_start, primary_end)),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: range(supporting_col, supporting_col),
+                    new_text: supporting_text.to_owned(),
+                }],
+                origin: Some((path, i32::try_from(app.buffer.revision()).unwrap())),
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), expected);
+            let expected_cursor = match supporting_col {
+                0 => Cursor::new(1, 12),
+                2 => Cursor::new(0, 14),
+                8 => Cursor::new(0, 12),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                app.cursor, expected_cursor,
+                "caret must follow the primary completion, not its supporting edit"
+            );
+            app.execute(Command::Undo);
+            assert_eq!(app.buffer.contents(), source);
+            assert_eq!(app.cursor, original_cursor);
+            app.execute(Command::Redo);
+            assert_eq!(app.buffer.contents(), expected);
+            assert_eq!(app.cursor, expected_cursor);
+        }
+    }
+
+    #[test]
+    fn f09_completion_refuses_interior_insertions_and_ambiguous_duplicate_points() {
+        let path = PathBuf::from("/tmp/mellow-f09-boundary-refuse.py");
+        let range = |start, end| crate::lsp::LspRange {
+            start: LspPosition {
+                line: 0,
+                character: start,
+            },
+            end: LspPosition {
+                line: 0,
+                character: end,
+            },
+        };
+        for (primary, supporting) in [
+            (range(0, 8), range(4, 4)),
+            (range(0, 0), range(0, 0)),
+            (range(0, 8), range(4, 8)),
+        ] {
+            let mut app = App::new(Buffer::empty(Some(path.clone())));
+            app.handle_paste("audit_sy");
+            app.apply_completion_item(CompletionItem {
+                label: "audit_symbol".to_owned(),
+                insert_text: "audit_symbol".to_owned(),
+                edit_range: Some(primary),
+                additional_text_edits: vec![crate::lsp::CompletionTextEdit {
+                    range: supporting,
+                    new_text: "ambiguous".to_owned(),
+                }],
+                origin: Some((path.clone(), i32::try_from(app.buffer.revision()).unwrap())),
+                ..CompletionItem::default()
+            });
+            assert_eq!(app.buffer.contents(), "audit_sy");
+            assert!(app.status.as_deref().unwrap().contains("overlapping"));
+        }
+    }
+
+    #[test]
+    fn f09_plain_completion_replaces_the_identifier_prefix() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("pri");
+        app.apply_completion_item(CompletionItem {
+            label: "private".to_owned(),
+            insert_text: "private".to_owned(),
+            ..CompletionItem::default()
+        });
+        assert_eq!(app.buffer.contents(), "private");
     }
 
     #[test]
@@ -13781,6 +16301,488 @@ mod tests {
     }
 
     #[test]
+    fn audit_explicit_validator_cannot_inherit_another_workspaces_execution_trust() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let path = other.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.workspace_root = root.path().to_path_buf();
+        app.workspace_trusted = true;
+        app.start_process_task(
+            vec!["/bin/sh".to_owned(), "-c".to_owned(), "exit 0".to_owned()],
+            "{}".to_owned(),
+            path,
+            Some((app.buffer.identity(), app.buffer.revision())),
+        );
+        assert!(app.pending_task.is_none());
+    }
+    #[test]
+    fn audit_task_locations_recognize_existing_unicode_paths_after_tool_prefixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("🦀.rs");
+        std::fs::write(&path, "sample").unwrap();
+        assert_eq!(
+            task_location("  --> 🦀.rs:2:3", dir.path()),
+            Some((path, Cursor::new(1, 2)))
+        );
+        assert!(task_location("  --> absent.rs:2:3", dir.path()).is_none());
+    }
+
+    #[test]
+    fn audit_disk_comparison_does_not_hide_final_newline_differences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compare.txt");
+        std::fs::write(&path, "same\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.buffer
+            .delete_range(Cursor::new(0, 4), Cursor::new(1, 0));
+        app.compare_disk();
+        assert!(
+            app.utility_lines
+                .iter()
+                .any(|line| line.contains("final newline differ"))
+        );
+        assert!(
+            !app.utility_lines
+                .iter()
+                .any(|line| line == "Disk and buffer agree")
+        );
+    }
+
+    #[test]
+    fn audit_clipboard_late_result_never_edits_a_background_or_changed_selection() {
+        for focus in 0..3 {
+            let mut app = App::new(Buffer::empty(None));
+            let (sender, receiver) = mpsc::channel();
+            app.pending_clipboard_paste = Some(PendingClipboardPaste {
+                identity: app.buffer.identity(),
+                revision: app.buffer.revision(),
+                cursor: app.cursor,
+                anchor: app.selection_anchor,
+                secondary: app.secondary_cursors.clone(),
+                rectangle: app.rectangular_selection,
+                occurrences: app.occurrence_ranges.clone(),
+                receiver,
+            });
+            match focus {
+                0 => app.terminal_focused = true,
+                1 => app.explorer_focused = true,
+                _ => app.selection_anchor = Some(Cursor::new(0, 0)),
+            }
+            sender.send(Some("late text".to_owned())).unwrap();
+            app.poll_clipboard();
+            assert_eq!(app.buffer.contents(), "");
+            assert!(app.pending_clipboard_paste.is_none());
+            assert!(app.status.as_ref().unwrap().contains("discarded"));
+        }
+    }
+    #[test]
+    fn audit_validator_config_error_or_oversize_never_offers_implicit_structural_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        std::fs::write(&file, "{\"a\":1}").unwrap();
+        std::fs::create_dir(dir.path().join(".mellow")).unwrap();
+        let config = dir.path().join(".mellow/validators.json");
+        let mut app = App::new(Buffer::open(Some(file.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        for bytes in ["invalid".to_owned(), " ".repeat(65537)] {
+            std::fs::write(&config, bytes).unwrap();
+            app.show_config_review();
+            assert!(
+                !app.utility_actions
+                    .iter()
+                    .flatten()
+                    .any(|a| matches!(a, UtilityAction::SaveConfig(..)))
+            );
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
+        }
+    }
+    #[test]
+    fn audit_disabled_history_does_not_create_checkpoints_and_pending_usage_closes_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ordinary.txt");
+        let mut app = App::new(Buffer::empty(Some(path.clone())));
+        app.history_enabled = false;
+        app.record_history(&path, "ordinary text", "save");
+        assert!(
+            crate::history::HistoryStore::default_location()
+                .unwrap()
+                .versions(&path)
+                .unwrap()
+                .is_empty()
+        );
+        app.ai_session_token_budget = 10;
+        app.ai_usage_sender
+            .send(ai::AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(0),
+            })
+            .unwrap();
+        assert!(app.begin_ai_transport().is_none());
+        assert_eq!(app.ai_requests_used, 0);
+    }
+
+    #[test]
+    fn audit_ai_budgets_count_failed_attempts_unknown_usage_and_ignore_stale_progress() {
+        let mut app = App::new(Buffer::empty(None));
+        app.ai_max_requests = 2;
+        let (_, _, usage, old_progress) = app.begin_ai_transport().unwrap();
+        usage.send(ai::AiUsage::default()).unwrap();
+        let (token, _, usage, new_progress) = app.begin_ai_transport().unwrap();
+        assert!(old_progress.send("old response".to_owned()).is_err());
+        new_progress.send("current response".to_owned()).unwrap();
+        usage
+            .send(ai::AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(20),
+            })
+            .unwrap();
+        app.mode = AppMode::AiWaiting;
+        app.poll_ai_transport();
+        assert_eq!(app.ai_stream_preview, "current response");
+        assert_eq!(app.ai_known_tokens, 30);
+        assert_eq!(app.ai_unknown_requests, 1);
+        assert!(app.begin_ai_transport().is_none());
+        app.handle_ai_waiting_key(plain_key(KeyCode::Esc));
+        assert!(token.load(std::sync::atomic::Ordering::Acquire));
+        assert!(app.ai_stream_preview.is_empty());
+    }
+
+    #[test]
+    fn audit_save_all_reviews_dirty_tabs_stops_at_conflicts_and_keeps_other_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let mut app = App::new(Buffer::open(Some(a.clone())).unwrap());
+        app.cursor = Cursor::new(0, 1);
+        app.execute(Command::Insert('!'));
+        app.open_path_in_tab(b.clone()).unwrap();
+        app.cursor = Cursor::new(0, 1);
+        app.execute(Command::Insert('?'));
+        std::fs::write(&b, "external").unwrap();
+        app.execute(Command::SaveAll);
+        assert_eq!(app.mode, AppMode::Utility);
+        assert!(
+            app.utility_lines
+                .iter()
+                .any(|s| s.contains("2 dirty files"))
+        );
+        app.handle_utility_key(plain_key(KeyCode::Enter));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a!");
+        assert_eq!(app.mode, AppMode::SaveConflict);
+        app.handle_save_conflict_key(plain_key(KeyCode::Esc));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "external");
+        assert_eq!(app.buffer.contents(), "b?");
+        assert!(app.buffer.is_dirty());
+        assert!(app.save_all_queue.is_empty());
+    }
+    #[test]
+    fn audit_close_others_cancel_keeps_dirty_tabs_and_close_all_does_not_lose_text() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::Insert('a'));
+        app.new_untitled_tab();
+        app.execute(Command::Insert('b'));
+        app.execute(Command::CloseOthers);
+        assert_eq!(app.mode, AppMode::ConfirmCloseTab);
+        app.handle_close_tab_confirmation(plain_key(KeyCode::Esc));
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.unsaved_count(), 2);
+        app.execute(Command::CloseAll);
+        assert_eq!(app.mode, AppMode::ConfirmCloseTab);
+        app.handle_close_tab_confirmation(plain_key(KeyCode::Esc));
+        assert_eq!(app.unsaved_count(), 2);
+    }
+    #[test]
+    fn audit_occurrence_selection_replaces_unicode_once_and_undo_restores_every_match() {
+        let mut app = App::new(Buffer::empty(None));
+        app.handle_paste("🦀x 🦀x 🦀x");
+        app.cursor = Cursor::new(0, 2);
+        app.selection_anchor = Some(Cursor::new(0, 0));
+        app.execute(Command::SelectAllOccurrences);
+        assert_eq!(app.occurrence_ranges.len(), 3);
+        app.handle_paste("e\u{301}");
+        assert_eq!(app.buffer.contents(), "e\u{301} e\u{301} e\u{301}");
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "🦀x 🦀x 🦀x");
+        app.execute(Command::Redo);
+        assert_eq!(app.buffer.contents(), "e\u{301} e\u{301} e\u{301}");
+    }
+    #[test]
+    fn workspace_symbol_query_widening_discards_the_previous_result_subset() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Symbols;
+        app.workspace_symbol_search = true;
+        app.symbol_query.set("alpha");
+        let at = LspPosition {
+            line: 0,
+            character: 0,
+        };
+        app.lsp_symbols = vec![crate::lsp::SymbolLocation {
+            name: "alpha_only".to_owned(),
+            detail: None,
+            kind: 12,
+            path: PathBuf::from("/tmp/a.rs"),
+            range: crate::lsp::LspRange { start: at, end: at },
+        }];
+        app.handle_symbols_key(KeyEvent::new(
+            KeyCode::Backspace,
+            crossterm::event::KeyModifiers::empty(),
+        ));
+        assert_eq!(app.symbol_query.as_str(), "alph");
+        assert!(
+            app.lsp_symbols.is_empty(),
+            "widened query must wait for a fresh result, not reuse a narrower subset"
+        );
+    }
+
+    #[test]
+    fn empty_workspace_symbols_do_not_fall_back_to_current_file_outline() {
+        let mut app = App::new(Buffer::empty(Some(PathBuf::from("/tmp/symbol-outline.rs"))));
+        app.handle_paste("fn local_only() {}\n");
+        app.sync_syntax_document();
+        assert!(!app.filtered_symbols().is_empty());
+        app.workspace_symbol_search = true;
+        app.mode = AppMode::Symbols;
+        assert!(app.filtered_symbols().is_empty());
+        let before = app.cursor;
+        app.handle_symbols_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.cursor, before);
+        assert_eq!(app.mode, AppMode::Symbols);
+    }
+
+    #[test]
+    fn abandoned_lsp_interactions_cannot_navigate_reopen_or_replace_new_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        std::fs::write(&path, "alpha beta\n").unwrap();
+        for action in ["palette", "cursor", "escape", "revision", "buffer"] {
+            let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+            app.mode = AppMode::Editing;
+            let intent = app.lsp_interaction_state();
+            app.definition_intent = Some(intent.clone());
+            app.references_intent = Some(intent.clone());
+            app.hover_intent = Some(intent.clone());
+            app.signature_intent = Some(intent);
+            match action {
+                "palette" => app.execute(Command::ShowPalette),
+                "cursor" => app.cursor.col = 3,
+                "escape" => app.handle_key(plain_key(KeyCode::Esc)),
+                "revision" => app.handle_paste("changed"),
+                "buffer" => app.buffer = Buffer::open(Some(path.clone())).unwrap(),
+                _ => unreachable!(),
+            }
+            let mode = app.mode;
+            let cursor = app.cursor;
+            app.notify("New user interaction".to_owned());
+            let at = LspPosition {
+                line: 0,
+                character: 8,
+            };
+            let location = DefinitionLocation {
+                path: path.clone(),
+                range: crate::lsp::LspRange { start: at, end: at },
+            };
+            app.apply_language_service_events(vec![
+                LanguageServiceEvent::Definition(Some(location.clone())),
+                LanguageServiceEvent::References(vec![location]),
+                LanguageServiceEvent::Hover(Some("Old hover".to_owned())),
+                LanguageServiceEvent::SignatureHelp(vec!["Old signature".to_owned()]),
+            ]);
+            assert_eq!(app.mode, mode, "{action} stole panel focus");
+            assert_eq!(app.cursor, cursor, "{action} caused old navigation");
+            assert_eq!(app.status.as_deref(), Some("New user interaction"));
+            assert!(app.reference_items.is_empty());
+        }
+    }
+
+    #[test]
+    fn current_lsp_reference_intent_opens_its_results() {
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Editing;
+        app.references_intent = Some(app.lsp_interaction_state());
+        let at = LspPosition {
+            line: 0,
+            character: 0,
+        };
+        app.apply_language_service_events(vec![LanguageServiceEvent::References(vec![
+            DefinitionLocation {
+                path: PathBuf::from("/tmp/current.rs"),
+                range: crate::lsp::LspRange { start: at, end: at },
+            },
+        ])]);
+        assert_eq!(app.mode, AppMode::References);
+        assert_eq!(app.reference_items.len(), 1);
+    }
+
+    #[test]
+    fn audit_navigation_back_forward_returns_to_exact_file_and_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "alpha").unwrap();
+        std::fs::write(&b, "beta").unwrap();
+        let mut app = App::new(Buffer::open(Some(a.clone())).unwrap());
+        app.cursor = Cursor::new(0, 3);
+        app.remember_navigation();
+        app.open_path_in_tab(b.clone()).unwrap();
+        app.cursor = Cursor::new(0, 2);
+        app.execute(Command::NavigateBack);
+        assert_eq!(app.buffer.path(), Some(&a));
+        assert_eq!(app.cursor, Cursor::new(0, 3));
+        app.execute(Command::NavigateForward);
+        assert_eq!(app.buffer.path(), Some(&b));
+        assert_eq!(app.cursor, Cursor::new(0, 2));
+    }
+    #[test]
+    fn audit_quick_open_never_opens_stale_candidates_while_query_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("alpha.txt");
+        std::fs::write(&a, "alpha").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
+        app.handle_paste("./missing");
+        app.handle_quick_open_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.mode, AppMode::QuickOpen);
+        assert!(app.buffer.path().is_none());
+        assert!(!dir.path().join("missing").exists());
+        app.handle_quick_open_key(plain_key(KeyCode::Esc));
+        assert_eq!(app.mode, AppMode::Editing);
+    }
+    #[test]
+    fn audit_terminal_doctor_omits_pasted_secrets_and_records_delivered_key() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::TerminalDoctor);
+        app.handle_paste("SECRET-fixture");
+        app.handle_utility_key(plain_key(KeyCode::F(7)));
+        assert!(app.utility_lines.iter().any(|l| l.contains("F(7)")));
+        assert!(
+            app.utility_lines
+                .iter()
+                .any(|l| l.contains("content omitted"))
+        );
+        assert!(!app.utility_lines.join("\n").contains("SECRET-fixture"));
+        assert!(app.buffer.contents().is_empty());
+    }
+    #[test]
+    fn audit_task_failure_preserves_stderr_links_without_save_and_trust_is_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("issue.txt");
+        std::fs::write(&file, "keep").unwrap();
+        let mut app = App::new(Buffer::open(Some(file.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.workspace_trusted = false;
+        let command = vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            "printf 'issue.txt:1:2: error: bad\n' >&2; exit 1".to_owned(),
+        ];
+        app.start_task(command.clone());
+        assert!(app.pending_task.is_none());
+        app.workspace_trusted = true;
+        app.start_task(command);
+        let until = Instant::now() + Duration::from_secs(3);
+        while app.pending_task.is_some() && Instant::now() < until {
+            app.poll_task();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.pending_task.is_none());
+        assert!(app.utility_lines.iter().any(|s| s.contains("Task failed")));
+        assert!(
+            app.utility_actions
+                .iter()
+                .flatten()
+                .any(|a| matches!(a,UtilityAction::Navigate(_,c) if *c==Cursor::new(0,1)))
+        );
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "keep");
+    }
+    #[test]
+    fn audit_config_validator_failed_cancelled_or_stale_never_offers_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        std::fs::write(&file, "{\"a\":1}").unwrap();
+        let mut app = App::new(Buffer::open(Some(file.clone())).unwrap());
+        app.workspace_trusted = true;
+        app.workspace_root = dir.path().to_path_buf();
+        let snapshot = (app.buffer.identity(), app.buffer.revision());
+        app.start_process_task(
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "cat >/dev/null; exit 1".to_owned(),
+            ],
+            app.buffer.contents(),
+            file.clone(),
+            Some(snapshot),
+        );
+        let until = Instant::now() + Duration::from_secs(3);
+        while app.pending_task.is_some() && Instant::now() < until {
+            app.poll_task();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !app.utility_actions
+                .iter()
+                .flatten()
+                .any(|a| matches!(a, UtilityAction::SaveConfig(..)))
+        );
+        app.start_process_task(
+            vec!["/bin/sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()],
+            app.buffer.contents(),
+            file.clone(),
+            Some(snapshot),
+        );
+        app.handle_utility_key(plain_key(KeyCode::Esc));
+        assert!(app.pending_task.is_none());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
+        app.mode = AppMode::Editing;
+        app.execute(Command::Insert(' '));
+        app.utility_actions = vec![Some(UtilityAction::SaveConfig(snapshot.0, snapshot.1))];
+        app.utility_selected = 0;
+        app.mode = AppMode::Utility;
+        app.handle_utility_key(plain_key(KeyCode::Enter));
+        assert!(app.buffer.is_dirty());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "{\"a\":1}");
+    }
+    #[test]
+    fn audit_clipboard_deadline_covers_blocked_input_and_inherited_output() {
+        let start = Instant::now();
+        assert!(read_clipboard_command("/bin/sh", &["-c", "sleep 3 & exit 0"]).is_none());
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let start = Instant::now();
+        assert!(!write_clipboard_command(
+            "/bin/sh",
+            &["-c", "sleep 3"],
+            &"x".repeat(1024 * 1024)
+        ));
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
+    fn wait_quick_open(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.quick_open_ready && Instant::now() < deadline {
+            app.poll_quick_open();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(app.quick_open_ready, "Quick Open worker did not complete");
+    }
+    fn wait_project_search(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.project_search_running && Instant::now() < deadline {
+            app.poll_project_search();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            !app.project_search_running,
+            "Search worker did not complete"
+        );
+    }
+
+    #[test]
     fn goal_workspace_quick_open_filters_and_opens_selected_file() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
@@ -13791,6 +16793,7 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.workspace_root = dir.path().to_path_buf();
         app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
         assert_eq!(app.mode, AppMode::QuickOpen);
 
         app.quick_open_query.set("two");
@@ -13815,12 +16818,14 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.workspace_root = dir.path().to_path_buf();
         app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
 
         app.quick_open_query.set("s");
         app.handle_quick_open_key(KeyEvent::new(
             KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ));
+        wait_quick_open(&mut app);
         assert_eq!(app.quick_open_query.as_str(), "src/");
 
         app.quick_open_query.set("src/c");
@@ -13828,6 +16833,7 @@ mod tests {
             KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ));
+        wait_quick_open(&mut app);
         assert_eq!(app.quick_open_query.as_str(), "src/components/");
 
         app.quick_open_query.set("src/components/e");
@@ -13835,6 +16841,7 @@ mod tests {
             KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ));
+        wait_quick_open(&mut app);
         assert_eq!(app.quick_open_query.as_str(), "src/components/editor.rs");
 
         app.handle_quick_open_key(KeyEvent::new(
@@ -13854,12 +16861,15 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.workspace_root = root;
         app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
         app.handle_paste("../out");
+        wait_quick_open(&mut app);
         assert_eq!(app.filtered_quick_open_entries().len(), 1);
         app.handle_quick_open_key(KeyEvent::new(
             KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ));
+        wait_quick_open(&mut app);
         assert_eq!(app.quick_open_query.as_str(), "../outside.txt");
         app.handle_quick_open_key(KeyEvent::new(
             KeyCode::Enter,
@@ -13880,11 +16890,14 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.workspace_root = dir.path().to_path_buf();
         app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
         app.handle_paste("./do");
+        wait_quick_open(&mut app);
         app.handle_quick_open_key(KeyEvent::new(
             KeyCode::Enter,
             crossterm::event::KeyModifiers::empty(),
         ));
+        wait_quick_open(&mut app);
         assert_eq!(app.mode, AppMode::QuickOpen);
         assert_eq!(app.filtered_quick_open_entries().len(), 1);
         assert!(app.quick_open_candidates[0].ends_with("note.txt"));
@@ -14135,6 +17148,7 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.workspace_root = dir.path().to_path_buf();
         app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
         assert_eq!(app.mode, AppMode::QuickOpen);
         draw_frame(&app, 80, 24);
         let wanted = app
@@ -14172,6 +17186,7 @@ mod tests {
         let mut app = App::new(Buffer::empty(None));
         app.buffer.insert_text(&mut Cursor::default(), "let a = 1;");
         app.ai_context = Some(super::AiContextSnapshot {
+            buffer_identity: app.buffer.identity(),
             revision: app.buffer.revision(),
             range: Some((Cursor::new(0, 0), Cursor::new(0, 3))),
             before: "let".to_owned(),
@@ -14371,9 +17386,31 @@ mod tests {
     }
 
     #[test]
+    fn shell_suggestion_arrives_in_read_only_review_without_pty_input() {
+        let mut app = App::new(Buffer::empty(None));
+        let (sender, receiver) = mpsc::channel();
+        app.shell_receiver = Some(receiver);
+        app.ai_shell_request = true;
+        app.mode = AppMode::AiWaiting;
+        sender.send(Ok("printf reviewed".to_owned())).unwrap();
+        app.poll_shell_command();
+        assert_eq!(app.mode, AppMode::AiReview);
+        assert_eq!(app.ai_proposal.as_ref().unwrap().summary, "printf reviewed");
+        assert!(app.ai_proposal.as_ref().unwrap().replacement.is_none());
+        assert!(
+            app.clipboard.is_empty(),
+            "copy requires a separate explicit action"
+        );
+        app.handle_ai_review_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(app.terminal_sessions.is_empty());
+        assert!(app.clipboard.is_empty());
+    }
+
+    #[test]
     fn live_shell_command_is_suggested_and_never_run() {
         let mut app = App::new(Buffer::empty(None));
-        let (config, server) = fake_ai("```bash\n$ du -sh *\n```");
+        let (config, server) = fake_ai("du -sh *");
         app.ai_config = Some(config);
         app.execute(Command::AskAiShell);
         assert_eq!(app.mode, AppMode::AiPrompt);
@@ -14383,12 +17420,105 @@ mod tests {
             app.mode != AppMode::AiWaiting
         });
         let status = app.status.clone().unwrap_or_default();
-        assert!(status.starts_with("Suggested: du -sh *"), "{status}");
+        assert!(status.contains("nothing is inserted or run"), "{status}");
+        assert_eq!(app.mode, AppMode::AiReview);
+        assert_eq!(app.ai_proposal.as_ref().unwrap().summary, "du -sh *");
         assert!(
             app.terminal_sessions.is_empty(),
             "nothing was typed or started"
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn hostile_ai_shell_responses_cannot_execute_in_a_visible_real_pty() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("must-not-exist");
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_owned();
+        app.terminal_sessions
+            .push(PtySession::spawn_test_shell(1, dir.path()).unwrap());
+        app.terminal_visible = true;
+        app.terminal_focused = true;
+        assert_eq!(app.terminal_sessions.len(), 1);
+        for control in ['\r', '\n', '\u{1b}', '\0', '\u{85}', '\u{9b}'] {
+            let hostile = format!("printf audit > '{}'{}# ignored", marker.display(), control);
+            let (config, server) = fake_ai(&hostile);
+            app.ai_config = Some(config);
+            app.begin_ai_shell();
+            app.ai_query.set("suggest a command");
+            app.start_ai_request();
+            wait_until(&mut app, "rejected controls", |app| {
+                app.mode != AppMode::AiWaiting
+            });
+            assert_eq!(app.mode, AppMode::Editing);
+            assert!(
+                app.status
+                    .as_ref()
+                    .unwrap()
+                    .contains("Control bytes refused")
+            );
+            assert!(
+                !marker.exists(),
+                "control U+{:04X} executed",
+                control as u32
+            );
+            server.join().unwrap();
+        }
+        // Even an ordinary command is not appended to a partially typed line.
+        app.active_terminal_mut()
+            .unwrap()
+            .write_bytes(b"printf untouched")
+            .unwrap();
+        let (config, server) = fake_ai("printf must-not-be-inserted");
+        app.ai_config = Some(config);
+        app.begin_ai_shell();
+        app.ai_query.set("suggest a command");
+        app.start_ai_request();
+        wait_until(&mut app, "read-only command", |app| {
+            app.mode == AppMode::AiReview
+        });
+        app.handle_ai_review_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.active_terminal_mut()
+            .unwrap()
+            .write_bytes(b" > only-user-input\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !dir.path().join("only-user-input").exists() {
+            app.active_terminal_mut().unwrap().read_available().unwrap();
+            assert!(
+                Instant::now() < deadline,
+                "shell did not execute the explicit user input"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("only-user-input")).unwrap(),
+            "untouched"
+        );
+        assert!(!marker.exists());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn dismissing_ai_drops_late_shell_response_and_reports_transport_limit() {
+        let mut app = App::new(Buffer::empty(None));
+        let (sender, receiver) = mpsc::channel();
+        app.shell_receiver = Some(receiver);
+        app.ai_shell_request = true;
+        app.mode = AppMode::AiWaiting;
+        app.handle_ai_waiting_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(sender.send(Ok("printf late".to_owned())).is_err());
+        app.poll_shell_command();
+        assert_eq!(app.mode, AppMode::Editing);
+        assert!(app.ai_proposal.is_none());
+        assert!(
+            app.status
+                .as_ref()
+                .unwrap()
+                .contains("provider processing/billing may continue")
+        );
+        assert!(app.status.as_ref().unwrap().contains("usage is unknown"));
     }
 
     #[test]
@@ -14797,6 +17927,63 @@ mod tests {
         assert_eq!(app.buffer.line_text(1), "\t");
     }
 
+    fn wait_for_format(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while app.pending_format.is_some() && Instant::now() < deadline {
+            app.poll_format_save();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            app.pending_format.is_none(),
+            "formatter missed operation deadline"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_formatter_keeps_input_responsive_discards_stale_and_cancels() {
+        let (_dir, path, mut app) = format_fixture("a.py", "x=1\n", "sleep 0.3; sed 's/=/ = /'");
+        app.format_on_save = true;
+        let start = Instant::now();
+        app.execute(Command::Save);
+        app.execute(Command::Insert('#'));
+        app.execute(Command::ShowPalette);
+        assert!(start.elapsed() < Duration::from_millis(150));
+        assert_eq!(app.mode, AppMode::Palette);
+        wait_for_format(&mut app);
+        assert_eq!(app.buffer.contents(), "#x=1\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x=1\n");
+        app.mode = AppMode::Editing;
+        app.execute(Command::Save);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.pending_format.is_none());
+        assert!(app.buffer.is_dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x=1\n");
+    }
+
+    #[test]
+    fn inferred_and_editorconfig_indentation_reaches_enter_tab_and_outdent() {
+        for width in [2, 4, 8] {
+            let prefix = " ".repeat(width);
+            let (_dir, mut app) =
+                press_enter_at_end("a.yaml", &format!("parent:\n{prefix}child:\n"), 1);
+            assert_eq!(app.buffer.indent_width(), width);
+            assert_eq!(app.buffer.line_text(2), " ".repeat(width * 2));
+            app.execute(Command::Outdent);
+            assert_eq!(app.buffer.line_text(2), prefix);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*.{yaml,yml}]\nindent_size = 2\nindent_style = space\n",
+        )
+        .unwrap();
+        let path = dir.path().join("a.yml");
+        std::fs::write(&path, "parent:\n    child:\n").unwrap();
+        let buffer = Buffer::open(Some(path)).unwrap();
+        assert_eq!(buffer.indent_width(), 2);
+    }
+
     /// A workspace with `name` holding `text` and an executable fake
     /// formatter `fmt.sh` running `script` (stdin to stdout).
     #[cfg(unix)]
@@ -14819,11 +18006,106 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn execution_trust_does_not_follow_outside_files_or_symlink_aliases() {
+        use std::os::unix::fs::symlink;
+        for alias in [false, true] {
+            let (root, _, mut app) = format_fixture("inside.rs", "inside\n", "touch invoked; cat");
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("outside.rs");
+            std::fs::write(&target, "outside\n").unwrap();
+            let opened = if alias {
+                let link = root.path().join("alias.rs");
+                symlink(&target, &link).unwrap();
+                link
+            } else {
+                target.clone()
+            };
+            app.buffer = Buffer::open(Some(opened.clone())).unwrap();
+            app.format_on_save = true;
+            app.language_service_active = true;
+            assert!(!app.workspace_execution_allows(&opened));
+            app.restart_language_server(true);
+            assert!(
+                app.status
+                    .as_deref()
+                    .unwrap()
+                    .contains("execution restricted")
+            );
+            assert!(app.language_service.server_label().is_none());
+            assert!(app.language_service.last_error().is_none());
+            assert!(
+                !app.language_service.supported_for_current_language(),
+                "outside document was not opened on a service"
+            );
+            app.execute(Command::Insert('#'));
+            app.sync_all_open_language_documents();
+            app.execute(Command::Save);
+            assert!(app.pending_format.is_none());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "#outside\n");
+            assert!(!app.buffer.is_dirty());
+            assert!(
+                app.status
+                    .as_deref()
+                    .unwrap()
+                    .contains("execution restricted")
+            );
+            assert!(!root.path().join("invoked").exists());
+            assert!(!outside.path().join("invoked").exists());
+            assert!(app.language_service.server_label().is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_trust_allows_new_save_as_inside_the_canonical_root() {
+        let (root, _, mut app) = format_fixture("inside.rs", "inside\n", "touch invoked; cat");
+        app.format_on_save = true;
+        app.execute(Command::Insert('#'));
+        let destination = root.path().join("new.rs");
+        assert!(app.workspace_execution_allows(&destination));
+        app.start_format_save(destination.clone(), true, PostSaveAction::None);
+        assert!(app.pending_format.is_some());
+        wait_for_format(&mut app);
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "#inside\n");
+        assert!(root.path().join("invoked").exists());
+        assert!(!app.buffer.is_dirty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_trust_refuses_unresolved_and_component_prefix_paths() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("project");
+        let sibling = base.path().join("project-other");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = root.clone();
+        assert!(!app.workspace_execution_allows(&sibling.join("new.rs")));
+        assert!(!app.workspace_execution_allows(&root.join("missing/new.rs")));
+        let dangling = root.join("dangling.rs");
+        symlink(sibling.join("absent.rs"), &dangling).unwrap();
+        assert!(!app.workspace_execution_allows(&dangling));
+        let aliased_parent = root.join("linked");
+        symlink(&sibling, &aliased_parent).unwrap();
+        assert!(!app.workspace_execution_allows(&aliased_parent.join("new.rs")));
+        let trusted = root.join("inside.rs");
+        std::fs::write(&trusted, "inside").unwrap();
+        let back_link = sibling.join("back.rs");
+        symlink(&trusted, &back_link).unwrap();
+        assert!(!app.workspace_execution_allows(&back_link));
+        assert!(app.workspace_execution_allows(&root.join("new.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn format_on_save_runs_the_formatter_and_one_undo_restores_the_typed_text() {
         let (_dir, path, mut app) = format_fixture("calc.py", "x=1\n", "sed 's/=/ = /'");
         app.format_on_save = true;
         app.execute(Command::Insert('#'));
         app.execute(Command::Save);
+        wait_for_format(&mut app);
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "#x = 1\n");
         assert_eq!(app.status.as_deref(), Some("Saved · formatted with fmt.sh"));
@@ -14843,6 +18125,7 @@ mod tests {
         assert!(!app.format_on_save);
         app.execute(Command::Insert('#'));
         app.execute(Command::Save);
+        wait_for_format(&mut app);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "#x=1\n");
         assert_eq!(app.status.as_deref(), Some("Saved"));
     }
@@ -14859,6 +18142,7 @@ mod tests {
         app.format_on_save = true;
         app.execute(Command::Insert('#'));
         app.execute(Command::Save);
+        wait_for_format(&mut app);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "#echo hi\n");
         assert_eq!(
             app.status.as_deref(),
@@ -14869,6 +18153,7 @@ mod tests {
             .insert("Shell".to_owned(), "/nonexistent/shfmt".to_owned());
         app.execute(Command::Insert('#'));
         app.execute(Command::Save);
+        wait_for_format(&mut app);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "##echo hi\n");
         assert!(
             app.status.as_deref().is_some_and(|status| status
@@ -14885,6 +18170,7 @@ mod tests {
         app.format_on_save = true;
         app.execute(Command::Insert('#'));
         app.execute(Command::Save);
+        wait_for_format(&mut app);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "#a = 1\r\nb = 2\r\n"
@@ -14898,12 +18184,14 @@ mod tests {
         let path = dir.path().join("main.rs");
         std::fs::write(&path, "fn main(){let x=1;println!(\"{x}\");}\n").unwrap();
         let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
         app.formatter_overrides.clear();
         if crate::format::formatter_for("Rust", &path, &app.formatter_overrides).is_err() {
             return; // rustfmt not installed here
         }
         app.format_on_save = true;
         app.execute(Command::Save);
+        wait_for_format(&mut app);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n"
@@ -15526,7 +18814,7 @@ mod tests {
                     },
                     end: LspPosition {
                         line: 0,
-                        character: 1,
+                        character: 2,
                     },
                 },
                 new_text: "a".to_owned(),
@@ -15536,11 +18824,11 @@ mod tests {
                 range: crate::lsp::LspRange {
                     start: LspPosition {
                         line: 0,
-                        character: 0,
+                        character: 1,
                     },
                     end: LspPosition {
                         line: 0,
-                        character: 0,
+                        character: 1,
                     },
                 },
                 new_text: "b".to_owned(),
@@ -15785,6 +19073,32 @@ mod tests {
         assert!(app.buffer.is_dirty());
         assert!(app.buffer.undo(&mut app.cursor));
         assert_eq!(app.buffer.contents(), "alpha beta");
+    }
+
+    #[test]
+    fn ai_proposal_expires_for_a_reopened_buffer_with_matching_path_and_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.rs");
+        std::fs::write(&path, "alpha beta").unwrap();
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.ai_config = Some(test_ai_config(false));
+        app.selection_anchor = Some(Cursor::new(0, 6));
+        app.cursor = Cursor::new(0, 10);
+        app.begin_ai_intent();
+        let original_identity = app.buffer.identity();
+        let original_revision = app.buffer.revision();
+        app.buffer = Buffer::open(Some(path)).unwrap();
+        assert_ne!(app.buffer.identity(), original_identity);
+        assert_eq!(app.buffer.revision(), original_revision);
+        app.ai_proposal = Some(AiProposal {
+            summary: "Replace old selection".to_owned(),
+            replacement: Some("gamma".to_owned()),
+        });
+        app.mode = AppMode::AiReview;
+        app.apply_ai_proposal();
+        assert_eq!(app.buffer.contents(), "alpha beta");
+        assert!(!app.buffer.is_dirty());
+        assert!(app.status.as_ref().unwrap().contains("proposal expired"));
     }
 
     #[test]
