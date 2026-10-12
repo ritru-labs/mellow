@@ -1268,11 +1268,11 @@ fn start_page(app: &App, area: Rect) -> StartPage {
             let shown = path
                 .strip_prefix(app.workspace_root())
                 .unwrap_or(path.as_path());
-            let label = display_slice(
+            // A recent file outside the project shows its full path; keep the
+            // file name visible by shortening the middle, not the end.
+            let label = shorten_middle(
                 &shown.display().to_string(),
-                0,
                 left_width.saturating_sub(4) as usize,
-                TAB_WIDTH,
             );
             lines.push((
                 x0,
@@ -7136,8 +7136,15 @@ mod tests {
         use crate::buffer::Buffer;
         use ratatui::layout::Rect;
 
+        // Outside the workspace and deeper than the column, as macOS temp
+        // paths are: the file name must survive the shortening.
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("notes.md");
+        let folder = dir
+            .path()
+            .join("a-folder-name-long-enough-to-overflow")
+            .join("the-recent-files-column");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("notes.md");
         std::fs::write(&file, "# notes\n").unwrap();
         let mut app = App::new(Buffer::empty(None));
         app.recent_files = vec![file.clone()];
