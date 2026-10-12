@@ -356,7 +356,17 @@ impl Buffer {
     }
 
     pub fn language(&self) -> &'static str {
-        language_for_path(self.path.as_deref())
+        match language_for_path(self.path.as_deref()) {
+            "Plain Text" => self.language_from_shebang().unwrap_or("Plain Text"),
+            language => language,
+        }
+    }
+
+    /// Scripts without a known extension name their interpreter on the first line.
+    /// Only a short prefix is read, so a huge single-line file costs nothing extra.
+    fn language_from_shebang(&self) -> Option<&'static str> {
+        let head: String = self.text.chars().take(256).collect();
+        shell_language_from_shebang(head.lines().next().unwrap_or(""))
     }
 }
 
@@ -367,6 +377,18 @@ fn gcd_indent(mut a: usize, mut b: usize) -> usize {
         b = r;
     }
     a
+}
+
+/// The shell named by a `#!` line, if any. Other interpreters stay plain text.
+fn shell_language_from_shebang(first_line: &str) -> Option<&'static str> {
+    let mut words = first_line.strip_prefix("#!")?.split_whitespace();
+    let program = Path::new(words.next()?).file_name()?.to_str()?;
+    let interpreter = if program == "env" {
+        words.find(|word| !word.starts_with('-'))?
+    } else {
+        program
+    };
+    matches!(interpreter, "sh" | "bash" | "zsh" | "dash" | "ksh").then_some("Shell")
 }
 
 /// The language of a file name, as `Buffer::language` reports it.
@@ -2444,6 +2466,9 @@ mod tests {
 
         // A same-size rewrite that restores mtime still changes Unix ctime.
         // The poll may detect that; the full-content save check must always.
+        // Kernels without fine-grained timestamps stamp ctime at clock-tick
+        // resolution (up to 10 ms), so wait out one tick before rewriting.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let file = fs::File::options().write(true).open(&path).unwrap();
         (&file).write_all(b"bravo\n").unwrap();
         file.set_modified(old).unwrap();
@@ -2800,6 +2825,29 @@ mod tests {
         assert_eq!(py_buffer.language(), "Python");
         let untitled = Buffer::empty(None);
         assert_eq!(untitled.language(), "Plain Text");
+    }
+
+    #[test]
+    fn detects_shell_from_shebang_when_file_has_no_extension() {
+        let mut script = Buffer::empty(Some(PathBuf::from("deploy")));
+        let mut cursor = Cursor::new(0, 0);
+        script.insert_text(&mut cursor, "#!/usr/bin/env bash\necho hi\n");
+        assert_eq!(script.language(), "Shell");
+
+        let mut plain = Buffer::empty(Some(PathBuf::from("notes")));
+        let mut cursor = Cursor::new(0, 0);
+        plain.insert_text(&mut cursor, "just words\n");
+        assert_eq!(plain.language(), "Plain Text");
+
+        let mut python = Buffer::empty(Some(PathBuf::from("tool")));
+        let mut cursor = Cursor::new(0, 0);
+        python.insert_text(&mut cursor, "#!/usr/bin/python3\n");
+        assert_eq!(python.language(), "Plain Text");
+
+        let mut bare = Buffer::empty(Some(PathBuf::from("bare")));
+        let mut cursor = Cursor::new(0, 0);
+        bare.insert_text(&mut cursor, "#!/bin/sh");
+        assert_eq!(bare.language(), "Shell");
     }
 
     #[test]

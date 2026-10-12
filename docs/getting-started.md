@@ -21,7 +21,8 @@ follow the [PATH troubleshooting steps](faq.md#mellow-command-not-found).
 If the practice folder already exists, choose another name.
 
 `notes.txt` does not need to exist: Mellow opens a new buffer and creates the
-file when you save. Dismiss the first-run help screen if shown. Type:
+file when you save. The start page lists the first keys; press Enter or start
+typing to leave it. Type:
 
 ```text
 Hello from Mellow.

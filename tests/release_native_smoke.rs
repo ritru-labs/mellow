@@ -15,6 +15,9 @@ use std::{
 
 use tempfile::tempdir;
 
+/// Held while a PTY is opened and its child forked; see `spawn_mellow_with_env`.
+static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct ChildGuard {
     pid: libc::pid_t,
     reaped: bool,
@@ -266,6 +269,12 @@ fn spawn_mellow_with_env(
     let mut envp: Vec<_> = environment.iter().map(|value| value.as_ptr()).collect();
     envp.push(ptr::null());
 
+    // Tests fork on parallel threads. Without close-on-exec, a child started for
+    // one test keeps another test's PTY master open, so closing that master never
+    // hangs up its terminal. Mark both ends before any other spawn can fork.
+    let _spawning = SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut master_fd = -1;
     let mut slave_fd = -1;
 
@@ -309,6 +318,12 @@ fn spawn_mellow_with_env(
         "openpty failed: {}",
         std::io::Error::last_os_error()
     );
+    for fd in [master_fd, slave_fd] {
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+    }
 
     let mut initial_termios = std::mem::MaybeUninit::<libc::termios>::uninit();
     assert_eq!(
@@ -839,6 +854,161 @@ fn click_cell(
         format!("\x1b[<0;{};{}m", column + 1, row + 1).as_bytes(),
     );
     pump(master, captured, queries, Duration::from_millis(300));
+}
+
+#[test]
+fn live_start_page_replaces_the_first_run_guide() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let size = (100, 32);
+    let (_child, mut master) = spawn_mellow_with(
+        &binary_path,
+        workspace.path(),
+        None,
+        home.path(),
+        size,
+        false,
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_rows(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        size,
+        "the start page",
+        |rows| {
+            rows.iter().any(|row| row.contains("START"))
+                && rows.iter().any(|row| row.contains("LEARN"))
+        },
+    );
+    // A first run in a fresh home would also qualify for the guide; it must not
+    // be drawn over the start page, which already shows the first keys.
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(600),
+    );
+    let rows = rendered_rows(&captured, size);
+    assert!(
+        !rows.iter().any(|row| row.contains("no modes to learn")),
+        "first-run guide covers the start page:\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        rows.iter().any(|row| row.contains('╭')),
+        "start page card is missing:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// Waits for `pid` to disappear; kills it and returns false if it outlives the deadline.
+fn process_exits_within(pid: libc::pid_t, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    false
+}
+
+#[test]
+fn release_binary_exits_after_its_terminal_hangs_up() {
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("hangup.txt");
+    fs::write(&file, "keep\n").unwrap();
+
+    // Mellow leads the terminal's session, as when a terminal window runs it
+    // directly. Closing the PTY is that window closing.
+    let (mut child, mut master) = spawn_mellow(
+        binary_path.as_path(),
+        workspace.path(),
+        Some(&file),
+        home.path(),
+    );
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Ln 1, Col",
+        |screen| screen.contains("Ln 1, Col"),
+    );
+    drop(master);
+
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline && !child.try_reap() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !child.try_reap() {
+        unsafe { libc::kill(child.pid, libc::SIGKILL) };
+    }
+    assert!(
+        child.reaped,
+        "Mellow kept running after its terminal hung up"
+    );
+}
+
+#[test]
+fn release_binary_exits_when_its_launching_shell_ends() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let binary_path = std::env::var_os("MELLOW_SMOKE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_mellow").into());
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("shell.txt");
+    fs::write(&file, "keep\n").unwrap();
+
+    // A shell leads the session and runs Mellow in the foreground, as an SSH login
+    // does. The inner shell records Mellow's pid, then becomes Mellow.
+    let pid_file = workspace.path().join("mellow.pid");
+    let launcher = workspace.path().join("launcher.sh");
+    fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nsh -c 'echo $$ > \"$0\"; exec \"$@\"' \"{}\" \"{}\" \"$@\"\nexit $?\n",
+            pid_file.display(),
+            binary_path.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (_child, mut master) = spawn_mellow(&launcher, workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0usize;
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Ln 1, Col",
+        |screen| screen.contains("Ln 1, Col"),
+    );
+    let pid: libc::pid_t = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Dropping the connection hangs up the terminal and takes the shell with it.
+    drop(master);
+    assert!(
+        process_exits_within(pid, Duration::from_secs(6)),
+        "Mellow kept running after its launching shell ended"
+    );
 }
 
 #[test]

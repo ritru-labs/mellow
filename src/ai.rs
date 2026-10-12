@@ -1335,6 +1335,9 @@ mod tests {
         fs::write(&private, "ordinary fixture").unwrap();
         symlink(&private, &alias).unwrap();
         fs::write(&policy, "*.private\n").unwrap();
+        // A new file's mode follows the umask (0002 on Ubuntu gives 0664); start
+        // from the owner-only mode the check accepts, independent of the host.
+        fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(configured_deny_problem(&policy, alias.to_str().unwrap()).unwrap());
         assert!(!configured_deny_problem(&policy, "public.rs").unwrap());
         fs::write(&policy, "[unsupported\n").unwrap();

@@ -5,7 +5,8 @@ warnings) and go to definition (`F12`). Mellow does not bundle them: install the
 ones you need, and Mellow starts them when you open a matching file.
 
 Syntax highlighting works without any server, for Rust, Python, JSON, Shell,
-YAML and Terraform/HCL.
+YAML and Terraform/HCL. A file without an extension is treated as Shell when its
+first line is a `#!` line for `sh`, `bash`, `zsh`, `dash` or `ksh`.
 
 | Language | Server | Install | Use another program |
 | --- | --- | --- | --- |
