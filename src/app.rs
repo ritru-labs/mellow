@@ -615,7 +615,7 @@ pub struct App {
     pub quick_open_selected: usize,
     pub symbol_query: TextInput,
     pub symbol_selected: usize,
-    recent_files: Vec<PathBuf>,
+    pub(crate) recent_files: Vec<PathBuf>,
     pub explorer_visible: bool,
     pub explorer_focused: bool,
     pub explorer_files: Vec<workspace::ExplorerEntry>,
@@ -814,8 +814,14 @@ impl App {
             self.reload_explorer();
         }
         if !cfg!(test) && self.mode == AppMode::Editing && !settings::onboarding_seen() {
-            self.mode = AppMode::Onboarding;
-            self.clear_status();
+            if self.start_page_visible() {
+                // The start page already shows the first keys; a guide on top would
+                // cover it, so the start page counts as the welcome.
+                let _ = settings::mark_onboarding_seen();
+            } else {
+                self.mode = AppMode::Onboarding;
+                self.clear_status();
+            }
         }
     }
 
@@ -1120,6 +1126,8 @@ impl App {
             self.refresh_git_state(false);
             self.poll_external_file_changes();
             self.journal_if_due();
+            // Quit on a signal, or when the terminal has hung up (for example an SSH
+            // disconnect or a closed window): nothing can read keys or show the screen.
             if terminal::termination_requested() {
                 self.sync_recovery_journal();
                 self.flush_journal();
@@ -5965,6 +5973,7 @@ impl App {
             return;
         }
         self.last_external_scan = Instant::now();
+        self.refresh_explorer_if_changed();
 
         let mut reload = Vec::new();
         let mut dirty_conflicts = Vec::new();
@@ -8170,6 +8179,25 @@ impl App {
                 self.explorer_selected = 0;
                 self.fail(format!("Explorer refresh failed: {error}"));
             }
+        }
+    }
+
+    /// Shell commands can change the tree without any save through Mellow, so
+    /// rescan while the explorer is visible. The listing is replaced only when it
+    /// changed, which keeps the selection still when nothing new appeared.
+    fn refresh_explorer_if_changed(&mut self) {
+        if !self.explorer_visible {
+            return;
+        }
+        let Ok(entries) = workspace::discover_tree(&self.workspace_root, &self.explorer_expanded)
+        else {
+            return;
+        };
+        if entries != self.explorer_files {
+            self.explorer_files = entries;
+            self.explorer_selected = self
+                .explorer_selected
+                .min(self.explorer_files.len().saturating_sub(1));
         }
     }
 
@@ -15657,6 +15685,29 @@ mod tests {
             crossterm::event::KeyModifiers::empty(),
         ));
         assert!(!dir.path().join("lib").exists());
+    }
+
+    #[test]
+    fn explorer_lists_files_created_outside_mellow_while_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+
+        let mut app = App::new(Buffer::open(Some(dir.path().join("a.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.explorer_visible = true;
+        app.reload_explorer();
+
+        // The shell in the terminal panel creates this; Mellow never sees a save.
+        std::fs::write(dir.path().join("made_outside.txt"), "").unwrap();
+        app.last_external_scan = Instant::now() - Duration::from_secs(2);
+        app.poll_external_file_changes();
+
+        assert!(
+            app.explorer_files
+                .iter()
+                .any(|entry| entry.path == std::path::Path::new("made_outside.txt")),
+            "explorer did not list a file created outside Mellow"
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -1146,6 +1146,7 @@ pub enum StartAction {
 struct StartPage {
     lines: Vec<(u16, u16, Line<'static>)>,
     targets: Vec<(Rect, StartAction)>,
+    card: Rect,
 }
 
 /// Start page shown in place of an empty, untouched Untitled file: the few
@@ -1155,10 +1156,10 @@ fn start_page(app: &App, area: Rect) -> StartPage {
     let unicode = theme.unicode_symbols;
     let mut lines = Vec::new();
     let mut targets = Vec::new();
-    let width = area.width.saturating_sub(4).min(80);
+    let width = area.width.saturating_sub(10).min(76);
     let two_columns = width >= 66;
     let x0 = area.x + area.width.saturating_sub(width) / 2;
-    let content_height = 16u16;
+    let content_height = 22u16;
     let y0 = area.y + area.height.saturating_sub(content_height) / 3;
     let left_width = if two_columns { 40 } else { width };
     let right_x = x0 + 46;
@@ -1191,6 +1192,15 @@ fn start_page(app: &App, area: Rect) -> StartPage {
     ];
     let title_width = Line::from(title.clone()).width() as u16;
     lines.push((x0, y0, Line::from(title)));
+    let rule = if unicode { "─" } else { "-" };
+    lines.push((
+        x0,
+        y0 + 1,
+        Line::styled(
+            rule.repeat(width as usize),
+            Style::default().fg(theme.faint),
+        ),
+    ));
     // The project (and branch) sit at the right edge of the same row.
     let mut project = app.project_name();
     if app.git_repository_active() && !app.git_snapshot.branch.is_empty() {
@@ -1205,7 +1215,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
         ));
     }
 
-    lines.push((x0, y0 + 2, heading("START")));
+    lines.push((x0, y0 + 3, heading("START")));
     let start_items = [
         (
             "Open a file…",
@@ -1226,7 +1236,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
         ),
     ];
     for (offset, (label, key, command)) in start_items.into_iter().enumerate() {
-        let y = y0 + 3 + offset as u16;
+        let y = y0 + 4 + offset as u16;
         let key_width = UnicodeWidthStr::width(key.as_str());
         let gap = (left_width as usize).saturating_sub(2 + label.len() + key_width);
         lines.push((
@@ -1242,8 +1252,42 @@ fn start_page(app: &App, area: Rect) -> StartPage {
         targets.push((Rect::new(x0, y, left_width, 1), StartAction::Run(command)));
     }
 
+    // Files opened recently in this session, most recent first.
+    let mut y = y0 + 9;
+    let recent: Vec<std::path::PathBuf> = app
+        .recent_files
+        .iter()
+        .filter(|path| path.is_file())
+        .take(3)
+        .cloned()
+        .collect();
+    if !recent.is_empty() {
+        lines.push((x0, y, heading("RECENT")));
+        for path in recent {
+            y += 1;
+            let shown = path
+                .strip_prefix(app.workspace_root())
+                .unwrap_or(path.as_path());
+            let label = display_slice(
+                &shown.display().to_string(),
+                0,
+                left_width.saturating_sub(4) as usize,
+                TAB_WIDTH,
+            );
+            lines.push((
+                x0,
+                y,
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(label, Style::default().fg(theme.muted)),
+                ]),
+            ));
+            targets.push((Rect::new(x0, y, left_width, 1), StartAction::Open(path)));
+        }
+        y += 2;
+    }
+
     // What changed in this project: the files people usually come back to.
-    let mut y = y0 + 8;
     let changed: Vec<(std::path::PathBuf, &'static str)> = {
         let badges = app.explorer_badges();
         let mut files: Vec<_> = badges
@@ -1290,7 +1334,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
 
     // Right column (or below, when narrow): how to learn, and AI.
     let (rx, mut ry) = if two_columns {
-        (right_x, y0 + 2)
+        (right_x, y0 + 3)
     } else {
         (x0, y + 2)
     };
@@ -1375,7 +1419,21 @@ fn start_page(app: &App, area: Rect) -> StartPage {
                 .add_modifier(Modifier::ITALIC),
         ),
     ));
-    StartPage { lines, targets }
+    // A rounded card keeps the page together as one panel, with room around it.
+    let card_top = y0.saturating_sub(2).max(area.y);
+    let card_bottom = (footer_y + 2).min(area.bottom().saturating_sub(1));
+    let card = Rect::new(
+        x0.saturating_sub(3),
+        card_top,
+        width + 6,
+        card_bottom.saturating_sub(card_top) + 1,
+    )
+    .intersection(area);
+    StartPage {
+        lines,
+        targets,
+        card,
+    }
 }
 
 fn render_start_page(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1384,6 +1442,13 @@ fn render_start_page(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
     );
     let page = start_page(app, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.faint)),
+        page.card,
+    );
     let buffer = frame.buffer_mut();
     for (x, y, line) in page.lines {
         if y < area.bottom() && x < area.right() {
@@ -7062,6 +7127,42 @@ mod tests {
         let backend_small = TestBackend::new(60, 10);
         let mut terminal_small = Terminal::new(backend_small).unwrap();
         terminal_small.draw(|f| super::render(f, &app)).unwrap();
+    }
+
+    #[test]
+    fn start_page_lists_recent_files_as_targets_inside_a_card() {
+        use super::{StartAction, start_page};
+        use crate::app::App;
+        use crate::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "# notes\n").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.recent_files = vec![file.clone()];
+
+        let page = start_page(&app, Rect::new(0, 0, 100, 40));
+        let text: Vec<String> = page
+            .lines
+            .iter()
+            .map(|(_, _, line)| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let text = text.join("\n");
+        assert!(text.contains("RECENT"), "{text}");
+        assert!(text.contains("notes.md"), "{text}");
+        assert!(
+            page.targets
+                .iter()
+                .any(|(_, action)| *action == StartAction::Open(file.clone())),
+            "recent file is not a clickable start-page target"
+        );
+        assert!(page.card.width > 0 && page.card.height > 0);
     }
 
     #[test]

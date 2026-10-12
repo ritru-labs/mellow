@@ -31,7 +31,8 @@ to write the correction.
   `Enter`. Typing a path also lets you create a file.
   Recently opened files are listed first, so the file you were just in is one
   keystroke away.
-- **Browse:** `Ctrl+B` toggles the file tree.
+- **Browse:** `Ctrl+B` toggles the file tree. It updates within about a second when
+  files change, including files created with a command in the terminal.
 - **Search text:** press `Ctrl+F` twice to search all project files, or use
   **Search across project** in the command palette. Search for a setting name such
   as `service` and open the matching location.

@@ -66,6 +66,7 @@ struct Cli {
 fn main() -> Result<()> {
     terminal::install_panic_hook();
     terminal::install_signal_handlers()?;
+    exit_when_launcher_is_gone();
     let cli = Cli::parse();
     let mut paths = cli.paths;
     let goto = cli.goto.as_deref().map(parse_goto).transpose()?;
@@ -106,6 +107,22 @@ fn main() -> Result<()> {
     }
     let mut terminal = TerminalSession::new(!cli.no_mouse)?;
     app.run(terminal.terminal_mut())
+}
+
+/// Ends Mellow when the process that started it has gone, which is what an SSH
+/// disconnect or a closed window does to a shell. A dead terminal makes the event
+/// library spin inside its own reads, so this watches from a separate thread.
+/// Unsaved text is already in the crash journal.
+fn exit_when_launcher_is_gone() {
+    let launcher = unsafe { libc::getppid() };
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if unsafe { libc::getppid() } != launcher {
+                std::process::exit(0);
+            }
+        }
+    });
 }
 
 /// Stdin supplied the draft. Terminal negotiation and subsequent key input must
