@@ -5,9 +5,8 @@ Explicit Ask AI requests send the context shown in the prompt. If you separately
 enable inline suggestions, nearby code is sent automatically after typing
 pauses. Mellow does not give the AI shell or Git execution capabilities.
 
-These controls describe the unreleased audit candidate. Published v0.3.0
-predates the shell-review and redirect protections; this implementation has not
-published or upgraded any release.
+These controls arrived in 0.3.1 with the October audit. v0.3.0 and earlier
+predate the shell-review and redirect protections.
 
 ## Set up
 
