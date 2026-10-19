@@ -27,6 +27,7 @@ shortcuts before Mellow receives them.
 | --- | --- |
 | `Ctrl+Y` | Redo (also `Ctrl+Shift+Z`) |
 | `Ctrl+H` | Replace, with a preview |
+| `Ctrl+D` | Select next occurrence (multi-cursor) |
 | `Ctrl+G` | Go to line (and column) |
 | `Ctrl+PgDn` / `Ctrl+PgUp` | Next / previous file |
 | `Ctrl+/` | Comment line |

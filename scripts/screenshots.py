@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "images"
-BIN = sys.argv[1] if len(sys.argv) > 1 else shutil.which("mellow") or str(ROOT / "target/release/mellow")
+BIN = str(Path(sys.argv[1]).resolve()) if len(sys.argv) > 1 else shutil.which("mellow") or str(ROOT / "target/release/mellow")
 
 FONT_CANDIDATES = [
     os.environ.get("MELLOW_SCREENSHOT_FONT", ""),
@@ -163,19 +163,36 @@ def run_scene(project: Path, args, cols, rows, settings, steps):
 
     screen = pyte.Screen(cols, rows)
     stream = pyte.ByteStream(screen)
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(project)
-        env = {
-            "HOME": str(home), "PATH": os.environ["PATH"], "TERM": "xterm-256color",
-            "COLORTERM": "truecolor", "LANG": "en_US.UTF-8", "SHELL": "/bin/bash",
-            "XDG_CONFIG_HOME": str(home / "config"), "XDG_STATE_HOME": str(home / "state"),
-            "BASH_SILENCE_DEPRECATION_WARNING": "1",
-        }
-        os.execve(BIN, [BIN, *args], env)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    master_fd, slave_fd = pty.openpty()
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    env = {
+        "HOME": str(home), "PATH": os.environ["PATH"], "TERM": "xterm-256color",
+        "COLORTERM": "truecolor", "LANG": "en_US.UTF-8", "SHELL": "/bin/bash",
+        "XDG_CONFIG_HOME": str(home / "config"), "XDG_STATE_HOME": str(home / "state"),
+        "BASH_SILENCE_DEPRECATION_WARNING": "1",
+    }
+    def child_setup():
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    proc = subprocess.Popen(
+        [BIN, *args],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        cwd=str(project),
+        env=env,
+        preexec_fn=child_setup,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    fd = master_fd
+    captured = bytearray()
+    answered_6n = 0
+    answered_da = 0
 
     def pump(seconds):
+        nonlocal answered_6n, answered_da
         end = time.time() + seconds
         while time.time() < end:
             ready, _, _ = select.select([fd], [], [], 0.03)
@@ -185,27 +202,38 @@ def run_scene(project: Path, args, cols, rows, settings, steps):
                 chunk = os.read(fd, 65536)
             except OSError:
                 return
+            if not chunk:
+                return
+            captured.extend(chunk)
             stream.feed(chunk)
-            if b"\x1b[6n" in chunk:
+            total_6n = captured.count(b"\x1b[6n")
+            while answered_6n < total_6n:
                 os.write(fd, f"\x1b[{screen.cursor.y + 1};{screen.cursor.x + 1}R".encode())
-            if b"\x1b[c" in chunk:
-                os.write(fd, b"\x1b[?1;2c")
+                answered_6n += 1
+            total_da = captured.count(b"\x1b[c")
+            while answered_da < total_da:
+                os.write(fd, b"\x1b[?62c")
+                answered_da += 1
 
-    pump(2.5)
+    pump(2.0)
     for step in steps:
         if isinstance(step, (int, float)):
             pump(step)
         else:
             os.write(fd, step if isinstance(step, bytes) else step.encode())
             pump(0.35)
-    pump(1.5)
-    os.write(fd, b"\x11")  # Ctrl+Q
-    pump(0.5)
+    pump(1.0)
     try:
-        os.kill(pid, 9)
-        os.waitpid(pid, 0)
+        os.write(fd, b"\x11")  # Ctrl+Q
+        pump(0.3)
     except OSError:
         pass
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+    os.close(fd)
     return screen
 
 
@@ -256,6 +284,9 @@ def render(screen, title, scale=1.0):
             if ch.data.strip():
                 font = bold if ch.bold else regular
                 draw.text((left, y * cell_h + round(2 * scale)), ch.data, font=font, fill=fg)
+            if getattr(ch, "underscore", False):
+                uy = (y + 1) * cell_h - max(2, round(2 * scale))
+                draw.rectangle([left, uy, right, uy + max(2, round(2 * scale))], fill=fg)
     if not screen.cursor.hidden:
         cx = round(screen.cursor.x * cell_w)
         draw.rectangle([cx, screen.cursor.y * cell_h + 2, cx + max(2, round(2 * scale)), (screen.cursor.y + 1) * cell_h - 2], fill="#9ece6a")
@@ -350,7 +381,62 @@ def main():
         shots.append(render(screen, f"theme = {config}", scale=0.8))
     label_grid(shots, [name for _, name in themes], scale=0.8).save(OUT / "themes.png")
 
-    for name in ("hero.png", "palette.png", "settings.png", "themes.png"):
+    # 5. Developer UI workflows in 0.3.2: inline conflict pills + diagnostic lens,
+    #    interactive terminal controls + clickable file:line links, shell filter
+    #    prompt, and Git history commit diff preview.
+    conflict_file = project / "src/conflict_demo.rs"
+    conflict_file.write_text(
+        "<<<<<<< HEAD\n"
+        "pub fn max_climb_m() -> f64 { 1200.0 }\n"
+        "=======\n"
+        "pub fn max_climb_m() -> f64 { 1500.0 }\n"
+        ">>>>>>> feature/ridge\n"
+        "fn broken_syntax( {\n"
+    )
+    s_conflict = run_scene(
+        project, ["src/conflict_demo.rs"], 104, 26,
+        "theme = tokyo-night\n",
+        [b"\x1b[B"],
+    )
+    conflict_file.unlink()
+
+    s_term = run_scene(
+        project, ["src/route.rs"], 104, 26,
+        "theme = dark\n",
+        [b"\x14", 0.6, b"\x14", 0.3, b"\x10", 0.4, "New terminal session\r", 0.8,
+         "echo 'error --> src/route.rs:18:5: check pace_kmh'\r", 0.6],
+    )
+
+    s_filter = run_scene(
+        project, ["--trust", "forecast/forecast.py"], 104, 26,
+        "theme = catppuccin-mocha\n",
+        [b"\x01", 0.3, b"\x10", 0.4, "Filter selection through shell\r", 0.4, b"\t\t", 0.4],
+    )
+
+    s_history = run_scene(
+        project, ["src/route.rs"], 104, 26,
+        "theme = gruvbox-dark\n",
+        [b"\x10", 0.4, "Show Git history\r", 0.6, b"\x1b[B\x1b[B", 0.4] + [b"\x1b[1;2B"] * 14 + [0.4],
+    )
+
+    workflow_shots = [
+        render(s_conflict, "mellow — inline conflict pills & diagnostic lens", scale=0.8),
+        render(s_term, "mellow — terminal sessions, [↗ Tab] & file:line links", scale=0.8),
+        render(s_filter, "mellow — filter selection through shell", scale=0.8),
+        render(s_history, "mellow — Git history with commit diff preview", scale=0.8),
+    ]
+    label_grid(
+        workflow_shots,
+        [
+            "Inline Conflict Pills & Diagnostic Lens",
+            "Interactive Terminal Controls & Links",
+            "Filter Selection Through Shell",
+            "Git History with Commit Diff Preview",
+        ],
+        scale=0.8,
+    ).save(OUT / "dev-workflows.png")
+
+    for name in ("hero.png", "palette.png", "settings.png", "themes.png", "dev-workflows.png"):
         image = Image.open(OUT / name)
         print(f"wrote docs/images/{name}  {image.width}x{image.height}")
 

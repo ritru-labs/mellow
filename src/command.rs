@@ -39,6 +39,9 @@ pub enum Command {
     CloseTerminal,
     CycleTerminalSize,
     CopyTerminalScreen,
+    SendToTerminal,
+    OpenTerminalInBuffer,
+    FilterSelection,
     Quit,
     Undo,
     Redo,
@@ -182,6 +185,8 @@ impl Command {
                 | Self::PreviousTab
                 | Self::ToggleTerminal
                 | Self::NewTerminal
+                | Self::SendToTerminal
+                | Self::OpenTerminalInBuffer
                 | Self::Quit
                 | Self::ShowPalette
                 | Self::ShowHelp
@@ -357,7 +362,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         label: "Select next occurrence",
         category: "Workbench",
         help: "Add the next matching word or selection",
-        bindings: &[],
+        bindings: &[KeyBinding::CtrlChar('d')],
     },
     CommandSpec {
         command: Command::SelectAllOccurrences,
@@ -565,6 +570,30 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         label: "Copy terminal screen",
         category: "Terminal",
         help: "Copy the text on the terminal screen (scroll back first with Shift+PgUp)",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::SendToTerminal,
+        id: "terminal.send_selection",
+        label: "Send selection or line to terminal",
+        category: "Terminal",
+        help: "Send the selected text (or current line) into the active shell",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::OpenTerminalInBuffer,
+        id: "terminal.open_in_buffer",
+        label: "Open terminal output in editor tab",
+        category: "Terminal",
+        help: "Open the terminal's scrollback and screen as a searchable editor tab",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::FilterSelection,
+        id: "edit.filter_selection",
+        label: "Filter selection through shell command",
+        category: "Edit",
+        help: "Pipe the selection (or line) through a shell command such as sort, jq or awk",
         bindings: &[],
     },
     CommandSpec {

@@ -65,8 +65,15 @@ command. `Ctrl+T` returns focus to editing.
 
 Save first: an external command reads files on disk, not unsaved buffer text.
 Inside the terminal, keys go to the shell; `Ctrl+C` interrupts a process.
-The palette also offers **New terminal session**, **Next terminal session**,
-**Resize terminal panel** and **Close active terminal session**.
+The terminal's top border shows clickable session pills (`[1:zsh]`, `[+]`), a
+`● running` indicator while a foreground job is active, and `[↗ Tab]`,
+`[Normal]`/`[Tall]`/`[Max]` and `[×]` controls; you can also drag the top border
+to resize the panel. Compiler and test paths (`file:line` or `file:line:col`) in
+terminal output are underlined—click one to jump straight to that line in the
+editor. The palette also offers **New terminal session**, **Next terminal session**,
+**Resize terminal panel**, **Open terminal output in editor tab**, **Send
+selection or line to terminal**, **Filter selection through shell command** and
+**Close active terminal session**.
 
 ## Review and commit a Git change
 
@@ -109,9 +116,13 @@ cursor inside the block. The status line says so and names the three commands:
 - **Keep theirs in conflict:** keeps the incoming side.
 - **Keep both sides of conflict:** keeps both, yours first.
 
-Each choice is one edit, so `Ctrl+Z` undoes it. A side with nothing in it removes
+Each choice is one edit, so `Ctrl+Z` undoes it. You can also click `[Keep ours]`,
+`[Keep theirs]` or `[Keep both]` directly on the `<<<<<<<` line in the editor
+canvas. A side with nothing in it removes
 the marker lines. Mark the file resolved from **Git conflicts** once no markers
 remain.
+
+![Inline conflict pills, interactive terminal controls, shell filter prompt and Git history diff preview](images/dev-workflows.png){ .mellow-shot }
 
 ## Use the mouse
 

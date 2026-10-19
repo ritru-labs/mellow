@@ -9,7 +9,7 @@ away.
 
 ![Mellow editing a Rust project: file tree, Git changes in the gutter and the built-in terminal](docs/images/hero.png)
 
-**Version 0.3.1, beta.** Runs on macOS and Linux. Documentation:
+**Version 0.3.2, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
 
 ## Understand the project
@@ -82,13 +82,13 @@ ones yours can send. All keys: [Keys](https://ritru-labs.github.io/mellow/keys/)
 - No modes: typing types, and the keys you already know work.
 - Mouse support: click, drag, double-click, scroll.
 - Six themes, a project file tree, tabs and split panes.
-- Find and replace in a file or across the project.
+- Find and replace in a file or across the project, plus `Ctrl+D` multi-cursor selection and **Filter selection through shell command**.
 - Smart indentation as you type, and optional format on save with your
   language's formatter (rustfmt, ruff, shfmt, prettier...).
-- A Git panel: changes, staging, commit, branches, pull and push, all running in
+- A Git panel: changes, staging, commit, branches, history with commit diffs, inline conflict pills (`[Keep ours]` / `[Keep theirs]` / `[Keep both]`), pull and push, all running in
   the background.
-- A built-in terminal.
-- Language servers for completion, problems and go to definition.
+- A built-in terminal with clickable session tabs, `[↗ Tab]` scrollback export to an editor tab, drag-to-resize, and clickable `file:line:col` compiler links.
+- Language servers for completion, cursor-anchored hover & signature cards, inline diagnostic lenses, problems and go to definition.
 - Optional AI that shows every change for review before applying it.
 - Crash recovery: unsaved work comes back after a crash.
 

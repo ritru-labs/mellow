@@ -327,6 +327,46 @@ impl PtySession {
         contents.trim_end_matches('\n').to_owned()
     }
 
+    /// Full terminal history (scrollback plus live screen), preserving the
+    /// current scrollback view offset.
+    pub fn full_scrollback_text(&mut self) -> String {
+        let saved = self.scroll_offset();
+        let (rows, cols) = self.parser.screen().size();
+        let page = (rows as usize).max(1);
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let mut offset = self.parser.screen().scrollback();
+        if offset == 0 {
+            self.parser.screen_mut().set_scrollback(saved);
+            return self.screen_text();
+        }
+
+        let mut lines: Vec<String> = self
+            .parser
+            .screen()
+            .rows(0, cols)
+            .map(|line| line.trim_end().to_owned())
+            .collect();
+        while offset > 0 {
+            let next = offset.saturating_sub(page);
+            let advanced = offset - next;
+            self.parser.screen_mut().set_scrollback(next);
+            let skip = page.saturating_sub(advanced);
+            lines.extend(
+                self.parser
+                    .screen()
+                    .rows(0, cols)
+                    .skip(skip)
+                    .map(|line| line.trim_end().to_owned()),
+            );
+            offset = next;
+        }
+        self.parser.screen_mut().set_scrollback(saved);
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+
     /// True while a program other than the shell owns the terminal (a build,
     /// a server, an editor...): closing would kill it.
     pub fn has_running_job(&self) -> bool {

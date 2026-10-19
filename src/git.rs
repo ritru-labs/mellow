@@ -779,6 +779,38 @@ impl GitRepository {
         Ok(commits)
     }
 
+    /// Patch and stat summary for one commit (`git show`), capped to 500 lines
+    /// so browsing history stays instant even on large commits.
+    pub fn commit_diff(&self, oid: &str) -> Result<String> {
+        let oid = oid.trim();
+        if oid.is_empty() || !oid.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            bail!("invalid commit oid");
+        }
+        let output = self.git(&[
+            "show",
+            "--no-color",
+            "--no-ext-diff",
+            "--format=format:",
+            "--stat",
+            "--patch",
+            "--unified=3",
+            oid,
+        ])?;
+        if !output.status.success() {
+            bail!("git show failed: {}", stderr_text(&output));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines: Vec<&str> = text
+            .lines()
+            .skip_while(|line| line.trim().is_empty())
+            .take(500)
+            .collect();
+        if text.lines().count() > 500 {
+            lines.push("… (commit diff truncated at 500 lines)");
+        }
+        Ok(lines.join("\n"))
+    }
+
     pub fn conflict_paths(&self) -> Result<Vec<PathBuf>> {
         let output = self.git(&["ls-files", "-u", "-z"])?;
         if !output.status.success() {
