@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.2 (beta)
+
+Interactive terminal controls, inline canvas actions, and shell filter workflows.
+
+### Added
+
+- **Built-in terminal controls & editor integration:**
+  - Clickable session pills (`[1:zsh]`, `[2:sh]`, `[+]`), a live `● running` indicator when a foreground job owns the PTY, and `[↗ Tab]`, `[Normal]`/`[Tall]`/`[Max]` and `[×]` controls in the terminal top border, plus drag-to-resize on the top border.
+  - Workspace `file:line` and `file:line:col` paths in terminal output are underlined; clicking one opens the file at that line and column in the editor.
+  - **Open terminal output in editor tab** (`terminal.open_in_buffer` / `[↗ Tab]`): opens the active terminal's full scrollback and screen history as a searchable editor tab.
+  - **Send selection or line to terminal** (`terminal.send_selection`): sends the active selection or current line into the running shell.
+- **Filter selection through shell command** (`edit.filter_selection`): pipes the selected text (or current line) through a shell command (`sort`, `sort -u`, `jq .`, `column -t`, `wc -l` presets via `Tab`) and replaces it as a single undoable edit (`Ctrl+Z`).
+- **Inline merge-conflict pills:** `[Keep ours]`, `[Keep theirs]` and `[Keep both]` are drawn directly on `<<<<<<<` conflict header lines in the editor canvas and resolve the conflict block on click.
+- **Inline diagnostic lens & gutter clicks:** the active cursor line shows `● <message>  [Fix with AI]` after the code; clicking a gutter problem dot (`●`) opens Problems at that diagnostic, and clicking a Git gutter marker (`+`, `~`, `-`) opens Changes at that hunk.
+- **1-cell overview scrollbar rail:** shows viewport thumb position (`▐`) plus error, warning and search-match ticks along the right edge of the editor pane; clicking the rail scrolls directly to that region.
+- **Clickable breadcrumb bar:** clicking the trailing symbol opens **Go to symbol**, clicking a folder opens **Open file** scoped to that directory, and clicking the save-state badge saves the file.
+- **Cursor-anchored Hover & Signature card:** language-server hover and signature help render in a floating card next to the cursor (`Esc` or moving the cursor dismisses it).
+- **Commit diff preview in Git history:** selecting a commit in **Show Git history** previews its `git show` stat and patch below the commit list (`Shift+↑/↓` scrolls the diff).
+- **Select next occurrence (`Ctrl+D`):** bound `Ctrl+D` to select the word at the cursor and add multi-cursors to subsequent matches.
+
 ## 0.3.1 (beta)
 
 The October deep audit, plus fixes found while testing it on Ubuntu and CentOS.
