@@ -2911,3 +2911,122 @@ fn release_binary_claude_redirect_never_contacts_key_target() {
     server.join().unwrap();
     assert!(!String::from_utf8_lossy(&captured).contains("synthetic-audit-key"));
 }
+
+#[test]
+fn release_binary_interactive_conflict_pills_filter_and_terminal_buffer_flow() {
+    let workspace = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let file = workspace.path().join("workflow.txt");
+    fs::write(
+        &file,
+        "<<<<<<< HEAD\nzebra\napple\n=======\ntheirs\n>>>>>>> branch\n",
+    )
+    .unwrap();
+    let (_child, mut master) =
+        spawn_mellow(&smoke_binary(), workspace.path(), Some(&file), home.path());
+    let mut captured = Vec::new();
+    let mut queries = 0;
+    start_editor(&mut master, &mut captured, &mut queries);
+
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "inline conflict pills on editor canvas",
+        |screen| screen.contains("[Keep ours]") && screen.contains("[Keep theirs]"),
+    );
+
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Keep ours in conflict",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "conflict resolved to ours",
+        |screen| screen.contains("zebra") && !screen.contains("<<<<<<<"),
+    );
+
+    trust_workspace(&mut master, &mut captured, &mut queries);
+    write_all(&mut master, &[0x01]); // Ctrl+A select all
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(100),
+    );
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Filter selection through shell command",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "filter prompt open",
+        |screen| screen.contains("Filter selection through shell"),
+    );
+    write_all(&mut master, b"\t\r"); // Tab -> sort, Enter -> apply
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "filtered with sort",
+        |screen| screen.contains("Filtered with `sort`"),
+    );
+    write_all(&mut master, &[0x13]); // Ctrl+S save
+    wait_for_saved_text(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        &file,
+        "apple\nzebra\n",
+    );
+
+    // Open built-in terminal, emit output, and open terminal output in an editor tab.
+    write_all(&mut master, &[0x14]); // Ctrl+T open terminal
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "terminal panel visible",
+        |screen| screen.contains("Terminal · "),
+    );
+    write_all(&mut master, b"echo MELLOW_PTY_SCROLLBACK_OK\n");
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "shell echoed marker",
+        |screen| screen.contains("MELLOW_PTY_SCROLLBACK_OK"),
+    );
+    write_all(&mut master, &[0x14]); // Ctrl+T back to editor
+    pump(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        Duration::from_millis(100),
+    );
+    palette_command(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "Open terminal output in editor tab",
+    );
+    wait_for_screen_state(
+        &mut master,
+        &mut captured,
+        &mut queries,
+        "terminal output opened in new tab",
+        |screen| {
+            screen.contains("Opened terminal output")
+                && screen.contains("2 │ MELLOW_PTY_SCROLLBACK_OK")
+                && screen.contains("[↗ Tab]")
+        },
+    );
+}
