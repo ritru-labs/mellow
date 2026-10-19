@@ -95,6 +95,7 @@ pub enum AppMode {
     GitConflicts,
     Symbols,
     Utility,
+    FilterPrompt,
 }
 
 #[derive(Debug)]
@@ -479,6 +480,24 @@ struct LspInteractionState {
     cursor: Cursor,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverCard {
+    pub buffer: u64,
+    pub revision: u64,
+    pub cursor: Cursor,
+    pub title: &'static str,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSessionSummary {
+    pub index: usize,
+    pub id: usize,
+    pub label: String,
+    pub active: bool,
+    pub running_job: bool,
+}
+
 pub struct App {
     pub buffer: Buffer,
     pub cursor: Cursor,
@@ -657,6 +676,8 @@ pub struct App {
     pub git_branch_query: TextInput,
     pub git_history: Vec<GitCommit>,
     pub git_history_selected: usize,
+    pub git_history_diff: String,
+    pub git_history_diff_scroll: usize,
     pub git_blame: Vec<GitBlameLine>,
     pub git_blame_selected: usize,
     pub git_conflicts: Vec<PathBuf>,
@@ -669,6 +690,8 @@ pub struct App {
     syntax_document: Option<SyntaxDocument>,
     language_service: LanguageService,
     language_service_active: bool,
+    pub hover_card: Option<HoverCard>,
+    pub filter_query: TextInput,
     pub terminal_visible: bool,
     /// Size the terminal panel takes when shown (never `Hidden`).
     terminal_size: ui::TerminalPanel,
@@ -685,6 +708,7 @@ pub struct App {
     split_ratio: u16,
     split_orientation: SplitOrientation,
     is_resizing_split: bool,
+    is_resizing_terminal: bool,
     workspace_root: PathBuf,
     page_rows: usize,
     should_quit: bool,
@@ -1031,6 +1055,8 @@ impl App {
             git_branch_query: TextInput::default(),
             git_history: Vec::new(),
             git_history_selected: 0,
+            git_history_diff: String::new(),
+            git_history_diff_scroll: 0,
             git_blame: Vec::new(),
             git_blame_selected: 0,
             git_conflicts: Vec::new(),
@@ -1047,6 +1073,8 @@ impl App {
             syntax_document,
             language_service: LanguageService::default(),
             language_service_active: false,
+            hover_card: None,
+            filter_query: TextInput::default(),
             terminal_visible: false,
             terminal_size: ui::TerminalPanel::Normal,
             terminal_focused: false,
@@ -1062,6 +1090,7 @@ impl App {
             split_ratio: 50,
             split_orientation: SplitOrientation::SideBySide,
             is_resizing_split: false,
+            is_resizing_terminal: false,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             page_rows: 12,
             should_quit: false,
@@ -1336,6 +1365,7 @@ impl App {
             AppMode::GitBlame => self.handle_git_blame_key(key),
             AppMode::GitConflicts => self.handle_git_conflicts_key(key),
             AppMode::Symbols => self.handle_symbols_key(key),
+            AppMode::FilterPrompt => self.handle_filter_prompt_key(key),
             AppMode::Editing => {
                 if self.ghost_is_visible() {
                     match key.code {
@@ -2982,6 +3012,7 @@ impl App {
             AppMode::GitBranchCreate | AppMode::GitBranchRename => {
                 self.git_branch_query.insert_text(text)
             }
+            AppMode::FilterPrompt => self.filter_query.insert_text(text),
             AppMode::ConfirmQuit
             | AppMode::ConfirmCloseTab
             | AppMode::Help
@@ -3692,6 +3723,215 @@ impl App {
 
     pub fn active_terminal_label(&self) -> Option<&str> {
         self.active_terminal_ref().map(PtySession::label)
+    }
+
+    pub fn active_terminal_has_running_job(&self) -> bool {
+        self.active_terminal_ref()
+            .is_some_and(PtySession::has_running_job)
+    }
+
+    pub fn terminal_summaries(&self) -> Vec<TerminalSessionSummary> {
+        self.terminal_sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| TerminalSessionSummary {
+                index,
+                id: session.id(),
+                label: session.label().to_owned(),
+                active: index == self.active_terminal,
+                running_job: session.has_running_job(),
+            })
+            .collect()
+    }
+
+    pub fn switch_terminal_session(&mut self, index: usize) {
+        if index >= self.terminal_sessions.len() {
+            return;
+        }
+        self.active_terminal = index;
+        self.terminal_visible = true;
+        self.terminal_focused = true;
+        self.explorer_focused = false;
+        let id = self.terminal_sessions[self.active_terminal].id();
+        self.terminal_status = Some(format!("Terminal {id} active"));
+    }
+
+    fn send_selection_to_terminal(&mut self) {
+        let mut text = if let Some(rect_text) = self.rectangular_text() {
+            rect_text
+        } else if let Some((start, end)) = self.selection_range() {
+            self.buffer.get_text_range(start, end)
+        } else {
+            self.buffer.line_text(self.cursor.row)
+        };
+        if text.trim().is_empty() {
+            self.notify("Select text or move to a non-empty line to send to terminal".to_owned());
+            return;
+        }
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        self.ensure_terminal_session();
+        if self.terminal_sessions.is_empty() {
+            return;
+        }
+        self.terminal_visible = true;
+        if let Some(session) = self.active_terminal_mut() {
+            session.follow_output();
+            match session.write_bytes(text.as_bytes()) {
+                Ok(()) => self.notify("Sent to terminal".to_owned()),
+                Err(error) => self.fail(format!("Terminal write failed: {error}")),
+            }
+        }
+    }
+
+    fn open_terminal_in_buffer(&mut self) {
+        let Some(session) = self.active_terminal_mut() else {
+            self.notify("No terminal is open".to_owned());
+            return;
+        };
+        let text = session.full_scrollback_text();
+        self.new_untitled_tab();
+        if !text.is_empty() {
+            self.buffer.restore_recovery_text(&text);
+            let last_row = self.buffer.line_count().saturating_sub(1);
+            self.cursor = Cursor::new(last_row, 0);
+            self.should_scroll_to_cursor = true;
+        }
+        self.terminal_focused = false;
+        self.explorer_focused = false;
+        self.notify("Opened terminal output in a new tab".to_owned());
+    }
+
+    fn begin_filter_selection(&mut self) {
+        if !self.workspace_trusted {
+            self.fail(
+                "Filter selection requires workspace trust · run Trust workspace execution first"
+                    .to_owned(),
+            );
+            return;
+        }
+        self.filter_query.clear();
+        self.mode = AppMode::FilterPrompt;
+        self.clear_status();
+    }
+
+    fn handle_filter_prompt_key(&mut self, key: KeyEvent) {
+        const SUGGESTIONS: [&str; 5] = ["sort", "sort -u", "jq .", "column -t", "wc -l"];
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Editing;
+                self.clear_status();
+            }
+            KeyCode::Tab => {
+                let current = self.filter_query.as_str();
+                let next = SUGGESTIONS
+                    .iter()
+                    .position(|candidate| *candidate == current)
+                    .map_or(0, |index| (index + 1) % SUGGESTIONS.len());
+                self.filter_query.set(SUGGESTIONS[next]);
+            }
+            KeyCode::Left => self.filter_query.move_left(),
+            KeyCode::Right => self.filter_query.move_right(),
+            KeyCode::Home => self.filter_query.home(),
+            KeyCode::End => self.filter_query.end(),
+            KeyCode::Backspace => {
+                self.filter_query.backspace();
+            }
+            KeyCode::Delete => {
+                self.filter_query.delete();
+            }
+            KeyCode::Enter => self.apply_filter_selection(),
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+                ) =>
+            {
+                self.filter_query.insert_char(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_filter_selection(&mut self) {
+        let cmd = self.filter_query.as_str().trim().to_owned();
+        if cmd.is_empty() {
+            self.fail("Type a shell command to filter through (for example: sort)".to_owned());
+            return;
+        }
+        if !self.workspace_trusted {
+            self.mode = AppMode::Editing;
+            self.fail("Filter selection requires workspace trust".to_owned());
+            return;
+        }
+        let (start, end) = self.selection_range().unwrap_or_else(|| {
+            let row = self.cursor.row;
+            (
+                Cursor::new(row, 0),
+                Cursor::new(row, self.buffer.grapheme_count(row)),
+            )
+        });
+        let input = self.buffer.get_text_range(start, end);
+        let ended_with_newline = input.ends_with('\n');
+        let mut stdin_text = input.clone();
+        if !stdin_text.ends_with('\n') {
+            stdin_text.push('\n');
+        }
+        let path = self
+            .buffer
+            .path()
+            .cloned()
+            .unwrap_or_else(|| self.workspace_root.join("filter.txt"));
+        let argv = vec!["/bin/sh".to_owned(), "-c".to_owned(), cmd.clone()];
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        match crate::format::run_process(
+            &argv,
+            &stdin_text,
+            &path,
+            &cancelled,
+            Duration::from_secs(5),
+            2 * 1024 * 1024,
+        ) {
+            Ok(output) if output.success => {
+                let crlf = self.buffer.line_ending() == crate::buffer::LineEnding::CrLf;
+                let mut replacement = crate::format::match_line_endings(&output.stdout, crlf);
+                if !ended_with_newline {
+                    if let Some(stripped) = replacement.strip_suffix("\r\n") {
+                        replacement = stripped.to_owned();
+                    } else if let Some(stripped) = replacement.strip_suffix('\n') {
+                        replacement = stripped.to_owned();
+                    }
+                }
+                let pre_cursor = self.cursor;
+                let pre_anchor = self.selection_anchor;
+                self.buffer
+                    .replace_range(start, end, &replacement, &mut self.cursor);
+                self.selection_anchor = Some(start);
+                self.buffer.set_last_history_state(
+                    pre_cursor,
+                    pre_anchor,
+                    self.cursor,
+                    self.selection_anchor,
+                );
+                self.mode = AppMode::Editing;
+                self.sync_code_intelligence_after_edit();
+                self.notify(format!("Filtered with `{cmd}` · Ctrl+Z undoes it"));
+            }
+            Ok(output) => {
+                let detail = output
+                    .stderr
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("command exited with an error");
+                self.mode = AppMode::Editing;
+                self.fail(format!("Filter `{cmd}` failed: {detail}"));
+            }
+            Err(error) => {
+                self.mode = AppMode::Editing;
+                self.fail(format!("Filter `{cmd}` failed: {error}"));
+            }
+        }
     }
 
     pub fn terminal_screen_snapshot(
@@ -4647,11 +4887,21 @@ impl App {
             && intent.cursor == self.cursor
     }
 
+    pub fn active_hover_card(&self) -> Option<&HoverCard> {
+        self.hover_card.as_ref().filter(|card| {
+            self.mode == AppMode::Editing
+                && card.buffer == self.buffer.identity()
+                && card.revision == self.buffer.revision()
+                && card.cursor == self.cursor
+        })
+    }
+
     fn cancel_lsp_interactions(&mut self) {
         self.definition_intent = None;
         self.references_intent = None;
         self.hover_intent = None;
         self.signature_intent = None;
+        self.hover_card = None;
         self.language_service.cancel_interactions();
     }
 
@@ -4765,6 +5015,19 @@ impl App {
                     {
                         continue;
                     }
+                    if let Some(ref text) = contents
+                        && !text.trim().is_empty()
+                    {
+                        self.hover_card = Some(HoverCard {
+                            buffer: self.buffer.identity(),
+                            revision: self.buffer.revision(),
+                            cursor: self.cursor,
+                            title: "Hover",
+                            text: text.clone(),
+                        });
+                    } else {
+                        self.hover_card = None;
+                    }
                     self.status =
                         Some(contents.unwrap_or_else(|| "No hover information".to_owned()));
                 }
@@ -4775,6 +5038,17 @@ impl App {
                         .is_some_and(|intent| self.lsp_interaction_is_current(&intent))
                     {
                         continue;
+                    }
+                    if !signatures.is_empty() {
+                        self.hover_card = Some(HoverCard {
+                            buffer: self.buffer.identity(),
+                            revision: self.buffer.revision(),
+                            cursor: self.cursor,
+                            title: "Signature",
+                            text: signatures.join("\n"),
+                        });
+                    } else {
+                        self.hover_card = None;
                     }
                     self.notify(
                         signatures
@@ -6608,10 +6882,18 @@ impl App {
     /// Keeps one side of the merge-conflict block under the cursor. This is
     /// one undoable edit, and the cursor moves to the start of the result.
     fn resolve_conflict_at_cursor(&mut self, choice: crate::conflict::ConflictChoice) {
+        self.resolve_conflict_at_row(self.cursor.row, choice);
+    }
+
+    pub fn resolve_conflict_at_row(
+        &mut self,
+        target_row: usize,
+        choice: crate::conflict::ConflictChoice,
+    ) {
         let lines: Vec<String> = (0..self.buffer.line_count())
             .map(|row| self.buffer.line_text(row))
             .collect();
-        let Some(block) = crate::conflict::block_at(&lines, self.cursor.row) else {
+        let Some(block) = crate::conflict::block_at(&lines, target_row) else {
             self.notify("The cursor is not inside a merge conflict".to_owned());
             return;
         };
@@ -7335,6 +7617,7 @@ impl App {
             Ok(history) => {
                 self.git_history = history;
                 self.git_history_selected = 0;
+                self.refresh_selected_git_history_diff();
                 self.mode = AppMode::GitHistory;
                 self.clear_status();
             }
@@ -7342,7 +7625,45 @@ impl App {
         }
     }
 
+    fn refresh_selected_git_history_diff(&mut self) {
+        self.git_history_diff_scroll = 0;
+        let Some(commit) = self.git_history.get(self.git_history_selected) else {
+            self.git_history_diff.clear();
+            return;
+        };
+        let Some(repository) = self.git_repository.as_ref() else {
+            self.git_history_diff.clear();
+            return;
+        };
+        self.git_history_diff = repository.commit_diff(&commit.oid).unwrap_or_default();
+    }
+
+    pub fn selected_git_history_diff_lines(&self) -> usize {
+        self.git_history_diff.lines().count()
+    }
+
     fn handle_git_history_key(&mut self, key: KeyEvent) {
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT)
+        {
+            let step = match key.code {
+                KeyCode::Up => Some(-1),
+                KeyCode::Down => Some(1),
+                KeyCode::PageUp => Some(-10),
+                KeyCode::PageDown => Some(10),
+                _ => None,
+            };
+            if let Some(step) = step {
+                let last = self.selected_git_history_diff_lines().saturating_sub(1);
+                self.git_history_diff_scroll = self
+                    .git_history_diff_scroll
+                    .saturating_add_signed(step)
+                    .min(last);
+                return;
+            }
+        }
+        let selected_before = self.git_history_selected;
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Editing;
@@ -7369,6 +7690,9 @@ impl App {
             KeyCode::Home => self.git_history_selected = 0,
             KeyCode::End => self.git_history_selected = self.git_history.len().saturating_sub(1),
             _ => {}
+        }
+        if self.git_history_selected != selected_before {
+            self.refresh_selected_git_history_diff();
         }
     }
 
@@ -10464,10 +10788,21 @@ impl App {
         };
         let already = *selected == index;
         *selected = index;
+        if !already {
+            if self.mode == AppMode::GitHistory {
+                self.refresh_selected_git_history_diff();
+            } else if self.mode == AppMode::Changes {
+                self.changes_diff_scroll = 0;
+            }
+        }
         // Git changes previews the selected change, so the first click shows it.
         let two_step = matches!(
             self.mode,
-            AppMode::GitBranches | AppMode::CodeActions | AppMode::Changes | AppMode::GitBlame
+            AppMode::GitBranches
+                | AppMode::CodeActions
+                | AppMode::Changes
+                | AppMode::GitBlame
+                | AppMode::GitHistory
         );
         if two_step && !already {
             RowClick::Select
@@ -10668,9 +11003,77 @@ impl App {
             return;
         }
 
+        if self.is_resizing_terminal {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let available =
+                        terminal_height.saturating_sub(ui::chrome_rows(terminal_height));
+                    let desired = terminal_height
+                        .saturating_sub(ui::footer_rows(terminal_height))
+                        .saturating_sub(mouse.row);
+                    self.terminal_size = if desired >= available.saturating_sub(2) {
+                        ui::TerminalPanel::Maximized
+                    } else if desired >= (available / 2).max(5) {
+                        ui::TerminalPanel::Tall
+                    } else {
+                        ui::TerminalPanel::Normal
+                    };
+                    self.resize_active_terminal(terminal_width, terminal_height);
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.is_resizing_terminal = false;
+                    self.resize_active_terminal(terminal_width, terminal_height);
+                    self.notify(format!(
+                        "Terminal size: {}",
+                        match self.terminal_size {
+                            ui::TerminalPanel::Tall => "tall",
+                            ui::TerminalPanel::Maximized => "maximized",
+                            _ => "normal",
+                        }
+                    ));
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if self.terminal_visible
             && ui::terminal_contains_row(terminal_height, self.terminal_panel(), mouse.row)
         {
+            let terminal_top = ui::editor_bottom_row(terminal_height, self.terminal_panel());
+            if mouse.row == terminal_top
+                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            {
+                match ui::terminal_header_hit(self, terminal_width, mouse.column) {
+                    Some(ui::TerminalHeaderHit::Session(index)) => {
+                        self.switch_terminal_session(index);
+                    }
+                    Some(ui::TerminalHeaderHit::NewSession) => {
+                        self.execute(Command::NewTerminal);
+                    }
+                    Some(ui::TerminalHeaderHit::OpenInBuffer) => {
+                        self.execute(Command::OpenTerminalInBuffer);
+                    }
+                    Some(ui::TerminalHeaderHit::CycleSize) => {
+                        self.execute(Command::CycleTerminalSize);
+                    }
+                    Some(ui::TerminalHeaderHit::Close) => {
+                        self.execute(Command::CloseTerminal);
+                    }
+                    Some(ui::TerminalHeaderHit::ToggleFocus) => {
+                        self.execute(Command::ToggleTerminal);
+                    }
+                    None => {
+                        self.is_resizing_terminal = true;
+                        self.status = Some(
+                            "Drag terminal top border to resize · release to keep size".to_owned(),
+                        );
+                    }
+                }
+                return;
+            }
+
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                 self.terminal_focused = true;
                 self.explorer_focused = false;
@@ -10683,8 +11086,7 @@ impl App {
             if let Some((cols, rows)) =
                 ui::terminal_content_size(terminal_width, terminal_height, self.terminal_panel())
             {
-                let content_top =
-                    ui::editor_bottom_row(terminal_height, self.terminal_panel()).saturating_add(1);
+                let content_top = terminal_top.saturating_add(1);
                 let content_left = 1u16;
                 if mouse.column >= content_left
                     && mouse.column < content_left.saturating_add(cols)
@@ -10693,6 +11095,63 @@ impl App {
                 {
                     let local_col = mouse.column.saturating_sub(content_left);
                     let local_row = mouse.row.saturating_sub(content_top);
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                        let wants_mouse = self
+                            .active_terminal_ref()
+                            .is_some_and(PtySession::wants_mouse);
+                        if !wants_mouse
+                            || mouse
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            let jumped =
+                                self.terminal_screen_snapshot(rows, cols)
+                                    .and_then(|snapshot| {
+                                        let row_cells =
+                                            snapshot.rows.get(usize::from(local_row))?;
+                                        let row_text: String = row_cells
+                                            .iter()
+                                            .filter(|cell| !cell.wide_continuation)
+                                            .map(|cell| {
+                                                if cell.contents.is_empty() {
+                                                    " "
+                                                } else {
+                                                    cell.contents.as_str()
+                                                }
+                                            })
+                                            .collect();
+                                        let col_idx = usize::from(local_col);
+                                        ui::terminal_row_locations(&row_text, &self.workspace_root)
+                                            .into_iter()
+                                            .find(|link| {
+                                                col_idx >= link.start_col && col_idx < link.end_col
+                                            })
+                                    });
+                            if let Some(link) = jumped {
+                                self.remember_navigation();
+                                if let Err(error) = self.open_path_in_tab(link.path.clone()) {
+                                    self.fail(format!("Open failed: {error}"));
+                                } else {
+                                    self.cursor = Cursor::new(
+                                        link.cursor
+                                            .row
+                                            .min(self.buffer.line_count().saturating_sub(1)),
+                                        link.cursor.col,
+                                    );
+                                    self.clamp_cursor();
+                                    self.selection_anchor = None;
+                                    self.terminal_focused = false;
+                                    self.should_scroll_to_cursor = true;
+                                    self.notify(format!(
+                                        "Opened {}:{} from terminal",
+                                        self.short_path(&link.path),
+                                        self.cursor.row + 1
+                                    ));
+                                }
+                                return;
+                            }
+                        }
+                    }
                     let wheel = match mouse.kind {
                         MouseEventKind::ScrollUp => Some(3),
                         MouseEventKind::ScrollDown => Some(-3),
@@ -10956,8 +11415,23 @@ impl App {
                             self.explorer_focused = true;
                             self.terminal_focused = false;
                         } else {
-                            // The breadcrumb is a doorway to every other file.
-                            self.execute(Command::OpenFile);
+                            match ui::breadcrumb_hit(self, terminal_width, mouse.column) {
+                                Some(ui::BreadcrumbHit::SaveState) => {
+                                    self.execute(Command::Save);
+                                }
+                                Some(ui::BreadcrumbHit::Symbol) => {
+                                    self.execute(Command::GoToSymbol);
+                                }
+                                Some(ui::BreadcrumbHit::Folder(prefix)) => {
+                                    self.execute(Command::OpenFile);
+                                    self.quick_open_query.set(prefix);
+                                    self.refresh_quick_open_candidates();
+                                }
+                                Some(ui::BreadcrumbHit::File) | None => {
+                                    // The breadcrumb is a doorway to every other file.
+                                    self.execute(Command::OpenFile);
+                                }
+                            }
                         }
                     }
                     return;
@@ -11049,7 +11523,86 @@ impl App {
                 }
 
                 let gutter = ui::gutter_width(self.buffer.line_count());
+                let (_, pane_height) =
+                    self.active_pane_vertical_geometry(terminal_width, editor_top, editor_bottom);
+                let visible_rows = pane_height.max(1) as usize;
+                if !self.word_wrap
+                    && self.buffer.line_count() > visible_rows
+                    && pane_width >= 48
+                    && local_column == pane_width.saturating_sub(1)
+                {
+                    let target = ui::scrollbar_target_row(
+                        self.buffer.line_count(),
+                        visible_rows,
+                        usize::from(local_row),
+                    );
+                    self.scroll_row = target;
+                    self.cursor.row = target
+                        .saturating_add(usize::from(local_row))
+                        .min(self.buffer.line_count().saturating_sub(1));
+                    self.clamp_cursor();
+                    self.should_scroll_to_cursor = false;
+                    return;
+                }
+
                 let screen_col = local_column.saturating_sub(gutter) as usize;
+                if !self.word_wrap {
+                    let clicked_row = self.scroll_row + usize::from(local_row);
+                    if clicked_row < self.buffer.line_count() {
+                        if local_column == gutter.saturating_sub(1) {
+                            let problems = self.problem_items();
+                            if let Some(index) = problems.iter().position(|problem| {
+                                problem.cursor.row == clicked_row
+                                    && problem.path == self.buffer.path().cloned()
+                            }) {
+                                self.problem_selected = index;
+                                self.execute(Command::ShowProblems);
+                                return;
+                            }
+                        } else if local_column == gutter.saturating_sub(2)
+                            && self
+                                .git_line_change_for_path(
+                                    self.buffer.path().map(|p| p.as_path()),
+                                    clicked_row,
+                                )
+                                .is_some()
+                        {
+                            if let Some(relative) =
+                                self.buffer.path().map(|p| self.workspace_relative(p))
+                                && let Some(index) =
+                                    self.git_snapshot.hunks.iter().position(|hunk| {
+                                        let start = hunk.new_start.saturating_sub(1);
+                                        let end = start + hunk.new_count.max(1);
+                                        hunk.path == relative && (start..end).contains(&clicked_row)
+                                    })
+                            {
+                                self.changes_selected = index;
+                                self.changes_diff_scroll = 0;
+                            }
+                            self.execute(Command::ShowChanges);
+                            return;
+                        } else if local_column >= gutter {
+                            let display_col = self.scroll_col + screen_col;
+                            if let Some(choice) =
+                                ui::conflict_pill_hit(&self.buffer, clicked_row, display_col)
+                            {
+                                self.resolve_conflict_at_row(clicked_row, choice);
+                                return;
+                            }
+                            match ui::diagnostic_lens_hit(self, clicked_row, display_col) {
+                                Some(ui::DiagnosticLensHit::FixWithAi) => {
+                                    self.execute(Command::FixProblemWithAi);
+                                    return;
+                                }
+                                Some(ui::DiagnosticLensHit::Problems) => {
+                                    self.execute(Command::ShowProblems);
+                                    return;
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
                 let (row, col) = if self.word_wrap {
                     let text_width = pane_width.saturating_sub(gutter).max(1) as usize;
                     let layout = VisualLayout::new(
@@ -11861,6 +12414,9 @@ impl App {
                 }
                 None => self.notify("No terminal is open".to_owned()),
             },
+            Command::SendToTerminal => self.send_selection_to_terminal(),
+            Command::OpenTerminalInBuffer => self.open_terminal_in_buffer(),
+            Command::FilterSelection => self.begin_filter_selection(),
             Command::Quit => self.begin_quit(),
             Command::Undo => {
                 if self.run_workspace_history_step(false).is_some() {
@@ -19260,5 +19816,145 @@ mod tests {
         ));
         assert_eq!(app.mode, AppMode::Editing);
         assert_eq!(app.cursor, Cursor::new(2, 5));
+    }
+
+    #[test]
+    fn ctrl_d_selects_next_occurrence_and_edits_together() {
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer
+            .insert_text(&mut app.cursor, "alpha beta alpha gamma");
+        app.cursor = Cursor::new(0, 2);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.occurrence_ranges.len(), 2);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('X'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.buffer.line_text(0), "X beta X gamma");
+    }
+
+    #[test]
+    fn filter_selection_pipes_through_shell_and_undoes_in_one_step() {
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_trusted = true;
+        app.buffer
+            .insert_text(&mut app.cursor, "cherry\napple\nbanana");
+        app.selection_anchor = Some(Cursor::new(0, 0));
+        app.cursor = Cursor::new(2, 6);
+
+        app.execute(Command::FilterSelection);
+        assert_eq!(app.mode, AppMode::FilterPrompt);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.filter_query.as_str(), "sort");
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.contents(), "apple\nbanana\ncherry");
+
+        app.execute(Command::Undo);
+        assert_eq!(app.buffer.contents(), "cherry\napple\nbanana");
+    }
+
+    #[test]
+    fn clicking_inline_conflict_pill_resolves_conflict_and_is_undoable() {
+        let mut app = App::new(Buffer::empty(None));
+        app.buffer.insert_text(
+            &mut app.cursor,
+            "<<<<<<< HEAD\nours_line\n=======\ntheirs_line\n>>>>>>> topic\n",
+        );
+        app.cursor = Cursor::new(0, 0);
+        let gutter = ui::gutter_width(app.buffer.line_count());
+        let line_w = app
+            .buffer
+            .display_width_before(0, app.buffer.grapheme_count(0), 4);
+        let pill_col = gutter + line_w as u16 + 3;
+
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: pill_col,
+                row: ui::HEADER_ROWS,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            100,
+            24,
+        );
+        assert_eq!(app.buffer.line_text(0), "ours_line");
+        app.execute(Command::Undo);
+        assert!(app.buffer.line_text(0).starts_with("<<<<<<<"));
+    }
+
+    #[test]
+    fn breadcrumb_clicks_route_to_symbol_outline_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("demo.rs");
+        std::fs::write(&file, "fn alpha() {\n    let x = 1;\n}\n").unwrap();
+        let mut app = App::new(Buffer::open(Some(file)).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.cursor = Cursor::new(1, 4);
+
+        let sym_col = (0..100)
+            .find(|&col| ui::breadcrumb_hit(&app, 100, col) == Some(ui::BreadcrumbHit::Symbol))
+            .expect("symbol segment is clickable in breadcrumb");
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: sym_col,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            100,
+            24,
+        );
+        assert_eq!(app.mode, AppMode::Symbols);
+    }
+
+    #[test]
+    fn git_history_loads_commit_diff_and_scrolls_with_shift_arrows() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "Test"]);
+        let path = dir.path().join("notes.txt");
+        let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&path, lines).unwrap();
+        git(&["add", "notes.txt"]);
+        git(&["commit", "-q", "-m", "initial commit"]);
+
+        let mut app = App::new(Buffer::open(Some(path)).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::GitHistory);
+        assert_eq!(app.mode, AppMode::GitHistory);
+        assert!(
+            app.git_history_diff.contains("+line 1"),
+            "{}",
+            app.git_history_diff
+        );
+        app.handle_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.git_history_diff_scroll, 1);
     }
 }

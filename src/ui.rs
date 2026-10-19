@@ -268,7 +268,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     render_status(frame, rows[3], app);
 
     match app.mode {
-        AppMode::Editing => {}
+        AppMode::Editing => {
+            if let Some(card) = app.active_hover_card() {
+                render_hover_card(frame, area, app, card);
+            }
+        }
+        AppMode::FilterPrompt => render_filter_prompt(frame, area, app),
         AppMode::ConfirmQuit => render_quit_confirmation(frame, area, app),
         AppMode::ConfirmCloseTab => render_close_tab_confirmation(frame, area, app),
         AppMode::ConfirmCloseTerminal => render_close_terminal_confirmation(frame, area, app),
@@ -612,6 +617,85 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+/// What a click on header row 1 (the breadcrumb bar) means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BreadcrumbHit {
+    SaveState,
+    Symbol,
+    Folder(String),
+    File,
+}
+
+pub fn breadcrumb_hit(app: &App, width: u16, column: u16) -> Option<BreadcrumbHit> {
+    let explorer = explorer_width(width, app.explorer_visible, app.split_enabled());
+    if column < explorer {
+        return None;
+    }
+    let state_text = if app.buffer.is_dirty() {
+        "* Unsaved"
+    } else if !app.buffer.is_persisted() {
+        "new"
+    } else {
+        "+ Saved"
+    };
+    let outside = app.buffer_outside_workspace();
+    let right = if outside {
+        format!("outside project  {state_text} ")
+    } else {
+        format!("{state_text} ")
+    };
+    let right_width = UnicodeWidthStr::width(right.as_str()) as u16;
+    let right_x = width.saturating_sub(right_width);
+    if column >= right_x {
+        return Some(BreadcrumbHit::SaveState);
+    }
+
+    let left_x = explorer + 1;
+    let available = right_x.saturating_sub(left_x + 2) as usize;
+    let separator = if app.theme.unicode_symbols {
+        " › "
+    } else {
+        " / "
+    };
+    let sep_width = UnicodeWidthStr::width(separator) as u16;
+    let full_path_segments = app.breadcrumb_segments();
+    let has_symbol = app.enclosing_symbol().is_some();
+    let mut segments = app.breadcrumb_with_symbol();
+    let mut dropped = 0usize;
+    while segments.len() > 1
+        && UnicodeWidthStr::width(segments.join(separator).as_str()) > available.saturating_sub(4)
+    {
+        segments.remove(0);
+        dropped += 1;
+    }
+
+    let mut x = left_x;
+    if dropped > 0 {
+        x = x.saturating_add(1 + sep_width);
+    }
+    let last = segments.len().saturating_sub(1);
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            x = x.saturating_add(sep_width);
+        }
+        let seg_text = display_slice(segment, 0, available, TAB_WIDTH);
+        let seg_w = UnicodeWidthStr::width(seg_text.as_str()) as u16;
+        if column >= x && column < x.saturating_add(seg_w) {
+            if has_symbol && index == last {
+                return Some(BreadcrumbHit::Symbol);
+            }
+            let original_idx = dropped + index;
+            if original_idx + 1 < full_path_segments.len() {
+                let prefix = format!("{}/", full_path_segments[..=original_idx].join("/"));
+                return Some(BreadcrumbHit::Folder(prefix));
+            }
+            return Some(BreadcrumbHit::File);
+        }
+        x = x.saturating_add(seg_w);
+    }
+    Some(BreadcrumbHit::File)
+}
+
 /// Row 1: a "FILES" caption over the explorer, then where you are and
 /// whether your work is saved.
 fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -752,15 +836,254 @@ fn terminal_color(color: crate::pty::TerminalColor, default: Color) -> Color {
     }
 }
 
+/// What a click on the built-in terminal's top border means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalHeaderHit {
+    Session(usize),
+    NewSession,
+    OpenInBuffer,
+    CycleSize,
+    ToggleFocus,
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalPathLink {
+    pub start_col: usize,
+    pub end_col: usize,
+    pub path: std::path::PathBuf,
+    pub cursor: crate::cursor::Cursor,
+}
+
+/// Finds `file:line` and `file:line:col` tokens in a terminal row that point
+/// to an existing file in `root`.
+pub fn terminal_row_locations(row_text: &str, root: &std::path::Path) -> Vec<TerminalPathLink> {
+    let mut links = Vec::new();
+    let mut display_col = 0usize;
+    let mut token_start_col = 0usize;
+    let mut token = String::new();
+
+    let flush = |token: &mut String,
+                 start_col: usize,
+                 _end_col: usize,
+                 links: &mut Vec<TerminalPathLink>| {
+        if token.is_empty() {
+            return;
+        }
+        let raw = token.as_str();
+        let trimmed = raw.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"' | ',' | ';'
+            )
+        });
+        let leading_trim = raw.find(trimmed).unwrap_or(0);
+        let lead_w = UnicodeWidthStr::width(&raw[..leading_trim]);
+        let core = trimmed.trim_end_matches(':');
+        let core_w = UnicodeWidthStr::width(core);
+        if let Some((path, cursor)) = parse_terminal_path_token(core, root) {
+            links.push(TerminalPathLink {
+                start_col: start_col + lead_w,
+                end_col: start_col + lead_w + core_w,
+                path,
+                cursor,
+            });
+        }
+        token.clear();
+    };
+
+    for grapheme in row_text.graphemes(true) {
+        let w = UnicodeWidthStr::width(grapheme).max(1);
+        if grapheme.chars().all(char::is_whitespace) {
+            flush(&mut token, token_start_col, display_col, &mut links);
+            display_col += w;
+            token_start_col = display_col;
+        } else {
+            if token.is_empty() {
+                token_start_col = display_col;
+            }
+            token.push_str(grapheme);
+            display_col += w;
+        }
+    }
+    flush(&mut token, token_start_col, display_col, &mut links);
+    links
+}
+
+fn parse_terminal_path_token(
+    token: &str,
+    root: &std::path::Path,
+) -> Option<(std::path::PathBuf, crate::cursor::Cursor)> {
+    let mut pieces = token.rsplitn(3, ':');
+    let last = pieces.next()?.parse::<usize>().ok()?;
+    let head = pieces.next()?;
+    let (path_text, row, col) = if let Ok(row) = head.parse::<usize>() {
+        (pieces.next()?, row, last)
+    } else {
+        (token.rsplit_once(':')?.0, last, 1)
+    };
+    if row == 0 || col == 0 || path_text.is_empty() || path_text.chars().any(char::is_control) {
+        return None;
+    }
+    let clean = path_text.strip_prefix("./").unwrap_or(path_text);
+    let candidate = std::path::Path::new(clean);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    if !resolved.is_file() {
+        return None;
+    }
+    Some((resolved, crate::cursor::Cursor::new(row - 1, col - 1)))
+}
+
+struct TerminalHeaderLayout {
+    title: String,
+    hint: String,
+    pills: Vec<(u16, String, TerminalHeaderHit, bool)>,
+    controls: Vec<(u16, &'static str, TerminalHeaderHit)>,
+    hint_x: u16,
+    hint_width: u16,
+}
+
+fn terminal_header_layout(app: &App, width: u16) -> TerminalHeaderLayout {
+    let unicode = app.theme.unicode_symbols;
+    let active_number = app.active_terminal_index().saturating_add(1);
+    let total = app.terminal_session_count();
+    let label = app.active_terminal_label().unwrap_or("shell");
+    let scrolled = app.terminal_scroll_offset();
+    let running_note = if app.active_terminal_has_running_job() {
+        if unicode {
+            "· ● running "
+        } else {
+            "· * running "
+        }
+    } else {
+        ""
+    };
+    let scroll_note = if scrolled > 0 {
+        format!("· ↑ {scrolled} lines back · Shift+PgDn ")
+    } else {
+        String::new()
+    };
+    let title = if total > 1 {
+        format!(" Terminal {active_number} of {total} · {label} {running_note}{scroll_note}")
+    } else {
+        format!(" Terminal · {label} {running_note}{scroll_note}")
+    };
+    let toggle = app.shortcut_label(Command::ToggleTerminal);
+    let hint = match (&toggle, app.terminal_focused) {
+        (Some(key), true) => format!(" {key} back to editor "),
+        (Some(key), false) => format!(" {key} to type here "),
+        (None, true) => " Click the editor to go back ".to_owned(),
+        (None, false) => " Click here to type ".to_owned(),
+    };
+    let hint_width = UnicodeWidthStr::width(hint.as_str()) as u16;
+    let hint_x = width.saturating_sub(1 + hint_width);
+
+    let size_label = match app.terminal_panel() {
+        TerminalPanel::Tall => "[Tall]",
+        TerminalPanel::Maximized => "[Max]",
+        _ => "[Normal]",
+    };
+    let close_label = if unicode { "[×]" } else { "[x]" };
+    let buffer_label = if unicode { "[↗ Tab]" } else { "[^ Tab]" };
+
+    let mut controls = Vec::new();
+    let mut right_cursor = hint_x.saturating_sub(1);
+    if width >= 76 {
+        for (text, hit) in [
+            (close_label, TerminalHeaderHit::Close),
+            (size_label, TerminalHeaderHit::CycleSize),
+            (buffer_label, TerminalHeaderHit::OpenInBuffer),
+        ] {
+            let w = UnicodeWidthStr::width(text) as u16;
+            if right_cursor <= UnicodeWidthStr::width(title.as_str()) as u16 + w + 4 {
+                break;
+            }
+            right_cursor = right_cursor.saturating_sub(w);
+            controls.push((right_cursor, text, hit));
+            right_cursor = right_cursor.saturating_sub(1);
+        }
+        controls.reverse();
+    }
+
+    let mut pills = Vec::new();
+    let mut left_cursor = 1 + UnicodeWidthStr::width(title.as_str()) as u16 + 1;
+    let max_left = controls
+        .first()
+        .map_or(hint_x, |(x, _, _)| *x)
+        .saturating_sub(1);
+    if width >= 72 {
+        let summaries = app.terminal_summaries();
+        if summaries.len() > 1 {
+            for summary in &summaries {
+                let job = if summary.running_job {
+                    if unicode { "●" } else { "*" }
+                } else {
+                    ""
+                };
+                let text = format!("[{}:{}{job}]", summary.index + 1, summary.label);
+                let w = UnicodeWidthStr::width(text.as_str()) as u16;
+                if left_cursor + w + 5 > max_left {
+                    break;
+                }
+                pills.push((
+                    left_cursor,
+                    text,
+                    TerminalHeaderHit::Session(summary.index),
+                    summary.active,
+                ));
+                left_cursor += w + 1;
+            }
+        }
+        if left_cursor + 3 <= max_left {
+            pills.push((
+                left_cursor,
+                "[+]".to_owned(),
+                TerminalHeaderHit::NewSession,
+                false,
+            ));
+        }
+    }
+
+    TerminalHeaderLayout {
+        title,
+        hint,
+        pills,
+        controls,
+        hint_x,
+        hint_width,
+    }
+}
+
+pub fn terminal_header_hit(app: &App, width: u16, column: u16) -> Option<TerminalHeaderHit> {
+    let layout = terminal_header_layout(app, width);
+    for (x, text, hit, _) in &layout.pills {
+        let w = UnicodeWidthStr::width(text.as_str()) as u16;
+        if column >= *x && column < x + w {
+            return Some(*hit);
+        }
+    }
+    for (x, text, hit) in &layout.controls {
+        let w = UnicodeWidthStr::width(*text) as u16;
+        if column >= *x && column < x + w {
+            return Some(*hit);
+        }
+    }
+    if column >= layout.hint_x && column < layout.hint_x + layout.hint_width {
+        return Some(TerminalHeaderHit::ToggleFocus);
+    }
+    None
+}
+
 fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.height == 0 {
         return;
     }
 
     let theme = app.theme;
-    let active_number = app.active_terminal_index().saturating_add(1);
-    let total = app.terminal_session_count();
-    let label = app.active_terminal_label().unwrap_or("shell");
     let accent = if app.terminal_focused {
         theme.mint
     } else {
@@ -770,38 +1093,42 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let provisional_inner_width = area.width.saturating_sub(2);
     let provisional_inner_height = area.height.saturating_sub(2);
     let snapshot = app.terminal_screen_snapshot(provisional_inner_height, provisional_inner_width);
-    let scrolled = app.terminal_scroll_offset();
-    let scroll_note = if scrolled > 0 {
-        format!("· ↑ {scrolled} lines back · Shift+PgDn ")
-    } else {
-        String::new()
-    };
-    let title = if total > 1 {
-        format!(" Terminal {active_number} of {total} · {label} {scroll_note}")
-    } else {
-        format!(" Terminal · {label} {scroll_note}")
-    };
-    let toggle = app.shortcut_label(Command::ToggleTerminal);
-    let hint = match (&toggle, app.terminal_focused) {
-        (Some(key), true) => format!(" {key} back to editor "),
-        (Some(key), false) => format!(" {key} to type here "),
-        (None, true) => " Click the editor to go back ".to_owned(),
-        (None, false) => " Click here to type ".to_owned(),
-    };
+    let header = terminal_header_layout(app, area.width);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(rounded_border(theme.unicode_symbols))
         .border_style(Style::default().fg(accent))
         .title(Span::styled(
-            title,
+            header.title.clone(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ))
-        .title_top(Line::styled(hint, Style::default().fg(accent)).right_aligned())
+        .title_top(Line::styled(header.hint.clone(), Style::default().fg(accent)).right_aligned())
         .style(Style::default().bg(theme.elevated));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    let top_buf = frame.buffer_mut();
+    for (x, text, _, active) in &header.pills {
+        let style = if *active {
+            Style::default()
+                .fg(theme.canvas)
+                .bg(theme.mint)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text).bg(theme.elevated2)
+        };
+        top_buf.set_string(area.x + *x, area.y, text, style);
+    }
+    for (x, text, _) in &header.controls {
+        top_buf.set_string(
+            area.x + *x,
+            area.y,
+            text,
+            Style::default().fg(theme.text).bg(theme.elevated2),
+        );
+    }
 
     let Some(snapshot) = snapshot else {
         frame.render_widget(
@@ -814,8 +1141,20 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let mut lines = Vec::with_capacity(inner.height as usize);
     for row in snapshot.rows.iter().take(inner.height as usize) {
+        let row_text: String = row
+            .iter()
+            .filter(|cell| !cell.wide_continuation)
+            .map(|cell| {
+                if cell.contents.is_empty() {
+                    " "
+                } else {
+                    cell.contents.as_str()
+                }
+            })
+            .collect();
+        let links = terminal_row_locations(&row_text, app.workspace_root());
         let mut spans = Vec::new();
-        for cell in row {
+        for (col_idx, cell) in row.iter().enumerate() {
             if cell.wide_continuation {
                 continue;
             }
@@ -824,8 +1163,15 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 cell.contents.clone()
             };
+            let in_link = links
+                .iter()
+                .any(|link| col_idx >= link.start_col && col_idx < link.end_col);
             let mut style = Style::default()
-                .fg(terminal_color(cell.fg, theme.text))
+                .fg(if in_link {
+                    theme.mint
+                } else {
+                    terminal_color(cell.fg, theme.text)
+                })
                 .bg(terminal_color(cell.bg, theme.elevated));
             let mut modifiers = Modifier::empty();
             if cell.bold {
@@ -837,7 +1183,7 @@ fn render_terminal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             if cell.italic {
                 modifiers |= Modifier::ITALIC;
             }
-            if cell.underline {
+            if cell.underline || in_link {
                 modifiers |= Modifier::UNDERLINED;
             }
             if cell.inverse {
@@ -1662,6 +2008,22 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &App, view: Editor
         area,
     );
 
+    if view.focused && !app.word_wrap && text_width > 24 {
+        render_inline_conflict_and_diagnostic_overlays(
+            frame.buffer_mut(),
+            area,
+            app,
+            view,
+            gutter,
+            visible_rows,
+            &problems,
+        );
+    }
+
+    if !app.word_wrap && view.buffer.line_count() > visible_rows && area.width >= 48 {
+        render_overview_scrollbar(frame.buffer_mut(), area, app, view, visible_rows, &problems);
+    }
+
     // Lines that continue past the right edge get a quiet marker, so long
     // commands are never silently cut off.
     if !app.word_wrap && text_width > 1 {
@@ -1847,6 +2209,287 @@ fn render_ghost(
     );
     if !suffix.is_empty() && used + suffix.len() < width {
         buffer.set_string(x + used as u16, y, suffix, Style::default().fg(theme.mint));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticLensHit {
+    Problems,
+    FixWithAi,
+}
+
+const CONFLICT_PILLS: [(&str, crate::conflict::ConflictChoice); 3] = [
+    ("[Keep ours]", crate::conflict::ConflictChoice::Ours),
+    ("[Keep theirs]", crate::conflict::ConflictChoice::Theirs),
+    ("[Keep both]", crate::conflict::ConflictChoice::Both),
+];
+
+/// Returns the conflict choice if `display_col` lands on one of the inline
+/// conflict pills drawn on a `<<<<<<<` header row.
+pub fn conflict_pill_hit(
+    buffer: &crate::buffer::Buffer,
+    row: usize,
+    display_col: usize,
+) -> Option<crate::conflict::ConflictChoice> {
+    if row >= buffer.line_count() || !buffer.line_text(row).starts_with("<<<<<<<") {
+        return None;
+    }
+    let end = (row + 500).min(buffer.line_count());
+    let window: Vec<String> = (row..end).map(|r| buffer.line_text(r)).collect();
+    let block = crate::conflict::block_at(&window, 0)?;
+    if block.start != 0 {
+        return None;
+    }
+    let line_width =
+        buffer.display_width_before(row, buffer.grapheme_count(row), buffer.indent_width());
+    let mut col = line_width + 2;
+    for (label, choice) in CONFLICT_PILLS {
+        let w = label.len();
+        if display_col >= col && display_col < col + w {
+            return Some(choice);
+        }
+        col += w + 2;
+    }
+    None
+}
+
+/// Returns the action if `display_col` lands on the active row's inline
+/// diagnostic lens (`● <message>  [Fix with AI]`).
+pub fn diagnostic_lens_hit(app: &App, row: usize, display_col: usize) -> Option<DiagnosticLensHit> {
+    if row != app.cursor.row || app.word_wrap {
+        return None;
+    }
+    let problem = app
+        .problem_items()
+        .into_iter()
+        .filter(|problem| problem.cursor.row == row && problem.path == app.buffer.path().cloned())
+        .min_by_key(|problem| match problem.severity {
+            ProblemSeverity::Error => 0,
+            ProblemSeverity::Warning => 1,
+            ProblemSeverity::Information => 2,
+            ProblemSeverity::Hint => 3,
+        })?;
+    let line_width = app.buffer.display_width_before(
+        row,
+        app.buffer.grapheme_count(row),
+        app.buffer.indent_width(),
+    );
+    let start = line_width + 2;
+    if display_col < start {
+        return None;
+    }
+    let msg = display_slice(&problem.message, 0, 36, TAB_WIDTH);
+    let msg_width = 2 + UnicodeWidthStr::width(msg.as_str());
+    let fix_start = start + msg_width + 2;
+    let fix_label = "[Fix with AI]";
+    if display_col >= fix_start && display_col < fix_start + fix_label.len() {
+        Some(DiagnosticLensHit::FixWithAi)
+    } else if display_col < start + msg_width {
+        Some(DiagnosticLensHit::Problems)
+    } else {
+        None
+    }
+}
+
+/// Maps a click on row `offset` of the 1-cell scrollbar rail to a target
+/// scroll row in `0..total_lines`.
+pub fn scrollbar_target_row(total_lines: usize, visible_rows: usize, offset: usize) -> usize {
+    if visible_rows <= 1 || total_lines <= 1 {
+        return 0;
+    }
+    let max_scroll = total_lines.saturating_sub(visible_rows);
+    (offset.min(visible_rows - 1) * max_scroll) / (visible_rows - 1)
+}
+
+fn render_inline_conflict_and_diagnostic_overlays(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &App,
+    view: EditorPaneView<'_>,
+    gutter: u16,
+    visible_rows: usize,
+    problems: &[crate::app::ProblemItem],
+) {
+    let theme = app.theme;
+    let max_right = area.right().saturating_sub(1);
+    for offset in 0..visible_rows {
+        let row = view.scroll_row + offset;
+        if row >= view.buffer.line_count() {
+            break;
+        }
+        let y = area.y + offset as u16;
+        let raw = view.buffer.line_text(row);
+        let line_width = view.buffer.display_width_before(
+            row,
+            view.buffer.grapheme_count(row),
+            view.buffer.indent_width(),
+        );
+        if line_width < view.scroll_col {
+            continue;
+        }
+        let mut x = area
+            .x
+            .saturating_add(gutter)
+            .saturating_add((line_width - view.scroll_col) as u16)
+            .saturating_add(2);
+
+        if raw.starts_with("<<<<<<<") {
+            let end = (row + 500).min(view.buffer.line_count());
+            let window: Vec<String> = (row..end).map(|r| view.buffer.line_text(r)).collect();
+            if crate::conflict::block_at(&window, 0).is_some_and(|b| b.start == 0) {
+                for (index, (label, _)) in CONFLICT_PILLS.iter().enumerate() {
+                    let w = label.len() as u16;
+                    if x + w >= max_right {
+                        break;
+                    }
+                    let fg = match index {
+                        0 => theme.mint,
+                        1 => theme.warning,
+                        _ => theme.text,
+                    };
+                    buffer.set_string(
+                        x,
+                        y,
+                        label,
+                        Style::default()
+                            .fg(fg)
+                            .bg(theme.elevated2)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                    x += w + 2;
+                }
+                continue;
+            }
+        }
+
+        if row == view.cursor.row
+            && let Some(problem) = problems
+                .iter()
+                .filter(|problem| {
+                    problem.cursor.row == row && problem.path.as_ref() == view.buffer.path()
+                })
+                .min_by_key(|problem| match problem.severity {
+                    ProblemSeverity::Error => 0,
+                    ProblemSeverity::Warning => 1,
+                    ProblemSeverity::Information => 2,
+                    ProblemSeverity::Hint => 3,
+                })
+        {
+            let color = match problem.severity {
+                ProblemSeverity::Error => theme.error,
+                ProblemSeverity::Warning => theme.warning,
+                ProblemSeverity::Information | ProblemSeverity::Hint => theme.mint,
+            };
+            let dot = if theme.unicode_symbols { "● " } else { "! " };
+            let msg = display_slice(&problem.message, 0, 36, TAB_WIDTH);
+            let lens = format!("{dot}{msg}");
+            let lens_w = UnicodeWidthStr::width(lens.as_str()) as u16;
+            if x + lens_w < max_right {
+                buffer.set_string(x, y, &lens, Style::default().fg(color).bg(theme.cur_line));
+                let fix_x = x + lens_w + 2;
+                let fix_label = "[Fix with AI]";
+                if fix_x + fix_label.len() as u16 <= max_right {
+                    buffer.set_string(
+                        fix_x,
+                        y,
+                        fix_label,
+                        Style::default()
+                            .fg(theme.mint)
+                            .bg(theme.elevated2)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn render_overview_scrollbar(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &App,
+    view: EditorPaneView<'_>,
+    visible_rows: usize,
+    problems: &[crate::app::ProblemItem],
+) {
+    if visible_rows == 0 || area.width == 0 {
+        return;
+    }
+    let total_lines = view.buffer.line_count().max(1);
+    let theme = app.theme;
+    let rail_x = area.right().saturating_sub(1);
+    let thumb_height = ((visible_rows * visible_rows) / total_lines).clamp(1, visible_rows);
+    let max_scroll = total_lines.saturating_sub(visible_rows).max(1);
+    let thumb_start = ((view.scroll_row.min(max_scroll) * (visible_rows - thumb_height))
+        / max_scroll)
+        .min(visible_rows.saturating_sub(thumb_height));
+    let thumb_end = thumb_start + thumb_height;
+
+    for offset in 0..visible_rows {
+        let y = area.y + offset as u16;
+        if buffer[(rail_x, y)].symbol() != " " {
+            continue;
+        }
+        let band_start = (offset * total_lines) / visible_rows;
+        let band_end = (((offset + 1) * total_lines) / visible_rows).max(band_start + 1);
+        let has_error = problems.iter().any(|p| {
+            p.path.as_ref() == view.buffer.path()
+                && p.severity == ProblemSeverity::Error
+                && (band_start..band_end).contains(&p.cursor.row)
+        });
+        let has_warning = !has_error
+            && problems.iter().any(|p| {
+                p.path.as_ref() == view.buffer.path()
+                    && p.severity == ProblemSeverity::Warning
+                    && (band_start..band_end).contains(&p.cursor.row)
+            });
+        let has_search = view.focused
+            && app
+                .find_matches
+                .iter()
+                .any(|(row, _, _)| (band_start..band_end).contains(row));
+        let in_thumb = (thumb_start..thumb_end).contains(&offset);
+
+        let (symbol, fg, bg) = if has_error {
+            (
+                if theme.unicode_symbols { "●" } else { "!" },
+                theme.error,
+                if in_thumb {
+                    theme.elevated2
+                } else {
+                    theme.surface
+                },
+            )
+        } else if has_warning {
+            (
+                if theme.unicode_symbols { "●" } else { "W" },
+                theme.warning,
+                if in_thumb {
+                    theme.elevated2
+                } else {
+                    theme.surface
+                },
+            )
+        } else if has_search {
+            (
+                if theme.unicode_symbols { "•" } else { "*" },
+                theme.mint,
+                if in_thumb {
+                    theme.elevated2
+                } else {
+                    theme.surface
+                },
+            )
+        } else if in_thumb {
+            (
+                if theme.unicode_symbols { "▐" } else { "|" },
+                theme.faint,
+                theme.elevated,
+            )
+        } else {
+            (" ", theme.faint, theme.surface)
+        };
+        buffer.set_string(rail_x, y, symbol, Style::default().fg(fg).bg(bg));
     }
 }
 
@@ -2614,6 +3257,12 @@ const ASCII_LOOKALIKES: &[(&str, &str)] = &[
     ("–", "-"),
     ("─", "-"),
     ("│", "|"),
+    ("▐", "|"),
+    ("▎", "|"),
+    ("▏", "|"),
+    ("↗", "^"),
+    ("−", "-"),
+    ("▲", "W"),
     ("┌", "+"),
     ("┐", "+"),
     ("└", "+"),
@@ -4116,23 +4765,37 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let popup = centered_rect(area, 100, 22);
+    let theme = app.theme;
+    let popup_width = 104.min(area.width.saturating_sub(4)).max(42);
+    let popup_height = 24.min(area.height.saturating_sub(2)).max(10);
+    let popup = centered_rect(area, popup_width, popup_height);
     clear_overlay(frame, app, popup);
     let block = Block::default()
         .title(overlay_title(app, "History"))
         .borders(Borders::ALL)
-        .border_set(plain_border(app.theme.unicode_symbols))
-        .border_style(Style::default().fg(app.theme.mint))
-        .style(Style::default().bg(app.theme.elevated));
-    let inner = block.inner(popup);
+        .border_set(rounded_border(theme.unicode_symbols))
+        .border_style(Style::default().fg(theme.mint))
+        .style(Style::default().bg(theme.elevated));
+    let inner = inset(popup, 2, 1);
     frame.render_widget(block, popup);
 
-    let visible = inner.height.saturating_sub(1) as usize;
+    let show_diff = !app.git_history.is_empty() && inner.height >= 12;
+    let list_rows = if show_diff {
+        app.git_history.len().clamp(1, 6) as u16
+    } else {
+        inner.height.saturating_sub(1).max(1)
+    };
     let start = app
         .git_history_selected
-        .saturating_sub(visible.saturating_sub(1));
+        .saturating_sub((list_rows as usize).saturating_sub(1));
     let mut lines = Vec::new();
-    for (index, commit) in app.git_history.iter().enumerate().skip(start).take(visible) {
+    for (index, commit) in app
+        .git_history
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(list_rows as usize)
+    {
         click_target(
             app,
             Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
@@ -4145,17 +4808,104 @@ fn render_git_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
             commit.short_oid, commit.date, commit.author, commit.subject
         );
         let style = if selected {
-            Style::default().fg(app.theme.text).bg(app.theme.elevated2)
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.elevated2)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(app.theme.muted)
+            Style::default().fg(theme.muted).bg(theme.elevated)
         };
-        lines.push(Line::from(Span::styled(line, style)));
+        lines.push(Line::from(Span::styled(
+            display_slice(&line, 0, inner.width as usize, TAB_WIDTH),
+            style,
+        )));
     }
-    lines.push(Line::from(Span::styled(
-        "↑/↓ · PgUp/PgDn · Esc close",
-        Style::default().fg(app.theme.faint),
-    )));
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.elevated)),
+        Rect::new(inner.x, inner.y, inner.width, list_rows),
+    );
+
+    if show_diff {
+        let rule_y = inner.y + list_rows;
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                rule_glyph(app).repeat(inner.width as usize),
+                Style::default().fg(theme.elevated2),
+            )),
+            Rect::new(inner.x, rule_y, inner.width, 1),
+        );
+        let diff_area = Rect::new(
+            inner.x,
+            rule_y + 1,
+            inner.width,
+            inner.height.saturating_sub(list_rows + 2),
+        );
+        let width = diff_area.width as usize;
+        let total = app.selected_git_history_diff_lines();
+        let rows = diff_area.height as usize;
+        let scroll = app.git_history_diff_scroll.min(total.saturating_sub(1));
+        let visible = if total.saturating_sub(scroll) > rows {
+            rows.saturating_sub(1)
+        } else {
+            rows
+        };
+        let mut diff_lines: Vec<Line<'_>> = app
+            .git_history_diff
+            .lines()
+            .skip(scroll)
+            .take(visible)
+            .map(|line| {
+                let (style, text) = if line.starts_with("+++") || line.starts_with("---") {
+                    (
+                        Style::default().fg(theme.muted).bg(theme.elevated),
+                        line.to_owned(),
+                    )
+                } else if let Some(rest) = line.strip_prefix('+') {
+                    (
+                        Style::default().fg(theme.diff_text).bg(theme.diff_add_bg),
+                        format!("+ {rest}"),
+                    )
+                } else if let Some(rest) = line.strip_prefix('-') {
+                    (
+                        Style::default().fg(theme.diff_text).bg(theme.diff_del_bg),
+                        format!("− {rest}"),
+                    )
+                } else if line.starts_with("@@ ") {
+                    (
+                        Style::default().fg(theme.mint).bg(theme.elevated),
+                        line.to_owned(),
+                    )
+                } else {
+                    (
+                        Style::default().fg(theme.faint).bg(theme.elevated),
+                        line.to_owned(),
+                    )
+                };
+                let text = display_slice(&text, 0, width, TAB_WIDTH);
+                let pad = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
+                Line::from(Span::styled(format!("{text}{}", " ".repeat(pad)), style))
+            })
+            .collect();
+        let hidden_below = total.saturating_sub(scroll + visible);
+        if hidden_below > 0 {
+            diff_lines.push(Line::styled(
+                format!("  ↓ {hidden_below} more · Shift+↑↓ scroll diff"),
+                Style::default().fg(theme.faint),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(diff_lines).style(Style::default().bg(theme.elevated)),
+            diff_area,
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "↑/↓ commits · Shift+↑↓ scroll diff · PgUp/PgDn · Esc close",
+            Style::default().fg(theme.faint),
+        ))),
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+    );
 }
 
 /// Added and removed line counts for one hunk's patch text.
@@ -4513,6 +5263,130 @@ fn anchored_rect(area: Rect, app: &App, width: u16, height: u16) -> Rect {
 
 pub fn ai_prompt_rect(area: Rect, app: &App) -> Rect {
     anchored_rect(area, app, 84, 8)
+}
+
+fn render_hover_card(frame: &mut Frame<'_>, area: Rect, app: &App, card: &crate::app::HoverCard) {
+    let theme = app.theme;
+    let body_lines: Vec<&str> = card
+        .text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .take(10)
+        .collect();
+    if body_lines.is_empty() {
+        return;
+    }
+    let max_line_width = body_lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or(20);
+    let width = (max_line_width as u16 + 6)
+        .clamp(28, 78)
+        .min(area.width.saturating_sub(2));
+    let height = (body_lines.len() as u16 + 3)
+        .clamp(4, 13)
+        .min(area.height.saturating_sub(4));
+    let popup = anchored_rect(area, app, width, height);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {} {} ", overlay_marker(theme.unicode_symbols), card.title),
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_set(rounded_border(theme.unicode_symbols))
+        .border_style(Style::default().fg(theme.mint))
+        .style(Style::default().bg(theme.elevated));
+    let inner = inset(block.inner(popup), 1, 0);
+    frame.render_widget(block, popup);
+
+    let mut lines: Vec<Line<'_>> = body_lines
+        .iter()
+        .enumerate()
+        .take(inner.height.saturating_sub(1) as usize)
+        .map(|(index, line)| {
+            let style = if index == 0 {
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            Line::styled(
+                display_slice(line, 0, inner.width as usize, TAB_WIDTH),
+                style,
+            )
+        })
+        .collect();
+    lines.push(Line::styled(
+        "Esc dismiss",
+        Style::default().fg(theme.faint),
+    ));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.elevated)),
+        inner,
+    );
+}
+
+fn render_filter_prompt(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = app.theme;
+    let popup = anchored_rect(area, app, 76, 7);
+    clear_overlay(frame, app, popup);
+    let block = Block::default()
+        .title(Span::styled(
+            format!(
+                " {} Filter selection through shell ",
+                overlay_marker(theme.unicode_symbols)
+            ),
+            Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_set(rounded_border(theme.unicode_symbols))
+        .border_style(Style::default().fg(theme.mint))
+        .style(Style::default().bg(theme.elevated));
+    let inner = inset(block.inner(popup), 1, 0);
+    frame.render_widget(block, popup);
+
+    let width = inner.width as usize;
+    let (query, cursor_x) = app.filter_query.visible_window(width.saturating_sub(3));
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "| ",
+                Style::default().fg(theme.mint).add_modifier(Modifier::BOLD),
+            ),
+            if app.filter_query.is_empty() {
+                Span::styled(
+                    "Type command (sort, jq ., column -t…) or press Tab",
+                    Style::default().fg(theme.faint),
+                )
+            } else {
+                Span::styled(query, Style::default().fg(theme.text))
+            },
+        ]),
+        Line::styled(
+            "Tab presets: sort · sort -u · jq . · column -t · wc -l",
+            Style::default().fg(theme.muted),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "Enter pipe & replace (one undoable edit) · Esc cancel",
+            Style::default().fg(theme.faint),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.elevated)),
+        inner,
+    );
+    frame.set_cursor_position((
+        inner.x
+            + 2
+            + if app.filter_query.is_empty() {
+                0
+            } else {
+                cursor_x as u16
+            },
+        inner.y,
+    ));
 }
 
 fn ai_box(app: &App, title: String) -> Block<'static> {
@@ -7650,5 +8524,109 @@ mod tests {
             .collect();
         assert!(content.contains("Searching files"));
         assert!(!content.contains("No matching files"));
+    }
+
+    #[test]
+    fn inline_conflict_pills_and_diagnostic_lens_render_and_hit_test() {
+        use crate::{app::App, buffer::Buffer, conflict::ConflictChoice, cursor::Cursor};
+        let mut buffer = Buffer::empty(Some(std::path::PathBuf::from("conflict.rs")));
+        let mut cursor = Cursor::new(0, 0);
+        buffer.insert_text(
+            &mut cursor,
+            "<<<<<<< HEAD\nlet x = 1;\n=======\nlet x = 2;\n>>>>>>> branch\nfn broken( {\n",
+        );
+        let mut app = App::new(buffer);
+        app.cursor = Cursor::new(1, 0);
+
+        assert_eq!(
+            super::conflict_pill_hit(&app.buffer, 0, 14),
+            Some(ConflictChoice::Ours)
+        );
+        assert_eq!(
+            super::conflict_pill_hit(&app.buffer, 0, 28),
+            Some(ConflictChoice::Theirs)
+        );
+        assert_eq!(
+            super::conflict_pill_hit(&app.buffer, 0, 42),
+            Some(ConflictChoice::Both)
+        );
+
+        let rows = render_rows(&app, 100, 24).join("\n");
+        assert!(rows.contains("[Keep ours]"), "{rows}");
+        assert!(rows.contains("[Keep theirs]"), "{rows}");
+        assert!(rows.contains("[Keep both]"), "{rows}");
+        assert!(rows.contains("[Fix with AI]"), "{rows}");
+        assert_eq!(
+            super::diagnostic_lens_hit(&app, 1, 14),
+            Some(super::DiagnosticLensHit::Problems)
+        );
+    }
+
+    #[test]
+    fn hover_card_and_filter_prompt_render_anchored_to_cursor() {
+        use crate::{
+            app::{App, AppMode, HoverCard},
+            buffer::Buffer,
+            cursor::Cursor,
+        };
+        let mut app = App::new(Buffer::empty(Some(std::path::PathBuf::from("demo.rs"))));
+        app.buffer.insert_text(
+            &mut Cursor::default(),
+            "fn compute(value: usize) -> usize { value }\n",
+        );
+        app.cursor = Cursor::new(0, 3);
+        app.hover_card = Some(HoverCard {
+            buffer: app.buffer.identity(),
+            revision: app.buffer.revision(),
+            cursor: app.cursor,
+            title: "Hover",
+            text: "fn compute(value: usize) -> usize\nComputes the result.".to_owned(),
+        });
+        let hover_screen = render_rows(&app, 100, 24).join("\n");
+        assert!(hover_screen.contains("● Hover"), "{hover_screen}");
+        assert!(
+            hover_screen.contains("Computes the result."),
+            "{hover_screen}"
+        );
+
+        app.mode = AppMode::FilterPrompt;
+        app.filter_query.set("sort -u");
+        let filter_screen = render_rows(&app, 100, 24).join("\n");
+        assert!(
+            filter_screen.contains("Filter selection through shell"),
+            "{filter_screen}"
+        );
+        assert!(filter_screen.contains("sort -u"), "{filter_screen}");
+    }
+
+    #[test]
+    fn terminal_row_locations_and_header_controls_resolve_cleanly() {
+        use crate::{app::App, buffer::Buffer};
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("src/main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let links = super::terminal_row_locations(
+            "  --> src/main.rs:12:5: error: mismatched types",
+            dir.path(),
+        );
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].path, file);
+        assert_eq!(links[0].cursor, crate::cursor::Cursor::new(11, 4));
+
+        let mut app = App::new(Buffer::empty(None));
+        app.terminal_visible = true;
+        app.terminal_focused = true;
+        let top_row = super::editor_bottom_row(24, app.terminal_panel()) as usize;
+        let row = &render_rows(&app, 120, 24)[top_row];
+        let tab_col = row
+            .find("[↗ Tab]")
+            .expect("buffer button in terminal header");
+        let tab_col = row[..tab_col].chars().count() as u16;
+        assert_eq!(
+            super::terminal_header_hit(&app, 120, tab_col),
+            Some(super::TerminalHeaderHit::OpenInBuffer)
+        );
     }
 }
