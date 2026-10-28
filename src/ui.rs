@@ -7595,18 +7595,34 @@ fn render_utility(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area.height.saturating_sub(4),
     );
     frame.render_widget(Clear, panel);
-    let text: Vec<Line<'_>> = app
-        .utility_lines
+    // Entries wrap into rows here rather than in the widget, so the scroll
+    // can count rows: counting entries left a long message, or the entries
+    // after a few wrapped ones, below the bottom edge with no way to reach them.
+    let inner_width = panel.width.saturating_sub(2) as usize;
+    let text_width = inner_width.saturating_sub(2).max(1);
+    let visible = panel.height.saturating_sub(2) as usize;
+    let mut rows: Vec<(usize, bool, String)> = Vec::new();
+    for (index, text) in app.utility_lines.iter().enumerate() {
+        for (n, row) in wrap_rows(text, text_width).into_iter().enumerate() {
+            rows.push((index, n == 0, row));
+        }
+    }
+    let selected_first = rows
         .iter()
-        .enumerate()
-        .map(|(i, text)| {
+        .position(|(index, first, _)| *index == app.utility_selected && *first)
+        .unwrap_or(0);
+    let scroll = selected_first
+        .saturating_sub(2)
+        .min(rows.len().saturating_sub(visible));
+    let text: Vec<Line<'_>> = rows
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|(index, first, row)| {
+            let selected = *index == app.utility_selected;
             Line::styled(
-                format!(
-                    "{} {}",
-                    if i == app.utility_selected { ">" } else { " " },
-                    text
-                ),
-                Style::default().fg(if i == app.utility_selected {
+                format!("{} {row}", if selected && *first { ">" } else { " " }),
+                Style::default().fg(if selected {
                     app.theme.mint
                 } else {
                     app.theme.text
@@ -7617,17 +7633,104 @@ fn render_utility(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(app.utility_title.as_str());
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((app.utility_selected.saturating_sub(2) as u16, 0)),
-        panel,
-    );
+    frame.render_widget(Paragraph::new(text).block(block), panel);
+}
+
+/// Splits `text` into rows at most `width` cells wide, at spaces where it
+/// can and inside a word only when the word alone is wider than a row. Every
+/// text yields at least one row, so an empty entry still takes a line.
+fn wrap_rows(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for line in text.split('\n') {
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        for word in line.split(' ') {
+            let word_width = UnicodeWidthStr::width(word);
+            if current_width > 0 && current_width + 1 + word_width > width {
+                rows.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            if word_width > width {
+                for ch in word.chars() {
+                    let cell = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if current_width > 0 && current_width + cell > width {
+                        rows.push(std::mem::take(&mut current));
+                        current_width = 0;
+                    }
+                    current.push(ch);
+                    current_width += cell;
+                }
+                continue;
+            }
+            if current_width > 0 {
+                current.push(' ');
+                current_width += 1;
+            }
+            current.push_str(word);
+            current_width += word_width;
+        }
+        rows.push(current);
+    }
+    rows
 }
 
 #[cfg(test)]
 mod tests {
+    /// The panel scrolled by entry while its text wrapped into more rows
+    /// than that, so a long message, or the entries after a few wrapped
+    /// ones, sat below the bottom edge with no way to reach them.
+    #[test]
+    fn utility_panel_keeps_the_selected_wrapped_entry_visible() {
+        use crate::{
+            app::{App, AppMode},
+            buffer::Buffer,
+        };
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(Buffer::empty(None));
+        app.mode = AppMode::Utility;
+        app.utility_title = "Recent messages".to_owned();
+        app.utility_lines = (0..30)
+            .map(|i| format!("message {i:02} {}", "word ".repeat(60)))
+            .collect();
+        let screen = |app: &App| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| super::render(frame, app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        app.utility_selected = 29;
+        assert!(
+            screen(&app).contains("> message 29"),
+            "last entry reachable"
+        );
+        app.utility_selected = 12;
+        assert!(
+            screen(&app).contains("> message 12"),
+            "middle entry reachable"
+        );
+        app.utility_selected = 0;
+        assert!(
+            screen(&app).contains("> message 00"),
+            "first entry reachable"
+        );
+
+        assert_eq!(super::wrap_rows("", 10), vec![String::new()]);
+        assert_eq!(
+            super::wrap_rows("one two three four", 9),
+            vec!["one two".to_owned(), "three".to_owned(), "four".to_owned()]
+        );
+        assert_eq!(
+            super::wrap_rows("abcdefghij", 4),
+            vec!["abcd".to_owned(), "efgh".to_owned(), "ij".to_owned()]
+        );
+    }
+
     /// At 80×24 with the file tree open the start page is taller than the
     /// editor area. It once wrote its title and tagline across the card's
     /// border; now whole sections are dropped instead.
