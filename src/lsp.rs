@@ -1534,6 +1534,16 @@ impl LanguageService {
         output
     }
 
+    /// Stands in for a server's `publishDiagnostics` in tests.
+    #[cfg(test)]
+    pub(crate) fn set_diagnostics_for_test(
+        &mut self,
+        path: PathBuf,
+        diagnostics: Vec<LspDiagnostic>,
+    ) {
+        self.diagnostics_by_path.insert(path, diagnostics);
+    }
+
     /// Workspace Problems, with explicit file identity and stable ordering.
     pub fn workspace_diagnostics(&self) -> Vec<(PathBuf, LspDiagnostic)> {
         let workspace = self

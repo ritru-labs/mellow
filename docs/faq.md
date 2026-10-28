@@ -21,6 +21,12 @@ send, and every action is in the palette.
 
 Start Mellow with `mellow --no-mouse`, and your terminal handles the mouse.
 
+## The status line cut a message short
+
+Long messages end in `…` there. **Show recent messages** in the palette
+(`Ctrl+P`) lists them in full, newest first, including errors from Git,
+language servers and formatters.
+
 ## Where did my unsaved changes go after a crash?
 
 Open the same file (or folder) again and choose **[R] Restore**. Recovery copies

@@ -98,11 +98,16 @@ fn main() -> Result<()> {
     let mut app = App::startup(first)?;
     for path in paths {
         anyhow::ensure!(!path.is_dir(), "additional paths must be files");
-        app.open_path_in_tab(path)?;
+        // One file Mellow cannot open must not stop the others from opening.
+        if let Err(error) = app.open_path_in_tab(path.clone()) {
+            app.fail(format!("Could not open {}: {error:#}", path.display()));
+        }
     }
     app.configure_cli(cli.trust, None, stdin);
     if let Some((path, _, _)) = goto {
-        app.open_path_in_tab(path)?;
+        if let Err(error) = app.open_path_in_tab(path.clone()) {
+            app.fail(format!("Could not open {}: {error:#}", path.display()));
+        }
         app.configure_cli(cli.trust, cursor, None);
     }
     let mut terminal = TerminalSession::new(!cli.no_mouse)?;

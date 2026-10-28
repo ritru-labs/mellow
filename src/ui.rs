@@ -1402,11 +1402,18 @@ fn render_explorer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| entry.path.to_string_lossy().into_owned());
+        // An ignored folder dims everything inside it too.
+        let is_ignored = entry
+            .path
+            .ancestors()
+            .any(|ancestor| badges.get(ancestor) == Some(&ExplorerBadge::Ignored));
         let badge = badges
             .get(&entry.path)
             .copied()
             .filter(|badge| {
-                *badge != ExplorerBadge::Contains || !app.explorer_entry_expanded(&entry.path)
+                *badge != ExplorerBadge::Ignored
+                    && (*badge != ExplorerBadge::Contains
+                        || !app.explorer_entry_expanded(&entry.path))
             })
             .map(|badge| (badge.symbol(theme.unicode_symbols), badge));
         let badge_width = if badge.is_some() { 2 } else { 0 };
@@ -1422,6 +1429,8 @@ fn render_explorer(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .fg(theme.text)
                 .bg(background)
                 .add_modifier(Modifier::BOLD)
+        } else if is_ignored {
+            Style::default().fg(theme.faint).bg(background)
         } else if entry.is_dir {
             Style::default().fg(theme.text).bg(background)
         } else {
@@ -1433,7 +1442,7 @@ fn render_explorer(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ExplorerBadge::Unsaved | ExplorerBadge::Modified => theme.warning,
                 ExplorerBadge::Added => theme.mint,
                 ExplorerBadge::Deleted | ExplorerBadge::Conflict => theme.error,
-                ExplorerBadge::Contains => theme.faint,
+                ExplorerBadge::Contains | ExplorerBadge::Ignored => theme.faint,
             };
             buffer.set_string(
                 inner.right().saturating_sub(2),
@@ -1455,6 +1464,8 @@ pub enum ExplorerBadge {
     Conflict,
     /// A collapsed folder that contains changes.
     Contains,
+    /// Excluded by `.gitignore`: shown dimmed, skipped by Quick Open and search.
+    Ignored,
 }
 
 impl ExplorerBadge {
@@ -1478,6 +1489,8 @@ impl ExplorerBadge {
                     "."
                 }
             }
+            // Ignored entries are dimmed rather than marked.
+            Self::Ignored => "",
         }
     }
 }
@@ -1506,7 +1519,9 @@ fn start_page(app: &App, area: Rect) -> StartPage {
     let two_columns = width >= 66;
     let x0 = area.x + area.width.saturating_sub(width) / 2;
     let content_height = 22u16;
-    let y0 = area.y + area.height.saturating_sub(content_height) / 3;
+    // The title needs a row below the card's top border, even when the
+    // terminal is too short for the whole page.
+    let y0 = (area.y + area.height.saturating_sub(content_height) / 3).max(area.y + 1);
     let left_width = if two_columns { 40 } else { width };
     let right_x = x0 + 46;
     let heading = |text: &'static str| {
@@ -1641,6 +1656,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
             .filter(|(path, badge)| {
                 *badge != ExplorerBadge::Contains
                     && *badge != ExplorerBadge::Deleted
+                    && *badge != ExplorerBadge::Ignored
                     && app.workspace_root().join(path).is_file()
             })
             .map(|(path, badge)| (path, badge.symbol(unicode)))
@@ -1684,6 +1700,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
     } else {
         (x0, y + 2)
     };
+    let (learn_first_line, learn_first_target) = (lines.len(), targets.len());
     lines.push((rx, ry, heading("LEARN")));
     for (command, text) in [
         (Command::ShowHelp, "Everyday keys"),
@@ -1707,6 +1724,7 @@ fn start_page(app: &App, area: Rect) -> StartPage {
         }
     }
     ry += 2;
+    let (ai_first_line, ai_first_target) = (lines.len(), targets.len());
     lines.push((rx, ry, heading("AI")));
     ry += 1;
     match app.ai_status() {
@@ -1754,20 +1772,47 @@ fn start_page(app: &App, area: Rect) -> StartPage {
         }
     }
 
-    let footer_y = (y.max(ry) + 3).min(area.bottom().saturating_sub(1));
-    lines.push((
-        x0,
-        footer_y,
-        Line::styled(
-            format!("{} to write a new file.", crate::brand::TAGLINE),
-            Style::default()
-                .fg(theme.faint)
-                .add_modifier(Modifier::ITALIC),
-        ),
-    ));
     // A rounded card keeps the page together as one panel, with room around it.
     let card_top = y0.saturating_sub(2).max(area.y);
-    let card_bottom = (footer_y + 2).min(area.bottom().saturating_sub(1));
+    let lowest_border = area.bottom().saturating_sub(1);
+    // A short terminal cannot hold every section. Whole sections go, from the
+    // bottom up, before anything is drawn across the border: first AI, then
+    // LEARN, which the status line and F1 also cover.
+    for (first_line, first_target) in [
+        (ai_first_line, ai_first_target),
+        (learn_first_line, learn_first_target),
+    ] {
+        let overflows = lines[first_line..]
+            .iter()
+            .any(|(_, line_y, _)| *line_y >= lowest_border);
+        if overflows {
+            lines.truncate(first_line);
+            targets.truncate(first_target);
+        }
+    }
+    let last_y = lines
+        .iter()
+        .map(|(_, line_y, _)| *line_y)
+        .max()
+        .unwrap_or(y0);
+    // The tagline closes the card when there is room for it.
+    let footer_y = last_y + 3;
+    if footer_y + 2 <= lowest_border {
+        lines.push((
+            x0,
+            footer_y,
+            Line::styled(
+                format!("{} to write a new file.", crate::brand::TAGLINE),
+                Style::default()
+                    .fg(theme.faint)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ));
+    }
+    let card_bottom = (last_y.max(footer_y.min(lowest_border)) + 2).min(lowest_border);
+    // Nothing is ever drawn on or past the border.
+    lines.retain(|(_, line_y, _)| *line_y > card_top && *line_y < card_bottom);
+    targets.retain(|(rect, _)| rect.y > card_top && rect.y < card_bottom);
     let card = Rect::new(
         x0.saturating_sub(3),
         card_top,
@@ -3671,8 +3716,18 @@ fn render_quick_open(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )));
     } else if matches.is_empty() {
+        let query = app.quick_open_query.as_str().trim();
+        let hint = if query.is_empty() {
+            "  No files found. Type a name to create one, or a path like ../notes.txt or ~/file."
+                .to_owned()
+        } else {
+            format!(
+                "  No matching files · Enter opens or creates {} (paths like ../x or ~/x also work)",
+                display_slice(query, 0, 40, TAB_WIDTH)
+            )
+        };
         lines.push(Line::from(Span::styled(
-            "  No matching files. Type a path like ../notes.txt or ~/file and press Enter.",
+            hint,
             Style::default().fg(theme.muted),
         )));
     } else {
@@ -7052,6 +7107,11 @@ fn render_project_search(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if report.truncated {
         notes.push("limit reached".to_owned());
     }
+    // The tree shows ignored files; the search does not read them, and that
+    // difference is easy to mistake for "no results".
+    if app.git_repository_active() {
+        notes.push("gitignored files skipped".to_owned());
+    }
     let incomplete = !skipped.is_empty() || app.project_search_list_truncated || report.truncated;
     lines.push(Line::from(Span::styled(
         format!(
@@ -7224,6 +7284,11 @@ fn render_save_conflict(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .bg(theme.error)
                     .add_modifier(Modifier::BOLD),
                 key(KeyCode::Char('o')),
+            ),
+            (
+                " [C] Compare ",
+                Style::default().fg(theme.text).bg(theme.elevated2),
+                key(KeyCode::Char('c')),
             ),
             (
                 " [Esc] Cancel ",
@@ -7563,6 +7628,63 @@ fn render_utility(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
+    /// At 80×24 with the file tree open the start page is taller than the
+    /// editor area. It once wrote its title and tagline across the card's
+    /// border; now whole sections are dropped instead.
+    #[test]
+    fn start_page_never_draws_across_its_card_border_when_short() {
+        use crate::{app::App, buffer::Buffer};
+        use ratatui::layout::Rect;
+        let app = App::new(Buffer::empty(None));
+        for area in [
+            Rect::new(30, 2, 50, 21),
+            Rect::new(0, 2, 80, 21),
+            Rect::new(0, 2, 120, 33),
+        ] {
+            let page = super::start_page(&app, area);
+            let top = page.card.y;
+            let bottom = page.card.bottom().saturating_sub(1);
+            for (_, y, line) in &page.lines {
+                assert!(
+                    *y > top && *y < bottom,
+                    "{area:?}: line {y} {:?} outside card rows {top}..{bottom}",
+                    line.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                );
+            }
+            for (rect, action) in &page.targets {
+                assert!(
+                    rect.y > top && rect.y < bottom,
+                    "{area:?}: target {action:?} at row {} outside the card",
+                    rect.y
+                );
+            }
+            let text = page
+                .lines
+                .iter()
+                .map(|(_, _, line)| {
+                    line.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("START"),
+                "{area:?}: the first actions always fit"
+            );
+            if area.height >= 30 {
+                assert!(
+                    text.contains("AI"),
+                    "{area:?}: a roomy page keeps every section"
+                );
+            }
+        }
+    }
+
     #[test]
     fn design_lock_failed_quit_choices_render_at_supported_sizes() {
         use crate::{
