@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 (beta)
 
-Fixes from an end-user walkthrough of 0.3.2.
+Fixes from an end-user walkthrough of 0.3.2: Open file, problems on the line, focus, the start page at 80×24, and a messages panel.
 
 ### Fixed
 

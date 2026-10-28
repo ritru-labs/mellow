@@ -9,7 +9,7 @@ away.
 
 ![Mellow editing a Rust project: file tree, Git changes in the gutter and the built-in terminal](docs/images/hero.png)
 
-**Version 0.3.2, beta.** Runs on macOS and Linux. Documentation:
+**Version 0.3.3, beta.** Runs on macOS and Linux. Documentation:
 **[ritru-labs.github.io/mellow](https://ritru-labs.github.io/mellow/)**
 
 ## Understand the project

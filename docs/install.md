@@ -31,7 +31,7 @@ Options, set before `sh`:
 
 | Variable | Effect |
 | --- | --- |
-| `MELLOW_VERSION=0.3.2` | Install that version instead of the latest |
+| `MELLOW_VERSION=0.3.3` | Install that version instead of the latest |
 | `MELLOW_INSTALL_DIR=/some/dir` | Install somewhere other than `~/.local/bin` |
 
 For example, choose a different install directory:
@@ -53,23 +53,23 @@ browser-downloaded copies.
 ## Debian and Ubuntu
 
 ```bash
-curl -fsSLO https://github.com/ritru-labs/mellow/releases/download/v0.3.2/mellow_0.3.2_amd64.deb
-sudo apt install ./mellow_0.3.2_amd64.deb
+curl -fsSLO https://github.com/ritru-labs/mellow/releases/download/v0.3.3/mellow_0.3.3_amd64.deb
+sudo apt install ./mellow_0.3.3_amd64.deb
 ```
 
-On ARM64, use `mellow_0.3.2_arm64.deb`.
+On ARM64, use `mellow_0.3.3_arm64.deb`.
 
 ## Fedora, RHEL, Rocky, Alma
 
 ```bash
-sudo dnf install https://github.com/ritru-labs/mellow/releases/download/v0.3.2/mellow-0.3.2-1.x86_64.rpm
+sudo dnf install https://github.com/ritru-labs/mellow/releases/download/v0.3.3/mellow-0.3.3-1.x86_64.rpm
 ```
 
-On ARM64, use `mellow-0.3.2-1.aarch64.rpm`. On Amazon Linux 2, use `yum`
+On ARM64, use `mellow-0.3.3-1.aarch64.rpm`. On Amazon Linux 2, use `yum`
 instead of `dnf`. On openSUSE:
 
 ```bash
-sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.3.2/mellow-0.3.2-1.x86_64.rpm
+sudo rpm -i https://github.com/ritru-labs/mellow/releases/download/v0.3.3/mellow-0.3.3-1.x86_64.rpm
 ```
 
 The release workflow targets static musl Linux binaries to reduce dependencies
@@ -117,7 +117,7 @@ cargo install --locked --path .
 mellow --version
 ```
 
-The version should print as `mellow 0.3.2` for the documented release (a newer
+The version should print as `mellow 0.3.3` for the documented release (a newer
 installed release will print its own version). Run `mellow --help` for CLI usage,
 then follow [Make your first edit](getting-started.md). If the shell cannot find
 it, see [PATH troubleshooting](faq.md#mellow-command-not-found).

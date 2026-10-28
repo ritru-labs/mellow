@@ -80,6 +80,13 @@ In the commit box, `Ctrl+G` drafts a commit message from your staged changes
 with AI. The draft goes into the box for you to read; nothing is committed until
 you press `Enter`.
 
+When a file changed on disk while you were editing it, saving asks first:
+`[S] Save As`, `[O] Overwrite`, `[C] Compare` (shows both versions and
+decides nothing; the next save asks again) and `[Esc] Cancel`.
+
+A message the status line cuts short can be read in full with **Show recent
+messages** in the palette.
+
 ## In the terminal
 
 Inside the built-in terminal, keys go to the shell: `Ctrl+C` interrupts the

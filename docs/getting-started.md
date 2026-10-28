@@ -16,7 +16,7 @@ mellow notes.txt
 ```
 
 The version command should print `mellow` followed by the installed version.
-The commands on this site describe **0.3.2 beta**. If `mellow` is not found,
+The commands on this site describe **0.3.3 beta**. If `mellow` is not found,
 follow the [PATH troubleshooting steps](faq.md#mellow-command-not-found).
 If the practice folder already exists, choose another name.
 
