@@ -1103,6 +1103,14 @@ mod tests {
                 .write_bytes(b"printf '%s%s\\n' REAL_ RECOVERY; : > recovered\n")
                 .unwrap();
             let text = pump_until(&mut session, "REAL_RECOVERY", Duration::from_secs(3));
+            // The shell prints the proof before it creates the file, so on a
+            // loaded runner the output can arrive first; the file gets its own
+            // wait rather than a check at the instant the text showed up.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !recovered.exists() && Instant::now() < deadline {
+                session.read_available().unwrap();
+                thread::sleep(Duration::from_millis(10));
+            }
             assert!(
                 text.contains("REAL_RECOVERY") && recovered.exists(),
                 "shell recovery was not executed: {text:?}"
