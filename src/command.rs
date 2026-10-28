@@ -4,6 +4,7 @@ pub enum Command {
     SaveAll,
     RestoreTrash,
     AiUsage,
+    ShowMessages,
     KeyboardBindings,
     CloseAll,
     CloseOthers,
@@ -282,6 +283,14 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         label: "AI request usage and limits",
         category: "AI",
         help: "Show provider-reported tokens, unknown cost and session budgets",
+        bindings: &[],
+    },
+    CommandSpec {
+        command: Command::ShowMessages,
+        id: "view.messages",
+        label: "Show recent messages",
+        category: "View",
+        help: "Read status line messages in full, newest first",
         bindings: &[],
     },
     CommandSpec {

@@ -27,12 +27,16 @@ to write the correction.
 
 ## Find files and text across a project
 
-- **Open a file:** `Ctrl+O`, type part of the filename, select a result and press
-  `Enter`. Typing a path also lets you create a file.
+- **Open a file:** `Ctrl+O`, type part of the filename (a folder narrows it:
+  `src/ma`), select a result and press `Enter`. A name that matches nothing
+  opens as a new file at that path, saved when you press `Ctrl+S`; `../x` and
+  `~/x` reach outside the project.
   Recently opened files are listed first, so the file you were just in is one
   keystroke away.
 - **Browse:** `Ctrl+B` toggles the file tree. It updates within about a second when
-  files change, including files created with a command in the terminal.
+  files change, including files created with a command in the terminal. Entries
+  that `.gitignore` excludes are dimmed: Quick Open and search skip them, but
+  their exact name in `Ctrl+O` still opens them.
 - **Search text:** press `Ctrl+F` twice to search all project files, or use
   **Search across project** in the command palette. Search for a setting name such
   as `service` and open the matching location.

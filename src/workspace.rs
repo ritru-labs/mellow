@@ -58,10 +58,7 @@ impl Default for QuickOpenWorker {
                     if job.cancelled.load(Ordering::Relaxed) {
                         continue;
                     }
-                    let explicit = job.query.starts_with('/')
-                        || job.query.starts_with("./")
-                        || job.query.starts_with("../")
-                        || job.query.starts_with("~/");
+                    let explicit = is_explicit_path_query(&job.query);
                     let mut truncated = false;
                     let result = if explicit {
                         path_completions(&job.root, &job.query, 64)
@@ -638,6 +635,19 @@ fn path_completions_with_home(
 /// path (`mnapp` finds `src/main/app.rs`). Higher is better: consecutive
 /// letters, word starts and file-name matches score more; long paths a
 /// little less. `None` when it does not match.
+/// A Quick Open query that names a location rather than a file to find:
+/// absolute, home-relative or `./`/`../`-relative. Such a query is completed
+/// from the file system, not fuzzy-matched. A workspace-relative path such as
+/// `src/main.rs` is an ordinary fuzzy query, so typing a folder narrows the list
+/// instead of switching it off.
+pub fn is_explicit_path_query(query: &str) -> bool {
+    query.starts_with('/')
+        || query.starts_with("./")
+        || query.starts_with("../")
+        || query.starts_with("~/")
+        || query == "~"
+}
+
 pub fn fuzzy_score(path: &Path, query: &str) -> Option<i64> {
     let text = path.to_string_lossy().to_lowercase();
     let chars: Vec<char> = text.chars().collect();

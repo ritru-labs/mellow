@@ -518,6 +518,10 @@ pub struct App {
     pub status: Option<String>,
     /// True when `status` reports a problem rather than news; set by `fail`.
     pub status_is_error: bool,
+    /// What the status line said, oldest first, with whether each entry was a
+    /// problem. The status line cuts long messages; "Show recent messages"
+    /// shows them whole.
+    message_log: std::collections::VecDeque<(String, bool)>,
     keymap_config: keymap::KeymapConfig,
     start_page_dismissed: bool,
     pub theme: Theme,
@@ -739,7 +743,16 @@ impl App {
             if path.is_dir() {
                 return Self::startup_workspace(std::fs::canonicalize(path)?, true);
             }
-            let mut app = Self::new(Buffer::open(Some(path))?);
+            let mut app = match Buffer::open(Some(path.clone())) {
+                Ok(buffer) => Self::new(buffer),
+                Err(error) => {
+                    // A file Mellow cannot open (not UTF-8, too large) is no
+                    // reason to refuse to start: come up with the reason.
+                    let mut app = Self::new(Buffer::empty(None));
+                    app.fail(format!("Could not open {}: {error:#}", path.display()));
+                    app
+                }
+            };
             app.workspace_root = workspace_root;
             app.finish_startup_without_session();
             return Ok(app);
@@ -909,6 +922,7 @@ impl App {
             word_wrap: editor_settings.word_wrap,
             mode,
             status_is_error: warning.is_some(),
+            message_log: warning.iter().map(|text| (text.clone(), true)).collect(),
             status: warning,
             keymap_config,
             start_page_dismissed: false,
@@ -1237,31 +1251,100 @@ impl App {
         }
     }
 
+    /// Commands matching the palette query, best match first: a command whose
+    /// name is the query, then names starting with it, then a word in the name
+    /// starting with it, then any name containing it, then category and id.
+    /// Typing `help` runs Help, not "Show signature help".
     pub fn filtered_palette_entries(&self) -> Vec<usize> {
         let query = self.palette_query.as_str().trim().to_ascii_lowercase();
-        COMMAND_SPECS
+        if query.is_empty() {
+            return (0..COMMAND_SPECS.len()).collect();
+        }
+        let mut ranked: Vec<(u8, usize, usize)> = COMMAND_SPECS
             .iter()
             .enumerate()
-            .filter(|(_, entry)| {
-                query.is_empty()
-                    || entry.label.to_ascii_lowercase().contains(&query)
-                    || entry.category.to_ascii_lowercase().contains(&query)
+            .filter_map(|(index, entry)| {
+                let label = entry.label.to_ascii_lowercase();
+                let rank = if label == query {
+                    0
+                } else if label.starts_with(&query) {
+                    1
+                } else if label
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .any(|word| word.starts_with(&query))
+                {
+                    2
+                } else if label.contains(&query) {
+                    3
+                } else if entry.category.to_ascii_lowercase().contains(&query)
                     || entry.id.to_ascii_lowercase().contains(&query)
+                {
+                    4
+                } else {
+                    return None;
+                };
+                // Among equal ranks the shorter name is the closer match:
+                // "Save file" before "Save All files" for `save`.
+                Some((rank, label.len(), index))
             })
-            .map(|(index, _)| index)
-            .collect()
+            .collect();
+        ranked.sort_by_key(|&(rank, length, index)| (rank, length, index));
+        ranked.into_iter().map(|(_, _, index)| index).collect()
     }
 
     /// Shows a problem in the status line, in the error colour.
     pub fn fail(&mut self, text: impl Into<String>) {
-        self.status = Some(text.into());
+        let text = text.into();
+        self.remember_message(&text, true);
+        self.status = Some(text);
         self.status_is_error = true;
     }
 
     /// Shows news in the status line, in the normal colour.
     pub fn notify(&mut self, text: impl Into<String>) {
-        self.status = Some(text.into());
+        let text = text.into();
+        self.remember_message(&text, false);
+        self.status = Some(text);
         self.status_is_error = false;
+    }
+
+    /// Keeps the last few hundred status messages for "Show recent messages".
+    /// A message repeated back to back is kept once.
+    fn remember_message(&mut self, text: &str, is_error: bool) {
+        const MESSAGE_LOG_LIMIT: usize = 200;
+        if text.trim().is_empty()
+            || self
+                .message_log
+                .back()
+                .is_some_and(|(last, _)| last == text)
+        {
+            return;
+        }
+        if self.message_log.len() >= MESSAGE_LOG_LIMIT {
+            self.message_log.pop_front();
+        }
+        self.message_log.push_back((text.to_owned(), is_error));
+    }
+
+    /// Opens the full text of recent status messages, newest first.
+    fn show_messages(&mut self) {
+        let lines: Vec<String> = if self.message_log.is_empty() {
+            vec!["No messages yet this session.".to_owned()]
+        } else {
+            self.message_log
+                .iter()
+                .rev()
+                .map(|(text, is_error)| {
+                    if *is_error {
+                        format!("Error · {text}")
+                    } else {
+                        text.clone()
+                    }
+                })
+                .collect()
+        };
+        let actions = vec![None; lines.len()];
+        self.show_utility("Recent messages · newest first · Esc close", lines, actions);
     }
 
     pub fn clear_status(&mut self) {
@@ -3392,6 +3475,15 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('c' | 'C') => {
+                // Looking at both versions decides nothing: the next save
+                // asks again, with the choice still to make.
+                self.post_save_action = PostSaveAction::None;
+                self.conflict_reason = None;
+                self.save_all_queue.clear();
+                self.mode = AppMode::Editing;
+                self.compare_disk();
+            }
             _ => {}
         }
     }
@@ -5028,8 +5120,12 @@ impl App {
                     } else {
                         self.hover_card = None;
                     }
-                    self.status =
-                        Some(contents.unwrap_or_else(|| "No hover information".to_owned()));
+                    self.notify(
+                        contents.as_deref().map_or_else(
+                            || "No hover information".to_owned(),
+                            hover_status_summary,
+                        ),
+                    );
                 }
                 LanguageServiceEvent::SignatureHelp(signatures) => {
                     if !self
@@ -6189,6 +6285,11 @@ impl App {
             let col = buffer.map_or(diagnostic.range.start.character, |b| {
                 b.grapheme_col_for_utf16(row, diagnostic.range.start.character)
             });
+            // Spell the path the way the open buffer does: the gutter dot, the
+            // inline lens and "Fix problem on this line" compare paths as
+            // written, and a server reports the canonical absolute path even
+            // when the file was opened as `src/main.py`.
+            let path = buffer.and_then(|b| b.path().cloned()).unwrap_or(path);
             problems.push(ProblemItem {
                 path: Some(path.clone()),
                 severity: match diagnostic.severity {
@@ -8216,10 +8317,14 @@ impl App {
         self.note_recent_file(&path);
         if let Some(index) = self.find_open_tab(&path) {
             self.switch_tab(index);
+            // An opened file takes the keyboard: typing must reach it, not
+            // the explorer's single-letter actions.
+            self.explorer_focused = false;
             return Ok(());
         }
 
         let buffer = Buffer::open(Some(path))?;
+        self.explorer_focused = false;
         self.sync_recovery_journal();
         let new_state = Self::blank_state(buffer);
         if self.active_tab_is_pristine() {
@@ -8420,28 +8525,29 @@ impl App {
                             .join(expand_user_path(&path.to_string_lossy()))
                     });
 
+                // Nothing matched: the query is a path to open, or to create as
+                // an unsaved buffer when it does not exist yet. A plain name is
+                // relative to the project, so `notes.md` works like `./notes.md`.
                 let direct = if selected.is_none() {
                     let raw = self.quick_open_query.as_str().trim();
-                    if raw.contains(std::path::MAIN_SEPARATOR)
-                        || raw.starts_with('.')
-                        || raw.starts_with('~')
-                        || std::path::Path::new(raw).is_absolute()
-                    {
+                    if raw.is_empty() {
+                        None
+                    } else {
                         let path = expand_user_path(raw);
                         Some(if path.is_absolute() {
                             path
                         } else {
                             self.workspace_root.join(path)
                         })
-                    } else {
-                        None
                     }
                 } else {
                     None
                 };
 
                 let Some(path) = selected.or(direct) else {
-                    self.notify("Quick Open: no matching file".to_owned());
+                    self.notify(
+                        "Quick Open: type a file name or path to open or create it".to_owned(),
+                    );
                     return;
                 };
 
@@ -8805,9 +8911,16 @@ impl App {
                     self.notify("Create blocked: destination has no parent".to_owned());
                     return;
                 };
-                if !parent.is_dir() {
-                    self.status =
-                        Some("Create blocked: parent directory does not exist".to_owned());
+                // `docs/guide.md` in a project without `docs/` means "make the
+                // folder too", as it does in other editors.
+                if parent.exists() && !parent.is_dir() {
+                    self.fail("Create blocked: the parent path is a file, not a folder".to_owned());
+                    return;
+                }
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    self.fail(format!(
+                        "Create blocked: cannot create parent folder: {error}"
+                    ));
                     return;
                 }
                 match std::fs::OpenOptions::new()
@@ -8878,22 +8991,21 @@ impl App {
                 };
                 let absolute = self.workspace_root.join(&relative);
                 if absolute.exists() {
-                    self.status =
-                        Some("Create directory blocked: destination already exists".to_owned());
+                    self.notify("Create directory blocked: destination already exists".to_owned());
                     return;
                 }
                 let Some(parent) = absolute.parent() else {
-                    self.status =
-                        Some("Create directory blocked: destination has no parent".to_owned());
+                    self.notify("Create directory blocked: destination has no parent".to_owned());
                     return;
                 };
-                if !parent.is_dir() {
-                    self.notify(
-                        "Create directory blocked: parent directory does not exist".to_owned(),
+                if parent.exists() && !parent.is_dir() {
+                    self.fail(
+                        "Create directory blocked: the parent path is a file, not a folder"
+                            .to_owned(),
                     );
                     return;
                 }
-                match std::fs::create_dir(&absolute) {
+                match std::fs::create_dir_all(&absolute) {
                     Ok(()) => {
                         self.expand_explorer_ancestors(&relative);
                         self.reload_explorer();
@@ -9289,6 +9401,15 @@ impl App {
                     };
                     badges.insert(relative.to_path_buf(), badge);
                     mark_parents(&mut badges, relative);
+                }
+                // Ignored entries are dimmed so the tree explains why Quick
+                // Open and search do not find them; a change badge wins.
+                for path in &self.git_snapshot.ignored {
+                    if let Ok(relative) = path.strip_prefix(prefix) {
+                        badges
+                            .entry(relative.to_path_buf())
+                            .or_insert(ui::ExplorerBadge::Ignored);
+                    }
                 }
             }
         }
@@ -11066,7 +11187,7 @@ impl App {
                     }
                     None => {
                         self.is_resizing_terminal = true;
-                        self.status = Some(
+                        self.notify(
                             "Drag terminal top border to resize · release to keep size".to_owned(),
                         );
                     }
@@ -12336,6 +12457,7 @@ impl App {
             Command::SaveAll => self.review_save_all(),
             Command::RestoreTrash => self.show_trash(),
             Command::AiUsage => self.show_ai_usage(),
+            Command::ShowMessages => self.show_messages(),
             Command::KeyboardBindings => self.show_bindings(),
             Command::CloseAll | Command::CloseOthers => self.begin_close_batch(command == Command::CloseOthers),
             Command::ExplorerNewFile => self.begin_explorer_create(),
@@ -13418,7 +13540,19 @@ fn common_path_prefix(values: &[String]) -> String {
 }
 
 fn is_explicit_path_query(input: &str) -> bool {
-    input.contains(std::path::MAIN_SEPARATOR) || input.starts_with('.') || input.starts_with('~')
+    workspace::is_explicit_path_query(input)
+}
+
+/// The one line of a hover reply that fits the status bar: Markdown fences,
+/// rules and blank lines dropped, then the first remaining line with its
+/// whitespace collapsed. The hover card still shows the whole reply.
+fn hover_status_summary(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("```") && !line.starts_with("---"))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())
+        .unwrap_or_else(|| "Hover shown · Esc dismisses it".to_owned())
 }
 
 fn expand_user_path(input: &str) -> PathBuf {
@@ -17509,6 +17643,330 @@ mod tests {
         assert_eq!(app.filtered_quick_open_entries().len(), 1);
         assert!(app.quick_open_candidates[0].ends_with("note.txt"));
         assert!(app.buffer.path().is_none());
+    }
+
+    /// A folder in the query narrows the list; it is not a switch into path
+    /// completion. `src/ma` once listed every file and Enter opened the first.
+    #[test]
+    fn quick_open_filters_workspace_paths_that_contain_a_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "readme").unwrap();
+        std::fs::write(dir.path().join("src/main.py"), "main").unwrap();
+        std::fs::write(dir.path().join("src/demo.rs"), "demo").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
+        app.handle_paste("src/ma");
+        wait_quick_open(&mut app);
+        let matches = app.filtered_quick_open_entries();
+        assert_eq!(matches.len(), 1, "{:?}", app.quick_open_candidates);
+        assert!(app.quick_open_candidates[matches[0]].ends_with("src/main.py"));
+        app.handle_quick_open_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.buffer.path(), Some(&dir.path().join("src/main.py")));
+        assert_eq!(app.buffer.contents(), "main");
+    }
+
+    /// "Type a path to create one" must hold for a plain name too, not only
+    /// for `../x` and `~/x`; the file exists only once it is saved.
+    #[test]
+    fn quick_open_enter_creates_a_typed_file_name_in_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "readme").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
+        app.handle_paste("brand_new.py");
+        wait_quick_open(&mut app);
+        assert!(app.filtered_quick_open_entries().is_empty());
+        app.handle_quick_open_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.buffer.path(), Some(&dir.path().join("brand_new.py")));
+        assert!(app.buffer.contents().is_empty());
+        assert!(
+            !dir.path().join("brand_new.py").exists(),
+            "created on save, not before"
+        );
+    }
+
+    /// Files that discovery skips (ignored, for example) still open by name.
+    #[test]
+    fn quick_open_enter_opens_an_existing_file_that_is_not_in_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "readme").unwrap();
+        std::fs::write(dir.path().join("secret.env"), "KEY=1").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
+        app.quick_open_candidates
+            .retain(|path| !path.ends_with("secret.env"));
+        app.handle_paste("secret.env");
+        // The paste resubmits discovery; drop the file again once it is back.
+        wait_quick_open(&mut app);
+        app.quick_open_candidates
+            .retain(|path| !path.ends_with("secret.env"));
+        assert!(app.filtered_quick_open_entries().is_empty());
+        app.handle_quick_open_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.buffer.path(), Some(&dir.path().join("secret.env")));
+        assert_eq!(app.buffer.contents(), "KEY=1");
+    }
+
+    /// With the tree focused, Ctrl+O then Enter opened the file but left the
+    /// keyboard in the tree, where typed letters ran explorer actions.
+    #[test]
+    fn opening_a_file_from_quick_open_moves_focus_to_the_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "notes").unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.explorer_visible = true;
+        app.explorer_focused = true;
+        app.execute(Command::OpenFile);
+        wait_quick_open(&mut app);
+        app.handle_paste("notes");
+        wait_quick_open(&mut app);
+        app.handle_quick_open_key(plain_key(KeyCode::Enter));
+        assert_eq!(app.buffer.path(), Some(&dir.path().join("notes.txt")));
+        assert!(!app.explorer_focused, "typing must reach the opened file");
+    }
+
+    /// `docs/guide.md` in a project without `docs/` creates the folder too.
+    #[test]
+    fn explorer_create_file_makes_missing_parent_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Buffer::empty(None));
+        app.workspace_root = dir.path().to_path_buf();
+        app.explorer_visible = true;
+        app.reload_explorer();
+        app.begin_explorer_create();
+        assert_eq!(app.mode, AppMode::ExplorerCreate);
+        app.explorer_action_query.set("docs/guide.md");
+        app.handle_explorer_create_key(plain_key(KeyCode::Enter));
+        assert!(
+            dir.path().join("docs/guide.md").is_file(),
+            "{:?}",
+            app.status
+        );
+        assert_eq!(app.buffer.path(), Some(&dir.path().join("docs/guide.md")));
+
+        app.begin_explorer_create_directory();
+        assert_eq!(app.mode, AppMode::ExplorerCreateDirectory);
+        app.explorer_action_query.set("assets/img/icons");
+        app.handle_explorer_create_directory_key(plain_key(KeyCode::Enter));
+        assert!(
+            dir.path().join("assets/img/icons").is_dir(),
+            "{:?}",
+            app.status
+        );
+
+        // A file in the way is still refused rather than replaced.
+        app.begin_explorer_create();
+        app.explorer_action_query.set("docs/guide.md/inside.txt");
+        app.handle_explorer_create_key(plain_key(KeyCode::Enter));
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Create blocked")
+        );
+        assert!(dir.path().join("docs/guide.md").is_file());
+    }
+
+    /// Typing `help` ran "Show signature help": the exact name must win.
+    #[test]
+    fn palette_ranks_the_exact_command_name_first() {
+        let mut app = App::new(Buffer::empty(None));
+        app.execute(Command::ShowPalette);
+        let first = |app: &mut App, query: &str| {
+            app.palette_query.set(query);
+            let entries = app.filtered_palette_entries();
+            crate::command::COMMAND_SPECS[entries[0]].command
+        };
+        assert_eq!(first(&mut app, "help"), Command::ShowHelp);
+        assert_eq!(first(&mut app, "Help"), Command::ShowHelp);
+        assert_eq!(first(&mut app, "undo"), Command::Undo);
+        // Prefix of the name beats a match inside a later word.
+        assert_eq!(first(&mut app, "save"), Command::Save);
+        // Substring matches still appear, after the better ones.
+        app.palette_query.set("help");
+        let entries = app.filtered_palette_entries();
+        assert!(
+            entries.iter().any(|&index| {
+                crate::command::COMMAND_SPECS[index].command == Command::ShowSignatureHelp
+            }),
+            "substring matches are kept"
+        );
+    }
+
+    /// A Markdown hover once put "```python(function) …" in the status bar.
+    #[test]
+    fn hover_status_summary_drops_fences_and_keeps_the_first_line() {
+        assert_eq!(
+            hover_status_summary(
+                "```python\n(function) load_config: (path) -> Any\n```\n\nLoads it."
+            ),
+            "(function) load_config: (path) -> Any"
+        );
+        assert_eq!(hover_status_summary("  a   b  \n"), "a b");
+        assert_eq!(
+            hover_status_summary("```\n```"),
+            "Hover shown · Esc dismisses it"
+        );
+    }
+
+    /// The conflict dialog offers to show the two versions before deciding.
+    #[test]
+    fn save_conflict_dialog_can_compare_the_two_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conflict.txt");
+        std::fs::write(&path, "disk").unwrap();
+        let mut app = App::new(Buffer::open(Some(path.clone())).unwrap());
+        app.cursor = Cursor::new(0, 4);
+        app.execute(Command::Insert('!'));
+        std::fs::write(&path, "external").unwrap();
+        app.execute(Command::Save);
+        assert_eq!(app.mode, AppMode::SaveConflict);
+
+        app.handle_save_conflict_key(plain_key(KeyCode::Char('c')));
+        assert_eq!(app.mode, AppMode::Utility);
+        assert!(
+            app.utility_title.contains("Compare"),
+            "{}",
+            app.utility_title
+        );
+        assert!(
+            app.utility_lines
+                .iter()
+                .any(|line| line.contains("external"))
+        );
+        assert!(app.utility_lines.iter().any(|line| line.contains("disk!")));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert!(app.buffer.is_dirty());
+
+        // Saving again asks again; nothing was decided by looking.
+        app.handle_utility_key(plain_key(KeyCode::Esc));
+        app.execute(Command::Save);
+        assert_eq!(app.mode, AppMode::SaveConflict);
+    }
+
+    /// `mellow latin1.txt` used to exit with an error instead of starting.
+    #[test]
+    fn startup_with_an_unreadable_file_opens_the_editor_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latin1.txt");
+        std::fs::write(&path, [0xff, 0xfe, 0x00, b'x']).unwrap();
+        let app = App::startup_documents(Some(path)).expect("Mellow still starts");
+        assert!(app.buffer.path().is_none());
+        let status = app.status.clone().unwrap_or_default();
+        assert!(
+            status.contains("latin1.txt") && status.contains("UTF-8"),
+            "{status}"
+        );
+        assert!(app.status_is_error);
+    }
+
+    /// A server reports the canonical path; a file opened through another
+    /// spelling (a symlinked folder, `src/main.py` from the shell) still gets
+    /// its problems on the line: the lens, the gutter and "Fix problem".
+    #[cfg(unix)]
+    #[test]
+    fn problems_attach_to_a_buffer_opened_by_a_different_path_spelling() {
+        use crate::lsp::{DiagnosticSeverity, LspDiagnostic, LspPosition, LspRange};
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("main.py"), "x = 1\nundefined_name + 1\n").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let opened = dir.path().join("link/main.py");
+        let mut app = App::new(Buffer::open(Some(opened.clone())).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.language_service.set_diagnostics_for_test(
+            std::fs::canonicalize(&opened).unwrap(),
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 1,
+                        character: 14,
+                    },
+                },
+                severity: DiagnosticSeverity::Error,
+                source: Some("Pyright".to_owned()),
+                message: "\"undefined_name\" is not defined".to_owned(),
+            }],
+        );
+        let problems = app.problem_items();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].path.as_ref(), app.buffer.path());
+        assert_eq!(problems[0].cursor.row, 1);
+
+        app.cursor = Cursor::new(1, 0);
+        let after_text = app
+            .buffer
+            .display_width_before(1, app.buffer.grapheme_count(1), 4)
+            + 2;
+        assert_eq!(
+            ui::diagnostic_lens_hit(&app, 1, after_text),
+            Some(ui::DiagnosticLensHit::Problems),
+            "the inline lens is drawn for the problem on the cursor line"
+        );
+    }
+
+    /// The status line cuts "Git push failed: git comma…"; the messages
+    /// panel shows the whole text, newest first, repeats folded.
+    #[test]
+    fn recent_messages_panel_shows_full_status_text_newest_first() {
+        let mut app = App::new(Buffer::empty(None));
+        let long = "Git push failed: git command exited with status 128: fatal: No configured push destination";
+        app.fail(long);
+        app.notify("Opened notes.txt");
+        app.notify("Opened notes.txt");
+        app.execute(Command::ShowMessages);
+        assert_eq!(app.mode, AppMode::Utility);
+        assert!(
+            app.utility_title.contains("messages"),
+            "{}",
+            app.utility_title
+        );
+        assert_eq!(app.utility_lines[0], "Opened notes.txt");
+        assert_eq!(app.utility_lines[1], format!("Error · {long}"));
+        assert_eq!(app.utility_lines.len(), 2, "{:?}", app.utility_lines);
+    }
+
+    /// The tree listed `.env` and `big.log` like any file while Quick Open
+    /// and search skipped them; now they are marked ignored (and dimmed).
+    #[test]
+    fn explorer_badges_mark_gitignored_entries() {
+        let dir = git_workspace();
+        std::fs::write(dir.path().join(".gitignore"), "*.log\nbuild/\n").unwrap();
+        std::fs::write(dir.path().join("big.log"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("build")).unwrap();
+        std::fs::write(dir.path().join("build/out.o"), "x").unwrap();
+        let mut app = App::new(Buffer::open(Some(dir.path().join("demo.txt"))).unwrap());
+        app.workspace_root = dir.path().to_path_buf();
+        app.refresh_git_state(true);
+        let badges = app.explorer_badges();
+        assert_eq!(
+            badges.get(std::path::Path::new("big.log")),
+            Some(&ui::ExplorerBadge::Ignored),
+            "{badges:?}"
+        );
+        assert_eq!(
+            badges.get(std::path::Path::new("build")),
+            Some(&ui::ExplorerBadge::Ignored),
+            "{badges:?}"
+        );
+        assert_eq!(
+            badges.get(std::path::Path::new(".gitignore")),
+            Some(&ui::ExplorerBadge::Added),
+            "an untracked file keeps its change badge: {badges:?}"
+        );
     }
 
     #[test]

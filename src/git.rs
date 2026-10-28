@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
@@ -128,6 +128,10 @@ pub struct GitSnapshot {
     pub behind: usize,
     pub files: Vec<GitFileChange>,
     pub hunks: Vec<GitHunk>,
+    /// Files and folders `.gitignore` rules exclude, relative to the
+    /// repository root; a folder stands for everything inside it. The file
+    /// tree shows them dimmed, because Quick Open and search skip them.
+    pub ignored: Vec<PathBuf>,
     line_changes: HashMap<PathBuf, HashMap<usize, GitLineChange>>,
 }
 
@@ -316,9 +320,21 @@ struct CachedFile {
 struct RefreshCache {
     repository: Option<(Option<String>, Option<StatKey>)>,
     files: HashMap<PathBuf, CachedFile>,
+    /// Ignored paths and when they were last listed: `git status` does not
+    /// notice a new ignored file, so the list is re-read now and then rather
+    /// than on every half-second refresh.
+    ignored: Vec<PathBuf>,
+    ignored_at: Option<Instant>,
     #[cfg(test)]
     computed: usize,
 }
+
+/// How long the ignored-paths list is reused between refreshes.
+const IGNORED_REFRESH_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(0)
+} else {
+    Duration::from_secs(5)
+};
 
 impl GitRepository {
     pub fn discover(start: &Path) -> Result<Option<Self>> {
@@ -381,16 +397,24 @@ impl GitRepository {
         let mut line_changes = HashMap::new();
 
         // Work on a private copy so the lock is never held while git runs.
-        let mut previous = {
+        let (mut previous, cached_ignored) = {
             let mut cache = self
                 .cache
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            if cache.repository.as_ref() != Some(&repository) {
+            let same_repository = cache.repository.as_ref() == Some(&repository);
+            if !same_repository {
                 cache.files.clear();
             }
-            std::mem::take(&mut cache.files)
+            let ignored_fresh = same_repository
+                && cache
+                    .ignored_at
+                    .is_some_and(|at| at.elapsed() < IGNORED_REFRESH_INTERVAL);
+            let cached_ignored = ignored_fresh.then(|| cache.ignored.clone());
+            (std::mem::take(&mut cache.files), cached_ignored)
         };
+        let reread_ignored = cached_ignored.is_none();
+        let ignored = cached_ignored.unwrap_or_else(|| self.ignored_paths());
         let cacheable = repository.1.is_none_or(|index| index.settled());
         let mut next = HashMap::new();
         #[cfg(test)]
@@ -432,6 +456,10 @@ impl GitRepository {
                 .unwrap_or_else(|poison| poison.into_inner());
             cache.repository = Some(repository);
             cache.files = next;
+            if reread_ignored {
+                cache.ignored = ignored.clone();
+                cache.ignored_at = Some(Instant::now());
+            }
             #[cfg(test)]
             {
                 cache.computed += computed;
@@ -452,8 +480,36 @@ impl GitRepository {
             behind,
             files,
             hunks,
+            ignored,
             line_changes,
         })
+    }
+
+    /// Paths `.gitignore` rules exclude, folders collapsed to one entry. A
+    /// failure here only loses the dimming, never the snapshot.
+    fn ignored_paths(&self) -> Vec<PathBuf> {
+        let Ok(output) = self.git(&[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ]) else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                let text = String::from_utf8_lossy(entry);
+                PathBuf::from(text.trim_end_matches('/'))
+            })
+            .collect()
     }
 
     /// HEAD's commit (None before the first commit) and the index file's
@@ -1396,6 +1452,43 @@ mod tests {
 
     fn settle() {
         std::thread::sleep(REFRESH_SETTLE_TIME * 3);
+    }
+
+    /// `.gitignore` rules decide what Quick Open and search skip; the snapshot
+    /// names those paths so the file tree can show them dimmed.
+    #[test]
+    fn refresh_lists_gitignored_files_and_folders() {
+        let dir = repo();
+        fs::write(dir.path().join(".gitignore"), "*.log\nbuild/\n").unwrap();
+        fs::write(dir.path().join("big.log"), "x").unwrap();
+        fs::create_dir_all(dir.path().join("build/out")).unwrap();
+        fs::write(dir.path().join("build/out/a.o"), "x").unwrap();
+        fs::write(dir.path().join("kept.txt"), "x").unwrap();
+        let repository = GitRepository::discover(dir.path()).unwrap().unwrap();
+        let snapshot = repository.refresh().unwrap();
+        assert!(
+            snapshot.ignored.contains(&PathBuf::from("big.log")),
+            "{:?}",
+            snapshot.ignored
+        );
+        assert!(
+            snapshot.ignored.contains(&PathBuf::from("build")),
+            "a folder stands for its contents: {:?}",
+            snapshot.ignored
+        );
+        assert!(
+            !snapshot
+                .ignored
+                .iter()
+                .any(|path| path.ends_with("kept.txt"))
+        );
+        assert!(
+            snapshot
+                .files
+                .iter()
+                .any(|file| file.path == PathBuf::from("kept.txt")),
+            "an untracked file is still a change"
+        );
     }
 
     /// Audit: with N changed files every refresh ran 3 + 3N git processes,

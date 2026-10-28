@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.3 (beta)
+
+Fixes from an end-user walkthrough of 0.3.2: Open file, problems on the line, focus, the start page at 80×24, and a messages panel.
+
+### Fixed
+
+- **Open file (`Ctrl+O`) with a folder in the query:** `src/ma` listed every file and Enter opened the first one. A folder now narrows the list like any other text; only `/…`, `./…`, `../…` and `~/…` switch to path completion.
+- **Open file creates what you type:** a name with no match (`notes.md`, `src/new.py`) opens as a new unsaved file at that path, as the docs promised; a file the list skips (ignored by Git, for example) opens by its exact name.
+- **Opening a file always focuses the editor:** with the file tree focused, `Ctrl+O` left the keyboard in the tree, where typed letters ran tree actions (`n` created a file).
+- **Problems attach to their line again:** when a file was opened as `src/main.py`, the language server's diagnostics appeared in Problems but not in the gutter or the inline lens, and **Fix problem on this line with AI** said there was none.
+- **Hover** no longer shows a Markdown fence (```` ```python ````) in the status line.
+- **Create file in explorer** with `docs/guide.md` creates the missing folder; so does **New folder** with a nested path.
+- **Command palette** ranks the command named by the query first: `help` runs Help, not "Show signature help".
+- **Start page at 80×24** with the tree open drew its title and tagline across the card's border; sections that do not fit are left out instead.
+- `mellow file` with a file Mellow cannot open (not UTF-8, too large) starts the editor and reports why, instead of exiting; other files on the command line still open.
+
+### Added
+
+- **Show recent messages** (`view.messages`): the full text of status-line messages, newest first, for the ones the status line cuts short (`Git push failed: git comma…`).
+- **[C] Compare** in the "File changed on disk" dialog opens the disk-versus-buffer comparison before you decide.
+- Files and folders excluded by `.gitignore` are dimmed in the file tree, and project search says "gitignored files skipped", since Quick Open and search do not read them.
+
 ## 0.3.2 (beta)
 
 Interactive terminal controls, inline canvas actions, and shell filter workflows.
